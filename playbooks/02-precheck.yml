@@ -36,7 +36,6 @@
           - not (source_kolla_globals.enable_neutron_dvr | default(false) | bool)
           - not (source_kolla_globals.enable_neutron_agent_ha | default(false) | bool)
           - not (source_kolla_globals.enable_neutron_provider_networks | default(false) | bool)
-          - (not run_mariadb_backup | bool) or (source_kolla_globals.enable_mariabackup | default(false) | bool)
           - (source_kolla_globals.tunnel_interface | default('') | length) > 0
         fail_msg: >-
           Source cloud is outside v2 supported scope: Kolla 18.8.x / OpenStack 2024.1,

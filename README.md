@@ -130,8 +130,13 @@ A run is successful only when the automation reaches the final report after all 
 
 For guest-level DHCP, metadata and end-to-end tenant packet validation, a dedicated test VM/canary is still the strongest validation. Those checks cannot be made universally without credentials/access inside a guest, so V2 reports what it can measure truthfully rather than inferring success from a Neutron fixed-IP allocation.
 
-## v2.1 fix
+## v2.2 fix
 
 All phase playbooks explicitly load `../group_vars/all.yml` through `vars_files`.
 This avoids relying on Ansible implicit `group_vars` discovery for imported playbooks
 stored under the `playbooks/` subdirectory.
+
+
+## v2.2 fix
+
+MariaDB backup capability is validated by executing `kolla-ansible mariadb_backup`; the precheck no longer requires an explicit `enable_mariabackup` key in `globals.yml`, avoiding false negatives when the backup command is available and succeeds.
