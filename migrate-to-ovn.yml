@@ -1,0 +1,12 @@
+---
+- import_playbook: playbooks/00-bootstrap.yml
+- import_playbook: playbooks/01-backup.yml
+- import_playbook: playbooks/02-precheck.yml
+- import_playbook: playbooks/03-stage-ovn-db.yml
+- import_playbook: playbooks/04-target-config.yml
+- import_playbook: playbooks/05-migrate-db.yml
+- import_playbook: playbooks/06-cutover.yml
+- import_playbook: playbooks/07-cleanup.yml
+- import_playbook: playbooks/08-restore-neutron.yml
+- import_playbook: playbooks/09-validate.yml
+- import_playbook: playbooks/10-report.yml

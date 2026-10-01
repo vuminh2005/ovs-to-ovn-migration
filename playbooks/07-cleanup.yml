@@ -1,0 +1,69 @@
+---
+- name: Phase 7 - Mark legacy cleanup start
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Mark cleanup phase start
+      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase07.start
+      changed_when: false
+
+- name: Phase 7 - Remove legacy ML2/OVS tunnel dataplane
+  hosts: network:compute
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Delete br-tun and patch-tun
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker exec openvswitch_vswitchd ovs-vsctl --if-exists del-br br-tun
+        docker exec openvswitch_vswitchd ovs-vsctl --if-exists del-port br-int patch-tun
+      args:
+        executable: /bin/bash
+
+- name: Phase 7 - Remove legacy network namespaces and namespace-owned OVS ports
+  hosts: network
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Delete only qrouter/qdhcp namespaces and their ports
+      ansible.builtin.shell: |
+        set -euo pipefail
+        tmp=$(mktemp)
+        trap 'rm -f "$tmp"' EXIT
+        for ns in $(ip netns list | awk '{print $1}' | grep -E '^(qrouter-|qdhcp-)' || true); do
+          ip netns exec "$ns" ip -o link show | awk -F': ' '{print $2}' | sed 's/@.*//' | grep -v '^lo$' >> "$tmp" || true
+        done
+        for ns in $(ip netns list | awk '{print $1}' | grep -E '^(qrouter-|qdhcp-)' || true); do
+          ip netns delete "$ns"
+        done
+        sort -u "$tmp" | while read -r port; do
+          [ -n "$port" ] || continue
+          docker exec openvswitch_vswitchd ovs-vsctl --if-exists del-port br-int "$port"
+          docker exec openvswitch_vswitchd ovs-vsctl --if-exists del-port br-ex "$port"
+        done
+      args:
+        executable: /bin/bash
+
+    - name: Remove old OVS-agent br-int/br-ex patch pair in provider-disabled supported scope
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker exec openvswitch_vswitchd ovs-vsctl --if-exists del-port br-int int-br-ex
+        docker exec openvswitch_vswitchd ovs-vsctl --if-exists del-port br-ex phy-br-ex
+      args:
+        executable: /bin/bash
+
+    - name: Preserve OVN metadata namespaces
+      ansible.builtin.shell: |
+        set -euo pipefail
+        count=$(ip netns list | grep -c '^ovnmeta-' || true)
+        test "$count" -gt 0 || test "{{ hostvars['localhost']['source_network_count_runtime'] | int }}" -eq 0
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Mark cleanup phase end
+      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase07.end
+      delegate_to: localhost
+      run_once: true
+      changed_when: false

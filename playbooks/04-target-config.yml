@@ -1,0 +1,107 @@
+---
+- name: Phase 4 - Prepare target ML2/OVN configuration and MTU
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Mark target-config phase start
+      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase04.start
+      changed_when: false
+
+    - name: Write target ML2/OVN globals
+      ansible.builtin.lineinfile:
+        path: "{{ kolla_globals_path }}"
+        regexp: "^{{ item.key }}:"
+        line: '{{ item.key }}: "{{ item.value }}"'
+        insertafter: EOF
+      loop:
+        - { key: neutron_plugin_agent, value: "{{ target_neutron_plugin_agent }}" }
+        - { key: neutron_type_drivers, value: "{{ neutron_type_drivers_target }}" }
+        - { key: neutron_tenant_network_types, value: "{{ target_tenant_network_type }}" }
+        - { key: enable_ovn, value: 'yes' }
+        - { key: enable_openvswitch, value: 'yes' }
+        - { key: neutron_ovn_dhcp_agent, value: 'no' }
+        - { key: neutron_ovn_distributed_fip, value: 'no' }
+        - { key: neutron_enable_ovn_agent, value: 'no' }
+        - { key: enable_neutron_dvr, value: 'no' }
+        - { key: enable_neutron_agent_ha, value: 'no' }
+
+    - name: Reduce each existing VXLAN network MTU by VXLAN-to-Geneve delta
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path }}
+        : > {{ migration_run_dir }}/network-mtu-migration.tsv
+        for id in $(openstack network list -f value -c ID); do
+          type=$(openstack network show "$id" -f value -c provider:network_type)
+          [ "$type" = "{{ source_tenant_network_type }}" ] || continue
+          old=$(openstack network show "$id" -f value -c mtu)
+          new=$((old - {{ mtu_delta_vxlan_to_geneve }}))
+          test "$new" -gt 0
+          printf '%s\t%s\t%s\n' "$id" "$old" "$new" >> {{ migration_run_dir }}/network-mtu-migration.tsv
+          if [ "$old" -ne "$new" ]; then
+            openstack network set --mtu "$new" "$id"
+          fi
+        done
+      args:
+        executable: /bin/bash
+
+    - name: Generate target Neutron config without restarting services
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} genconfig --tags neutron
+      args:
+        executable: /bin/bash
+
+    - name: Pull OVN controller image before downtime
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} pull --tags ovn-controller
+      args:
+        executable: /bin/bash
+
+- name: Phase 4 - Discover generated OVN DB endpoints from authoritative target config
+  hosts: control
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Read generated target Neutron settings
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ml2=/etc/kolla/neutron-server/ml2_conf.ini
+        neutron=/etc/kolla/neutron-server/neutron.conf
+        grep -Eq '^mechanism_drivers[[:space:]]*=[[:space:]]*ovn' "$ml2"
+        grep -Eq '^tenant_network_types[[:space:]]*=[[:space:]]*geneve' "$ml2"
+        grep -Eq '^service_plugins[[:space:]]*=[[:space:]]*ovn-router' "$neutron"
+        nb=$(awk -F= '/^ovn_nb_connection[[:space:]]*=/{sub(/^[^=]*=[[:space:]]*/,""); print; exit}' "$ml2")
+        sb=$(awk -F= '/^ovn_sb_connection[[:space:]]*=/{sub(/^[^=]*=[[:space:]]*/,""); print; exit}' "$ml2")
+        test -n "$nb" && test -n "$sb"
+        printf '%s\n%s\n' "$nb" "$sb"
+      args:
+        executable: /bin/bash
+      register: generated_ovn_connections
+      run_once: true
+      changed_when: false
+
+    - name: Publish generated OVN endpoints to deployment host facts
+      ansible.builtin.set_fact:
+        ovn_nb_connection_runtime: "{{ generated_ovn_connections.stdout_lines[0] }}"
+        ovn_sb_connection_runtime: "{{ generated_ovn_connections.stdout_lines[1] }}"
+      delegate_to: localhost
+      delegate_facts: true
+      run_once: true
+
+    - name: Save generated target configs in migration checkpoint
+      ansible.builtin.fetch:
+        src: "{{ item.src }}"
+        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/{{ item.dest }}"
+        flat: true
+      loop:
+        - { src: /etc/kolla/neutron-server/ml2_conf.ini, dest: ml2_conf.ini.target }
+        - { src: /etc/kolla/neutron-server/neutron.conf, dest: neutron.conf.target }
+      run_once: true
+
+    - name: Mark target-config phase end
+      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase04.end
+      delegate_to: localhost
+      run_once: true
+      changed_when: false

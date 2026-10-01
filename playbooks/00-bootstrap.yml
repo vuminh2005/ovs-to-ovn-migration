@@ -1,0 +1,74 @@
+---
+- name: Phase 0 - Auto-discover migration runtime
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Discover kolla-ansible binary from current execution environment
+      ansible.builtin.shell: command -v kolla-ansible
+      args:
+        executable: /bin/bash
+      register: kolla_ansible_bin_cmd
+      changed_when: false
+
+    - name: Set runtime topology and paths
+      ansible.builtin.set_fact:
+        kolla_inventory_runtime: "{{ ansible_inventory_sources[0] }}"
+        kolla_ansible_bin_runtime: "{{ kolla_ansible_bin_cmd.stdout }}"
+        migration_run_id: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+        ovn_cli_host_runtime: >-
+          {{ (groups['ovn-northd'][0] if ('ovn-northd' in groups and groups['ovn-northd'] | length > 0)
+              else groups['control'][0]) }}
+        db_sync_host_runtime: "{{ groups['control'][0] }}"
+        chassis_hosts_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | list }}"
+        chassis_count_runtime: "{{ (((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | list) | length }}"
+
+    - name: Set run directory
+      ansible.builtin.set_fact:
+        migration_run_dir: "{{ migration_backup_root }}/{{ migration_run_id }}"
+
+    - name: Create run and metrics directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ migration_run_dir }}"
+        - "{{ migration_run_dir }}/metrics"
+
+    - name: Mark total and bootstrap start
+      ansible.builtin.shell: |
+        date +%s.%N > {{ migration_run_dir }}/metrics/total.start
+        cp {{ migration_run_dir }}/metrics/total.start {{ migration_run_dir }}/metrics/phase00.start
+      changed_when: false
+
+    - name: Read source Kolla globals
+      ansible.builtin.slurp:
+        src: "{{ kolla_globals_path }}"
+      register: globals_raw
+
+    - name: Parse source Kolla globals
+      ansible.builtin.set_fact:
+        source_kolla_globals: "{{ globals_raw.content | b64decode | from_yaml }}"
+
+    - name: Save discovered runtime metadata
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir }}/runtime.json"
+        mode: "0600"
+        content: >-
+          {{ {
+              'run_id': migration_run_id,
+              'inventory': kolla_inventory_runtime,
+              'kolla_ansible': kolla_ansible_bin_runtime,
+              'globals': kolla_globals_path,
+              'openrc': openrc_path,
+              'control_hosts': groups['control'] | default([]),
+              'network_hosts': groups['network'] | default([]),
+              'compute_hosts': groups['compute'] | default([]),
+              'ovn_cli_host': ovn_cli_host_runtime,
+              'db_sync_host': db_sync_host_runtime
+            } | to_nice_json }}
+
+    - name: Mark bootstrap end
+      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase00.end
+      changed_when: false

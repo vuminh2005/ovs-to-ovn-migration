@@ -1,0 +1,142 @@
+---
+- name: Phase 2 - Precheck deployment host and supported source scope
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Mark precheck phase start
+      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase02.start
+      changed_when: false
+
+    - name: Verify required standard Kolla inventory groups exist
+      ansible.builtin.assert:
+        that:
+          - "'control' in groups and groups['control'] | length > 0"
+          - "'network' in groups and groups['network'] | length > 0"
+          - "'compute' in groups and groups['compute'] | length > 0"
+          - "'ovn-controller' in groups"
+          - "'ovn-database' in groups"
+          - "'neutron-ovn-metadata-agent' in groups"
+        fail_msg: "Inventory is missing standard Kolla control/network/compute/OVN groups."
+
+    - name: Read kolla-ansible version
+      ansible.builtin.command: "{{ kolla_ansible_bin_runtime }} --version"
+      register: kolla_version
+      changed_when: false
+
+    - name: Assert tested Kolla/OpenStack/source architecture scope
+      ansible.builtin.assert:
+        that:
+          - kolla_version.stdout is regex(supported_kolla_ansible_regex)
+          - (source_kolla_globals.openstack_release | string) == supported_openstack_release
+          - (source_kolla_globals.neutron_plugin_agent | default('')) == source_neutron_plugin_agent
+          - source_tenant_network_type in (source_kolla_globals.neutron_tenant_network_types | default(''))
+          - not (source_kolla_globals.enable_neutron_dvr | default(false) | bool)
+          - not (source_kolla_globals.enable_neutron_agent_ha | default(false) | bool)
+          - not (source_kolla_globals.enable_neutron_provider_networks | default(false) | bool)
+          - (not run_mariadb_backup | bool) or (source_kolla_globals.enable_mariabackup | default(false) | bool)
+          - (source_kolla_globals.tunnel_interface | default('') | length) > 0
+        fail_msg: >-
+          Source cloud is outside v2 supported scope: Kolla 18.8.x / OpenStack 2024.1,
+          ML2/OVS VXLAN, DVR off, Neutron agent HA off, provider networks off.
+
+    - name: Verify admin OpenStack credentials are present and API is healthy
+      ansible.builtin.shell: |
+        set -euo pipefail
+        test -r {{ openrc_path }}
+        source {{ openrc_path }}
+        openstack network list >/dev/null
+        openstack server list --all-projects >/dev/null
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Fail if external/provider/FIP topology is present in unsupported v2 scope
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path }}
+        for id in $(openstack network list -f value -c ID); do
+          ext=$(openstack network show "$id" -f value -c router:external)
+          case "${ext,,}" in true|yes|1) echo "External network $id detected" >&2; exit 1;; esac
+        done
+        test "$(openstack floating ip list -f value -c ID | wc -l)" -eq 0
+        for id in $(openstack router list -f value -c ID); do
+          ext=$(openstack router show "$id" -f value -c external_gateway_info)
+          case "$ext" in ""|None|null|'{}') ;; *) echo "Router $id has external gateway: $ext" >&2; exit 1;; esac
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Verify all existing tenant overlay networks are VXLAN in supported scope
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path }}
+        for id in $(openstack network list -f value -c ID); do
+          t=$(openstack network show "$id" -f value -c provider:network_type)
+          test "$t" = "{{ source_tenant_network_type }}"
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Mark precheck deployment-host portion complete
+      ansible.builtin.debug:
+        msg: "Source cloud matches the currently validated migration scope."
+
+- name: Phase 2 - Precheck Kolla hosts and OVS source dataplane
+  hosts: control:network:compute
+  gather_facts: true
+  become: true
+  tasks:
+    - name: Assert Ubuntu 24.04 on migration hosts
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+          - ansible_distribution_version is version(supported_ubuntu_release, '==')
+
+    - name: Verify configured tunnel interface exists and has IPv4 on network/compute chassis
+      ansible.builtin.shell: |
+        set -euo pipefail
+        iface='{{ hostvars['localhost']['source_kolla_globals'].tunnel_interface }}'
+        ip -4 -o addr show dev "$iface" | grep -q ' inet '
+      args:
+        executable: /bin/bash
+      when: inventory_hostname in (groups['network'] + groups['compute'])
+      changed_when: false
+
+    - name: Verify br-int exists on network/compute chassis
+      ansible.builtin.shell: docker exec openvswitch_vswitchd ovs-vsctl br-exists br-int
+      when: inventory_hostname in (groups['network'] + groups['compute'])
+      changed_when: false
+
+    - name: Verify source OVS firewall driver where OVS agent config exists
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cfg=/etc/kolla/neutron-openvswitch-agent/openvswitch_agent.ini
+        test ! -f "$cfg" || grep -Eq '^firewall_driver[[:space:]]*=[[:space:]]*openvswitch' "$cfg"
+      args:
+        executable: /bin/bash
+      when: inventory_hostname in (groups['network'] + groups['compute'])
+      changed_when: false
+
+- name: Phase 2 - Verify DB sync utility on first control host
+  hosts: control
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Verify migration utility and migrate mode
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker exec neutron_server test -x /var/lib/kolla/venv/bin/neutron-ovn-db-sync-util
+        docker exec neutron_server neutron-ovn-db-sync-util --help 2>&1 | grep -q ovn-neutron_sync_mode
+      args:
+        executable: /bin/bash
+      run_once: true
+      changed_when: false
+
+    - name: Mark precheck phase end on deployment host
+      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase02.end
+      delegate_to: localhost
+      run_once: true
+      changed_when: false

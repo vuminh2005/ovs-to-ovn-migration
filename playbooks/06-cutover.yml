@@ -1,0 +1,167 @@
+---
+- name: Phase 6 - Start dataplane convergence and optional packet-loss probe
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Mark cutover/convergence start
+      ansible.builtin.shell: |
+        date +%s.%N > {{ migration_run_dir }}/metrics/phase06.start
+        cp {{ migration_run_dir }}/metrics/phase06.start {{ migration_run_dir }}/metrics/dataplane_convergence.start
+      changed_when: false
+
+    - name: Start optional continuous ICMP probe from deployment host
+      ansible.builtin.shell: |
+        set -euo pipefail
+        nohup ping -D -i {{ dataplane_probe_interval_seconds }} {{ dataplane_probe_target }} \
+          > {{ migration_run_dir }}/metrics/dataplane-probe.log 2>&1 &
+        echo $! > {{ migration_run_dir }}/metrics/dataplane-probe.pid
+      args:
+        executable: /bin/bash
+      when: dataplane_probe_target | length > 0
+
+- name: Phase 6 - Stop legacy Neutron agents on network nodes
+  hosts: network
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Disable and stop legacy network-node agents when installed
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if systemctl cat {{ item }} >/dev/null 2>&1; then
+          systemctl disable --now {{ item }}
+          test "$(systemctl is-active {{ item }} || true)" != active
+        fi
+      args:
+        executable: /bin/bash
+      loop: "{{ legacy_network_units }}"
+
+- name: Phase 6 - Stop legacy OVS agent on compute nodes
+  hosts: compute
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Disable and stop legacy compute agents when installed
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if systemctl cat {{ item }} >/dev/null 2>&1; then
+          systemctl disable --now {{ item }}
+          test "$(systemctl is-active {{ item }} || true)" != active
+        fi
+      args:
+        executable: /bin/bash
+      loop: "{{ legacy_compute_units }}"
+
+- name: Phase 6 - Normalize br-int for OVN takeover
+  hosts: network:compute
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Enable OpenFlow15 on existing br-int
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker exec openvswitch_vswitchd ovs-vsctl br-exists br-int
+        docker exec openvswitch_vswitchd ovs-vsctl set Bridge br-int protocols={{ br_int_protocols }}
+      args:
+        executable: /bin/bash
+
+- name: Phase 6 - Deploy OVN controller and metadata through Kolla
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Deploy OVN controller
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} deploy --tags ovn-controller
+      args:
+        executable: /bin/bash
+
+    - name: Deploy OVN metadata agents only
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} deploy --tags neutron --limit neutron-ovn-metadata-agent
+      args:
+        executable: /bin/bash
+
+    - name: Calculate dynamic Port_Binding timeout from old VM port count
+      ansible.builtin.shell: |
+        count=$(grep -cve '^$' {{ migration_run_dir }}/compute-port-ids.txt || true)
+        timeout=$(( {{ binding_timeout_base_seconds }} + count * {{ binding_timeout_seconds_per_port }} ))
+        [ "$timeout" -le {{ binding_timeout_max_seconds }} ] || timeout={{ binding_timeout_max_seconds }}
+        echo "$timeout"
+      register: binding_timeout
+      changed_when: false
+
+- name: Phase 6 - Wait for OVN workload takeover using SB Port_Binding
+  hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Verify expected unique OVN chassis registered in Southbound DB
+      ansible.builtin.shell: |
+        set -euo pipefail
+        actual=$(docker exec ovn_northd ovn-sbctl --db='{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}' list Chassis | grep -c '^_uuid')
+        test "$actual" -ge {{ hostvars['localhost']['chassis_count_runtime'] | int }}
+      args:
+        executable: /bin/bash
+      run_once: true
+      changed_when: false
+
+    - name: Copy pre-existing VM port IDs to OVN CLI host
+      ansible.builtin.copy:
+        src: "{{ hostvars['localhost']['migration_run_dir'] }}/compute-port-ids.txt"
+        dest: /tmp/ovs-to-ovn-compute-port-ids.txt
+        mode: "0600"
+      run_once: true
+
+    - name: Wait until every pre-existing VM port has chassis and up=true
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ports=/tmp/ovs-to-ovn-compute-port-ids.txt
+        deadline=$(( $(date +%s) + {{ hostvars['localhost']['binding_timeout'].stdout | int }} ))
+        while true; do
+          bad=0
+          while read -r port; do
+            [ -n "$port" ] || continue
+            out=$(docker exec ovn_northd ovn-sbctl --db='{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}' \
+              --columns=logical_port,chassis,up find Port_Binding logical_port="$port")
+            echo "$out" | grep -Eq '^chassis[[:space:]]*:[[:space:]]*[0-9a-f-]+' || bad=$((bad+1))
+            echo "$out" | grep -Eq '^up[[:space:]]*:[[:space:]]*true' || bad=$((bad+1))
+          done < "$ports"
+          [ "$bad" -eq 0 ] && exit 0
+          [ "$(date +%s)" -lt "$deadline" ] || exit 1
+          sleep {{ binding_poll_interval_seconds }}
+        done
+      args:
+        executable: /bin/bash
+      run_once: true
+      changed_when: false
+
+    - name: Mark dataplane convergence end
+      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/dataplane_convergence.end
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+
+- name: Phase 6 - Verify chassis-side services and finish optional probe
+  hosts: network:compute
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Verify ovn-controller container is running
+      ansible.builtin.shell: |
+        docker inspect ovn_controller | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
+      changed_when: false
+
+    - name: Finish cutover phase on deployment host
+      ansible.builtin.shell: |
+        if [ -f {{ hostvars['localhost']['migration_run_dir'] }}/metrics/dataplane-probe.pid ]; then
+          pid=$(cat {{ hostvars['localhost']['migration_run_dir'] }}/metrics/dataplane-probe.pid)
+          kill -INT "$pid" 2>/dev/null || true
+          sleep 1
+        fi
+        date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase06.end
+      delegate_to: localhost
+      run_once: true
+      changed_when: false

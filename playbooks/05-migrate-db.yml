@@ -1,0 +1,95 @@
+---
+- name: Phase 5 - Start control-plane downtime metric
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Mark DB migration and control-plane downtime start
+      ansible.builtin.shell: |
+        date +%s.%N > {{ migration_run_dir }}/metrics/phase05.start
+        cp {{ migration_run_dir }}/metrics/phase05.start {{ migration_run_dir }}/metrics/control_plane_downtime.start
+        cp {{ migration_run_dir }}/metrics/phase05.start {{ migration_run_dir }}/metrics/db_migration.start
+      changed_when: false
+
+- name: Phase 5 - Freeze all Neutron API workers
+  hosts: control
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Stop and disable neutron-server through Kolla systemd
+      ansible.builtin.systemd_service:
+        name: "{{ neutron_server_unit }}"
+        state: stopped
+        enabled: false
+        daemon_reload: true
+
+    - name: Assert neutron-server container is stopped where present
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if docker inspect neutron_server >/dev/null 2>&1; then
+          test "$(docker inspect neutron_server | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["State"]["Running"])')" = "False"
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+- name: Phase 5 - Run Neutron to OVN DB migration exactly once
+  hosts: control
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Discover neutron-server image on DB sync host
+      ansible.builtin.shell: docker inspect neutron_server -f '{% raw %}{{.Config.Image}}{% endraw %}'
+      register: neutron_server_image
+      run_once: true
+      changed_when: false
+
+    - name: Run neutron-ovn-db-sync-util migrate
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker run --rm \
+          --network host \
+          --user root \
+          -e KOLLA_CONFIG_STRATEGY=COPY_ALWAYS \
+          -e KOLLA_SERVICE_NAME=neutron-server \
+          -v /etc/kolla/neutron-server:/var/lib/kolla/config_files:ro \
+          -v kolla_logs:/var/log/kolla \
+          --entrypoint /bin/bash \
+          {{ neutron_server_image.stdout }} \
+          -lc '
+            kolla_set_configs &&
+            neutron-ovn-db-sync-util \
+              --config-file /etc/neutron/neutron.conf \
+              --config-file /etc/neutron/plugins/ml2/ml2_conf.ini \
+              --ovn-neutron_sync_mode migrate
+          '
+      args:
+        executable: /bin/bash
+      run_once: true
+
+    - name: Mark DB migration end
+      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/db_migration.end
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+
+- name: Phase 5 - Verify migrated OVN topology exists
+  hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Verify NB logical topology and SB datapaths
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker exec ovn_northd ovn-nbctl --db='{{ hostvars['localhost']['ovn_nb_connection_runtime'] }}' show | grep -Eq 'switch|router'
+        test "$(docker exec ovn_northd ovn-sbctl --db='{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}' list Datapath_Binding | grep -c '^_uuid')" -gt 0
+      args:
+        executable: /bin/bash
+      run_once: true
+      changed_when: false
+
+    - name: Mark DB migration phase end
+      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase05.end
+      delegate_to: localhost
+      run_once: true
+      changed_when: false

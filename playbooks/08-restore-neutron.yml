@@ -1,0 +1,71 @@
+---
+- name: Phase 8 - Mark Neutron restore start
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Mark restore phase start
+      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase08.start
+      changed_when: false
+
+- name: Phase 8 - Restore all neutron-server API workers with ML2/OVN target config
+  hosts: control
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Enable and start neutron-server Kolla unit
+      ansible.builtin.systemd_service:
+        name: "{{ neutron_server_unit }}"
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Wait for local neutron-server health where container exists
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if ! docker inspect neutron_server >/dev/null 2>&1; then exit 0; fi
+        deadline=$(( $(date +%s) + 300 ))
+        while true; do
+          status=$(docker inspect neutron_server | python3 -c 'import json,sys; d=json.load(sys.stdin)[0]["State"]; print(d.get("Health",{}).get("Status",""))')
+          [ "$status" = healthy ] && exit 0
+          [ "$(date +%s)" -lt "$deadline" ] || exit 1
+          sleep 5
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Verify running neutron-server uses OVN target configuration
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if docker inspect neutron_server >/dev/null 2>&1; then
+          docker exec neutron_server grep -Eq '^mechanism_drivers[[:space:]]*=[[:space:]]*ovn' /etc/neutron/plugins/ml2/ml2_conf.ini
+          docker exec neutron_server grep -Eq '^service_plugins[[:space:]]*=[[:space:]]*ovn-router' /etc/neutron/neutron.conf
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+- name: Phase 8 - Measure first usable Neutron API response
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Wait for Neutron API to become usable
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path }}
+        openstack network list >/dev/null
+      args:
+        executable: /bin/bash
+      register: neutron_api_ready
+      retries: 60
+      delay: 5
+      until: neutron_api_ready.rc == 0
+      changed_when: false
+
+    - name: Mark control-plane downtime and restore end
+      ansible.builtin.shell: |
+        date +%s.%N > {{ migration_run_dir }}/metrics/control_plane_downtime.end
+        cp {{ migration_run_dir }}/metrics/control_plane_downtime.end {{ migration_run_dir }}/metrics/phase08.end
+      changed_when: false

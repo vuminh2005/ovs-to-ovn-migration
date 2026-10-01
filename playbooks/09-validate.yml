@@ -1,0 +1,124 @@
+---
+- name: Phase 9 - Validate state consistency and ML2/OVN control plane
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Mark validation phase start
+      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase09.start
+      changed_when: false
+
+    - name: Snapshot post-migration resources before creating any smoke-test resource
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path }}
+        openstack network list -f json > {{ migration_run_dir }}/networks.after.json
+        openstack subnet list -f json > {{ migration_run_dir }}/subnets.after.json
+        openstack router list -f json > {{ migration_run_dir }}/routers.after.json
+        openstack server list --all-projects -f json > {{ migration_run_dir }}/servers.after.json
+        openstack port list -f json > {{ migration_run_dir }}/ports.after.json
+        openstack port list --device-owner compute:nova -f json > {{ migration_run_dir }}/compute-ports.after.json
+        openstack network agent list -f json > {{ migration_run_dir }}/agents.after.json
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Compare critical resource identity sets before and after migration
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - <<'PY'
+        import json, pathlib, sys
+        root = pathlib.Path("{{ migration_run_dir }}")
+        pairs = {
+          'networks': ('networks.before.json','networks.after.json'),
+          'subnets': ('subnets.before.json','subnets.after.json'),
+          'routers': ('routers.before.json','routers.after.json'),
+          'servers': ('servers.before.json','servers.after.json'),
+          'compute_ports': ('compute-ports.before.json','compute-ports.after.json'),
+        }
+        result = {}
+        ok = True
+        for key,(bf,af) in pairs.items():
+          b = json.loads((root/bf).read_text())
+          a = json.loads((root/af).read_text())
+          def ids(rows):
+            out=set()
+            for r in rows:
+              v = r.get('ID') or r.get('Id') or r.get('id')
+              if v: out.add(v)
+            return out
+          bi, ai = ids(b), ids(a)
+          missing = sorted(bi-ai)
+          added = sorted(ai-bi)
+          result[key] = {'before':len(bi),'after':len(ai),'missing':missing,'added':added,'preserved':not missing,'unchanged':not missing and not added}
+          if missing or added: ok=False
+        (root/'resource-consistency.json').write_text(json.dumps(result, indent=2, sort_keys=True))
+        if not ok:
+          print(json.dumps(result, indent=2), file=sys.stderr)
+          sys.exit(1)
+        PY
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Automatically create and delete a temporary network to prove new tenant type is Geneve
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path }}
+        name=ovn-migration-smoke-{{ migration_run_id }}
+        id=$(openstack network create "$name" -f value -c id)
+        trap 'openstack network delete "$id" >/dev/null 2>&1 || true' EXIT
+        type=$(openstack network show "$id" -f value -c provider:network_type)
+        mtu=$(openstack network show "$id" -f value -c mtu)
+        test "$type" = geneve
+        printf '{"network_id":"%s","network_type":"%s","mtu":%s}\n' "$id" "$type" "$mtu" > {{ migration_run_dir }}/new-network-smoke.json
+      args:
+        executable: /bin/bash
+      when: validation_ephemeral_network | bool
+
+- name: Phase 9 - Validate legacy dataplane is gone and OVN dataplane exists
+  hosts: network:compute
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Assert br-tun is absent and an OVN Geneve interface exists
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ! docker exec openvswitch_vswitchd ovs-vsctl br-exists br-tun
+        if [ {{ hostvars['localhost']['chassis_count_runtime'] | int }} -gt 1 ]; then
+          docker exec openvswitch_vswitchd ovs-vsctl --columns=name,type list Interface | grep -A1 -E 'name[[:space:]]*: ovn-' | grep -q geneve
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+
+- name: Phase 9 - Validate gateway role and legacy-agent shutdown
+  hosts: network
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Assert network chassis has gateway CMS option and no old namespaces
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker exec openvswitch_vswitchd ovs-vsctl get Open_vSwitch . external_ids:ovn-cms-options | grep -q enable-chassis-as-gw
+        ! ip netns list | grep -Eq '^(qrouter-|qdhcp-)'
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+- name: Phase 9 - Validate OVN metadata agents
+  hosts: neutron-ovn-metadata-agent
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Assert OVN metadata container is running
+      ansible.builtin.shell: |
+        docker inspect neutron_ovn_metadata_agent | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
+      changed_when: false
+
+    - name: Mark validation phase end on deployment host
+      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase09.end
+      delegate_to: localhost
+      run_once: true
+      changed_when: false

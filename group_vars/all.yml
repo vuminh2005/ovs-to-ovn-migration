@@ -1,0 +1,64 @@
+---
+# V2 is designed to require no per-cloud file edits for the tested/supported scope.
+# It auto-discovers the Kolla inventory path, kolla-ansible binary, source globals,
+# control/OVN hosts, generated OVN DB endpoints, source resource IDs and network MTUs.
+
+# Standard Kolla locations. Override only through environment variables when a
+# deployment intentionally uses non-standard paths.
+kolla_globals_path: "{{ lookup('env', 'KOLLA_GLOBALS') | default('/etc/kolla/globals.yml', true) }}"
+openrc_path: "{{ lookup('env', 'KOLLA_OPENRC') | default('/etc/kolla/admin-openrc.sh', true) }}"
+migration_backup_root: "{{ lookup('env', 'OVS_TO_OVN_BACKUP_ROOT') | default('/root/ovs-to-ovn-backup', true) }}"
+
+# Supported/tested scope.
+supported_openstack_release: "2024.1"
+supported_kolla_ansible_regex: '.*18\.8(\.|$).*'
+supported_ubuntu_release: "24.04"
+source_neutron_plugin_agent: openvswitch
+source_tenant_network_type: vxlan
+target_neutron_plugin_agent: ovn
+target_tenant_network_type: geneve
+neutron_type_drivers_target: "flat,vlan,vxlan,geneve"
+
+# VXLAN -> Geneve adds 8 bytes in the tested Neutron/Kolla configuration
+# (VXLAN network MTU 1450 -> Geneve-safe 1442 on a 1500 underlay).
+# Existing VXLAN networks are reduced individually by this delta; there is no
+# hard-coded 1442 requirement, so jumbo-MTU clouds are handled proportionally.
+mtu_delta_vxlan_to_geneve: 8
+
+# Kolla systemd units.
+neutron_server_unit: kolla-neutron_server-container.service
+legacy_network_units:
+  - kolla-neutron_dhcp_agent-container.service
+  - kolla-neutron_l3_agent-container.service
+  - kolla-neutron_metadata_agent-container.service
+  - kolla-neutron_openvswitch_agent-container.service
+legacy_compute_units:
+  - kolla-neutron_openvswitch_agent-container.service
+
+# ML2/OVS can leave br-int restricted to OF <= 1.4. OVN controller in the
+# validated environment needs OF1.5 negotiation, so normalize it at cutover.
+br_int_protocols: "OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13,OpenFlow14,OpenFlow15"
+
+# Safety / backup.
+run_mariadb_backup: true
+
+# Dynamic Port_Binding convergence timeout. Large clouds get more time without
+# requiring an edit. timeout = base + seconds_per_port * old_compute_ports,
+# capped at max.
+binding_timeout_base_seconds: 300
+binding_timeout_seconds_per_port: 2
+binding_timeout_max_seconds: 1800
+binding_poll_interval_seconds: 5
+
+# Automatic post-migration control-plane smoke test. It creates a temporary
+# network, asserts that it is Geneve, then deletes it. No VM/image/flavor is
+# required and no permanent tenant resource is left behind.
+validation_ephemeral_network: true
+
+# Optional REAL dataplane probe. For isolated tenant networks a deployment host
+# usually cannot reach VM fixed IPs, so packet loss cannot be measured safely
+# without a reachable canary. Set only when a target is reachable from the
+# machine running ansible-playbook, e.g.:
+#   MIGRATION_PROBE_TARGET=192.0.2.10 ansible-playbook ...
+dataplane_probe_target: "{{ lookup('env', 'MIGRATION_PROBE_TARGET') | default('', true) }}"
+dataplane_probe_interval_seconds: 0.2

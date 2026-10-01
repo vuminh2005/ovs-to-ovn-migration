@@ -1,0 +1,48 @@
+---
+- name: Phase 3 - Stage OVN central while Neutron remains ML2/OVS
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Mark OVN central staging start
+      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase03.start
+      changed_when: false
+
+    - name: Enable OVN infrastructure but keep Neutron on OVS
+      ansible.builtin.lineinfile:
+        path: "{{ kolla_globals_path }}"
+        regexp: "^{{ item.key }}:"
+        line: '{{ item.key }}: "{{ item.value }}"'
+        insertafter: EOF
+      loop:
+        - { key: enable_ovn, value: 'yes' }
+        - { key: neutron_plugin_agent, value: 'openvswitch' }
+
+    - name: Pull OVN DB images only
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} pull --tags ovn-db
+      args:
+        executable: /bin/bash
+
+    - name: Deploy OVN NB/SB DB and northd only
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} deploy --tags ovn-db
+      args:
+        executable: /bin/bash
+
+    - name: Mark OVN central staging end
+      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase03.end
+      changed_when: false
+
+- name: Phase 3 - Verify OVN central process is present
+  hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Verify northd container is running
+      ansible.builtin.shell: |
+        docker inspect ovn_northd | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
+      run_once: true
+      changed_when: false

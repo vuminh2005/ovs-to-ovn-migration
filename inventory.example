@@ -1,0 +1,13 @@
+# Use the normal full Kolla-Ansible multinode inventory. This excerpt only
+# illustrates the standard groups V2 expects to already exist.
+[control]
+controller1
+
+[network]
+network01
+
+[compute]
+compute1
+
+# Standard Kolla inventories also define ovn-controller and ovn-database groups
+# (often through children). V2 validates their presence before making changes.
