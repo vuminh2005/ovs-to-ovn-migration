@@ -1,0 +1,57 @@
+---
+- name: Resume bootstrap - rediscover runtime without replaying migration
+  hosts: localhost
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Discover kolla-ansible binary
+      ansible.builtin.shell: command -v kolla-ansible
+      args:
+        executable: /bin/bash
+      register: kolla_ansible_bin_cmd
+      changed_when: false
+
+    - name: Resolve run directory for resume
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if [ -n "{{ migration_resume_run_dir | default('') }}" ]; then
+          test -d "{{ migration_resume_run_dir }}"
+          printf '%s\n' "{{ migration_resume_run_dir }}"
+        else
+          latest=$(find "{{ migration_backup_root }}" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
+            | sort -nr | awk 'NR==1{print $2}')
+          test -n "$latest"
+          printf '%s\n' "$latest"
+        fi
+      args:
+        executable: /bin/bash
+      register: resume_dir
+      changed_when: false
+
+    - name: Restore runtime facts for remaining phases
+      ansible.builtin.set_fact:
+        migration_run_dir: "{{ resume_dir.stdout }}"
+        migration_run_id: "{{ resume_dir.stdout | basename }}"
+        kolla_inventory_runtime: "{{ ansible_inventory_sources[0] }}"
+        kolla_ansible_bin_runtime: "{{ kolla_ansible_bin_cmd.stdout }}"
+        ovn_cli_host_runtime: >-
+          {{ (groups['ovn-northd'][0] if ('ovn-northd' in groups and groups['ovn-northd'] | length > 0)
+              else groups['control'][0]) }}
+        db_sync_host_runtime: "{{ groups['control'][0] }}"
+        chassis_hosts_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | list }}"
+        chassis_count_runtime: "{{ (((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | list) | length }}"
+
+    - name: Assert this is an existing migration run
+      ansible.builtin.stat:
+        path: "{{ migration_run_dir }}/metrics/phase06.end"
+      register: phase06_marker
+
+    - name: Refuse unsafe resume before OVN cutover completed
+      ansible.builtin.assert:
+        that:
+          - phase06_marker.stat.exists
+        fail_msg: >-
+          Resume-after-cleanup requires a run that completed Phase 6 OVN takeover.
+          Run directory: {{ migration_run_dir }}

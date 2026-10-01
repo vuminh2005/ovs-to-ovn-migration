@@ -140,3 +140,20 @@ stored under the `playbooks/` subdirectory.
 ## v2.2 fix
 
 MariaDB backup capability is validated by executing `kolla-ansible mariadb_backup`; the precheck no longer requires an explicit `enable_mariabackup` key in `globals.yml`, avoiding false negatives when the backup command is available and succeeds.
+
+## Resume after a late-phase failure
+
+If a run has already completed OVN takeover/cleanup and fails only in a validation guard,
+do **not** restart the migration from Phase 0. Resume from the existing run directory:
+
+```bash
+ansible-playbook \
+  -i /root/multinode \
+  resume-after-cleanup.yml \
+  -e migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>
+```
+
+`ovnmeta-*` namespaces are not required to exist on every network node. Their presence is
+local-datapath/chassis dependent. The cleanup safety rule is instead: never delete
+`ovnmeta-*`; remove only `qrouter-*` and `qdhcp-*`, then validate the OVN metadata agent
+containers separately.

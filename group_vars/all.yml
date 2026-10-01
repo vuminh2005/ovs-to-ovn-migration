@@ -62,3 +62,8 @@ validation_ephemeral_network: true
 #   MIGRATION_PROBE_TARGET=192.0.2.10 ansible-playbook ...
 dataplane_probe_target: "{{ lookup('env', 'MIGRATION_PROBE_TARGET') | default('', true) }}"
 dataplane_probe_interval_seconds: 0.2
+
+# Optional resume target. Leave empty to auto-pick the newest migration run.
+# Prefer passing explicitly for safety:
+#   -e migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>
+migration_resume_run_dir: "{{ lookup('env', 'OVS_TO_OVN_RESUME_RUN_DIR') | default('', true) }}"

@@ -1,0 +1,32 @@
+---
+- name: Resume Phase 7 - Verify cleanup checkpoint and close phase metrics
+  hosts: network
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Verify legacy OVS tunnel bridge and namespaces are absent
+      ansible.builtin.shell: |
+        set -euo pipefail
+        ! docker exec openvswitch_vswitchd ovs-vsctl br-exists br-tun
+        ! ip netns list | grep -Eq '^(qrouter-|qdhcp-)'
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Show any OVN metadata namespaces without requiring them per host
+      ansible.builtin.shell: |
+        ip netns list | awk '{print $1}' | grep '^ovnmeta-' || true
+      register: ovnmeta_namespaces
+      changed_when: false
+
+    - name: Close Phase 7 metric on deployment host
+      ansible.builtin.shell: |
+        if [ ! -f {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase07.start ]; then
+          date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase07.start
+        fi
+        date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase07.end
+      delegate_to: localhost
+      run_once: true
+      changed_when: false

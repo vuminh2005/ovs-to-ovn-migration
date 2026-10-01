@@ -1,0 +1,6 @@
+---
+- import_playbook: playbooks/00-resume-bootstrap.yml
+- import_playbook: playbooks/07-resume-cleanup-verify.yml
+- import_playbook: playbooks/08-restore-neutron.yml
+- import_playbook: playbooks/09-validate.yml
+- import_playbook: playbooks/10-report.yml

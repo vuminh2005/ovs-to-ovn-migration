@@ -59,11 +59,13 @@
       args:
         executable: /bin/bash
 
-    - name: Preserve OVN metadata namespaces
+    - name: Verify legacy namespaces are gone without requiring local OVN metadata namespaces
       ansible.builtin.shell: |
         set -euo pipefail
-        count=$(ip netns list | grep -c '^ovnmeta-' || true)
-        test "$count" -gt 0 || test "{{ hostvars['localhost']['source_network_count_runtime'] | int }}" -eq 0
+        ! ip netns list | grep -Eq '^(qrouter-|qdhcp-)'
+        # ovnmeta-* is intentionally not deleted. It is chassis/local-datapath
+        # dependent and therefore is not required to exist on every network node.
+        ip netns list | awk '{print $1}' | grep '^ovnmeta-' || true
       args:
         executable: /bin/bash
       changed_when: false
