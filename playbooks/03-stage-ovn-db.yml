@@ -3,6 +3,8 @@
   hosts: localhost
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Mark OVN central staging start
       ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase03.start
@@ -40,6 +42,8 @@
   hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Verify northd container is running
       ansible.builtin.shell: |

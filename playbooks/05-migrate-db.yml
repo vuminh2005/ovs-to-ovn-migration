@@ -3,6 +3,8 @@
   hosts: localhost
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Mark DB migration and control-plane downtime start
       ansible.builtin.shell: |
@@ -15,6 +17,8 @@
   hosts: control
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Stop and disable neutron-server through Kolla systemd
       ansible.builtin.systemd_service:
@@ -37,6 +41,8 @@
   hosts: control
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Discover neutron-server image on DB sync host
       ansible.builtin.shell: docker inspect neutron_server -f '{% raw %}{{.Config.Image}}{% endraw %}'
@@ -77,6 +83,8 @@
   hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Verify NB logical topology and SB datapaths
       ansible.builtin.shell: |

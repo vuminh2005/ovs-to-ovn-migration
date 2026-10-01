@@ -3,6 +3,8 @@
   hosts: localhost
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Mark backup phase start
       ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase01.start

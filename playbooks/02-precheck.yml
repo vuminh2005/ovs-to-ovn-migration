@@ -3,6 +3,8 @@
   hosts: localhost
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Mark precheck phase start
       ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase02.start
@@ -88,6 +90,8 @@
   hosts: control:network:compute
   gather_facts: true
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Assert Ubuntu 24.04 on migration hosts
       ansible.builtin.assert:
@@ -124,6 +128,8 @@
   hosts: control
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Verify migration utility and migrate mode
       ansible.builtin.shell: |

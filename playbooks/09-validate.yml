@@ -3,6 +3,8 @@
   hosts: localhost
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Mark validation phase start
       ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase09.start
@@ -80,6 +82,8 @@
   hosts: network:compute
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Assert br-tun is absent and an OVN Geneve interface exists
       ansible.builtin.shell: |
@@ -97,6 +101,8 @@
   hosts: network
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Assert network chassis has gateway CMS option and no old namespaces
       ansible.builtin.shell: |
@@ -111,6 +117,8 @@
   hosts: neutron-ovn-metadata-agent
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Assert OVN metadata container is running
       ansible.builtin.shell: |

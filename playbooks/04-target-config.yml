@@ -3,6 +3,8 @@
   hosts: localhost
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Mark target-config phase start
       ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase04.start
@@ -63,6 +65,8 @@
   hosts: control
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Read generated target Neutron settings
       ansible.builtin.shell: |

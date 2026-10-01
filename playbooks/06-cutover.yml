@@ -3,6 +3,8 @@
   hosts: localhost
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Mark cutover/convergence start
       ansible.builtin.shell: |
@@ -24,6 +26,8 @@
   hosts: network
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Disable and stop legacy network-node agents when installed
       ansible.builtin.shell: |
@@ -40,6 +44,8 @@
   hosts: compute
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Disable and stop legacy compute agents when installed
       ansible.builtin.shell: |
@@ -56,6 +62,8 @@
   hosts: network:compute
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Enable OpenFlow15 on existing br-int
       ansible.builtin.shell: |
@@ -69,6 +77,8 @@
   hosts: localhost
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Deploy OVN controller
       ansible.builtin.shell: |
@@ -97,6 +107,8 @@
   hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Verify expected unique OVN chassis registered in Southbound DB
       ansible.builtin.shell: |
@@ -148,6 +160,8 @@
   hosts: network:compute
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Verify ovn-controller container is running
       ansible.builtin.shell: |

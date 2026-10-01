@@ -3,6 +3,8 @@
   hosts: localhost
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Mark report phase start
       ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase10.start

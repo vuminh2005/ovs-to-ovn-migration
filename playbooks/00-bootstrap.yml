@@ -3,6 +3,8 @@
   hosts: localhost
   gather_facts: false
   become: true
+  vars_files:
+    - ../group_vars/all.yml
   tasks:
     - name: Discover kolla-ansible binary from current execution environment
       ansible.builtin.shell: command -v kolla-ansible
