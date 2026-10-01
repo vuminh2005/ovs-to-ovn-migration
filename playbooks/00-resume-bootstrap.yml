@@ -43,15 +43,18 @@
         chassis_hosts_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | list }}"
         chassis_count_runtime: "{{ (((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | list) | length }}"
 
-    - name: Assert this is an existing migration run
+    - name: Check migration checkpoint markers
       ansible.builtin.stat:
-        path: "{{ migration_run_dir }}/metrics/phase06.end"
-      register: phase06_marker
+        path: "{{ item }}"
+      loop:
+        - "{{ migration_run_dir }}/metrics/phase06.end"
+        - "{{ migration_run_dir }}/metrics/phase07.start"
+      register: resume_markers
 
-    - name: Refuse unsafe resume before OVN cutover completed
+    - name: Refuse unsafe resume before OVN cutover/cleanup checkpoint
       ansible.builtin.assert:
         that:
-          - phase06_marker.stat.exists
+          - resume_markers.results[0].stat.exists or resume_markers.results[1].stat.exists
         fail_msg: >-
-          Resume-after-cleanup requires a run that completed Phase 6 OVN takeover.
-          Run directory: {{ migration_run_dir }}
+          Resume-after-cleanup requires evidence that the original run reached OVN cutover/cleanup.
+          Neither metrics/phase06.end nor metrics/phase07.start exists in {{ migration_run_dir }}.

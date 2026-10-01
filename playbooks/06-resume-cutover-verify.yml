@@ -1,0 +1,53 @@
+---
+- name: Resume safety - verify OVN takeover is live on chassis nodes
+  hosts: network:compute
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Verify ovn-controller container is running
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker inspect ovn_controller | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+- name: Resume safety - verify legacy Neutron agents remain stopped on network nodes
+  hosts: network
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Assert legacy network-node units are not active
+      ansible.builtin.shell: |
+        set -euo pipefail
+        for unit in {{ legacy_network_units | join(' ') }}; do
+          if systemctl cat "$unit" >/dev/null 2>&1; then
+            test "$(systemctl is-active "$unit" || true)" != active
+          fi
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+- name: Resume safety - verify legacy Neutron OVS agent remains stopped on compute nodes
+  hosts: compute
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Assert legacy compute-node units are not active
+      ansible.builtin.shell: |
+        set -euo pipefail
+        for unit in {{ legacy_compute_units | join(' ') }}; do
+          if systemctl cat "$unit" >/dev/null 2>&1; then
+            test "$(systemctl is-active "$unit" || true)" != active
+          fi
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false

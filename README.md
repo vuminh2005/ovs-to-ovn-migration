@@ -157,3 +157,7 @@ ansible-playbook \
 local-datapath/chassis dependent. The cleanup safety rule is instead: never delete
 `ovnmeta-*`; remove only `qrouter-*` and `qdhcp-*`, then validate the OVN metadata agent
 containers separately.
+
+## Resume compatibility fix (v2.4)
+
+`resume-after-cleanup.yml` accepts either `metrics/phase06.end` or `metrics/phase07.start` as checkpoint evidence. This supports interrupted older runs that already entered Phase 7 but do not contain the newer Phase 6 marker. Before resuming it verifies live `ovn-controller` containers and confirms legacy Neutron agents remain stopped.
