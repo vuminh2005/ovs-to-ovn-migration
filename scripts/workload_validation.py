@@ -387,8 +387,11 @@ class Validation:
                 ports = list(self.cloud.network.ports(network_id=vm['network'], device_owner='network:distributed'))
                 expected_ip = metadata_port_ip(ports, vm['subnet'])
                 health = latest_health(rows[str(i)], anchors[str(i)], self.cfg['interval'])
-                checks[str(i)]['dhcp_convergence'] = dhcp_convergence(health, network.mtu, expected_ip)
-                checks[str(i)]['dhcp_expected'] = {'mtu': network.mtu, 'metadata_ip': expected_ip}
+                target_mtu = self.cfg.get('target_mtu', 1442)
+                checks[str(i)]['dhcp_convergence'] = dhcp_convergence(health, target_mtu, expected_ip)
+                if network.mtu != target_mtu:
+                    checks[str(i)]['dhcp_convergence'] = 'FAIL'
+                checks[str(i)]['dhcp_expected'] = {'mtu': target_mtu, 'metadata_ip': expected_ip}
         return checks
 
     def wait(self, stage):
@@ -412,7 +415,9 @@ class Validation:
             if workload_pass(checks, network_type):
                 return rows
             if time.monotonic() >= deadline:
-                raise RuntimeError('Guest validation failed/unavailable: require NEW sequence-based packet and health records; use Ubuntu cloud image with cloud-init, Python3, iproute2, ping, DHCP leases and ttyS0; inspect console evidence')
+                phase = ('Initial OVS workload validation' if self.cfg.get('initial') else
+                         'DHCP/metadata convergence after OVN migration and workload validation')
+                raise RuntimeError(phase + ' timed out: require NEW sequence-based packet and health records; use Ubuntu cloud image with cloud-init, Python3, iproute2, ping, DHCP leases and ttyS0; inspect console evidence')
             time.sleep(5)
 
     def checkpoint_recovery(self, rows, anchors):
@@ -432,7 +437,16 @@ class Validation:
         name = 'dhcp-precutover-preparation.json' if target else 'dhcp-initial-preparation.json'
         deadline = time.monotonic()+self.cfg.get('dhcp_timeout', 180)
         try:
-            baseline = self.anchors('pre', deadline=deadline)
+            # Phase 06 invokes this AFTER updating network MTUs. Snapshot anew
+            # for each gate; phase-04 renewals cannot satisfy phase 06.
+            baseline_rows = self.collect('pre', deadline=deadline)
+            baseline = {key: freshness_anchor(baseline_rows[key]) for key in ('0','1')}
+            anchor_mono = {}
+            for key, anchor in baseline.items():
+                times = [r['mono'] for r in baseline_rows[key] if anchor and valid_marker(r)
+                         and r['boot'] == anchor['boot'] and r['seq'] <= anchor['seq']
+                         and type(r.get('mono')) in (int, float) and math.isfinite(r['mono'])]
+                anchor_mono[key] = max(times) if times else None
             initial = read_evidence(self.root, 'initial-freshness-anchors.json') or baseline
             while True:
                 rows = self.collect('pre', deadline=deadline)
@@ -441,22 +455,34 @@ class Validation:
                     health = latest_health(rows[key], baseline[key], self.cfg['interval'])
                     current = sequence_anchor(rows[key])
                     same_boot = bool(current and initial[key] and current['boot'] == initial[key]['boot'])
+                    ack_mono = health.get('dhcp_last_ack_monotonic') if health else None
+                    fresh_renewal = (type(ack_mono) in (int, float) and math.isfinite(ack_mono)
+                                     and anchor_mono[key] is not None and ack_mono > anchor_mono[key])
                     good = bool(health and health.get('dhcp') is True and
                                 health.get('dhcp_t1_seconds') == self.cfg.get('dhcp_t1',30) and
                                 health.get('dhcp_t2_seconds') == self.cfg.get('dhcp_t2',60) and
-                                health.get('dhcp_ack_count',0) >= 2 and same_boot and
+                                health.get('dhcp_ack_count',0) >= 2 and fresh_renewal and same_boot and
                                 guest_checks(rows[key], baseline[key], self.cfg['interval'])['connectivity']=='PASS')
                     if target:
                         network = self.cloud.network.get_network(self.state['pre'][key]['network'])
                         good = good and network.mtu == self.cfg.get('target_mtu',1442) and health.get('mtu') == network.mtu
-                    evidence[key] = {'status':'PASS' if good else 'UNAVAILABLE', 'health':health, 'same_boot':same_boot}
-                save(self.root/name, {'status':'PASS' if all(r['status']=='PASS' for r in evidence.values()) else 'IN_PROGRESS', 'guests':evidence})
+                    else:
+                        # Source OVS metadata and MTU remain valid here; OVN
+                        # metadata next-hop checks belong to post-migration.
+                        good = good and health.get('metadata') is True
+                    evidence[key] = {'status':'PASS' if good else 'UNAVAILABLE', 'health':health,
+                                     'same_boot':same_boot, 'fresh_renewal':fresh_renewal}
+                save(self.root/name, {'status':'PASS' if all(r['status']=='PASS' for r in evidence.values()) else 'IN_PROGRESS',
+                                     'anchors':baseline, 'anchor_monotonic':anchor_mono, 'guests':evidence})
                 if all(r['status']=='PASS' for r in evidence.values()): return
                 if time.monotonic() >= deadline:
-                    raise TimeoutError('DHCP preparation did not converge: require observed short-T1 renewal ACKs, usable lease, running probe, unchanged boot and target MTU before DB freeze')
+                    message = ('Guest MTU convergence before cutover timed out: require target MTU, usable lease, fresh renewal, running probe and unchanged boot' if target else
+                               'Short-T1 renewal preparation timed out: require fresh guest DHCPREQUEST/ACK renewal, usable lease, running probe, unchanged boot and source OVS metadata')
+                    raise TimeoutError(message)
                 time.sleep(2)
         except Exception as exc:
-            save(self.root/name, {'status':'FAIL', 'reason':str(exc), 'guests':locals().get('evidence',{})})
+            save(self.root/name, {'status':'FAIL', 'reason':str(exc), 'anchors':locals().get('baseline',{}),
+                                 'anchor_monotonic':locals().get('anchor_mono',{}), 'guests':locals().get('evidence',{})})
             raise
 
     def cleanup(self, stage):

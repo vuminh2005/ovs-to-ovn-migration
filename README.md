@@ -378,7 +378,11 @@ server disappears; T1 alone would keep renewing against that old server.
 
 The root guest service passively observes guest DHCP renewal REQUESTs and their
 matching ACKs with an Ethernet packet socket filtered to IPv4 DHCP. Initial preparation requires at least two guest renewal REQUEST/ACK exchanges
-carrying the configured T1/T2, a usable lease, fresh packet success and the same boot. This proves the
+carrying the configured T1/T2, including a renewal observed after the initial
+preparation anchor, a usable lease, fresh packet success, working OVS metadata
+and the same boot. Source VXLAN MTU (normally 1450) and the existing OVS metadata
+route are valid in phase 04; target MTU and OVN metadata next-hop are not checked
+at this stage. This proves the
 owned guests are renewing rather than merely having Neutron-assigned addresses.
 `dhcp-initial-preparation.json` retains the evidence. The official Ubuntu image
 must permit AF_PACKET and its DHCP client must request/honor these options.
@@ -387,6 +391,10 @@ Unsupported or missing ACK evidence fails before migration rather than guessing.
 `06-target-config.yml` retains the existing VXLAN MTU reduction and then polls
 owned guest evidence until both report the advertised target MTU, usable leases,
 short-T1/T2 renewals, continuing packet probes and unchanged boot IDs. This guard
+runs with a new sequence/guest-monotonic anchor captured after the network MTU
+update: the last matched renewal ACK must be newer than that anchor. Old phase-04
+renewal evidence cannot satisfy it. OVS metadata routing is still valid here.
+The guard
 runs before `07-migrate-db.yml` freezes Neutron or changes the database. It writes
 `dhcp-precutover-preparation.json`; failure includes a reason and stops the run.
 Defaults are `validation_dhcp_t1_seconds: 30`, `validation_dhcp_t2_seconds: 60`,
@@ -396,11 +404,14 @@ per-network VXLAN-minus-overhead MTU calculation. There are no long fixed sleeps
 
 After migration, DHCP availability means a DHCP lease, expected guest IP, usable
 interface and basic default routing. DHCP convergence additionally requires the
-guest interface MTU to equal the current Neutron network MTU and its selected
+guest interface MTU and Neutron network MTU to equal the configured target MTU, and its selected
 route to 169.254.169.254 to use the fixed IP of the actual `network:distributed`
 port on the correct network/subnet. Missing or ambiguous port evidence yields
 UNAVAILABLE. No address offset or .2/.3 assumption is used. These checks and the
 expected MTU/metadata IP are saved independently in per-VM workload evidence.
+Post-migration checks take another fresh sequence anchor after OVN takeover;
+pre-cutover health records cannot satisfy them. Metadata access must also pass
+for full workload validation.
 
 Full health failure still preserves validation resources and reports
 MIGRATED_VALIDATION_INCOMPLETE, even when tenant packet recovery and outage

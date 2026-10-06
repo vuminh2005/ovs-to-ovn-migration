@@ -106,7 +106,8 @@ def health(seq):
               addresses=json.loads(addr), routes=json.loads(routes), lease_present=bool(lease),
               mtu=interfaces[0].get('mtu') if interfaces else None,
               metadata_gateway=route[0].get('gateway') if route else None,
-              dhcp_ack_count=observed['ack_count'], dhcp_t1_seconds=observed['t1_seconds'], dhcp_t2_seconds=observed['t2_seconds']))
+              dhcp_ack_count=observed['ack_count'], dhcp_last_ack_monotonic=observed['last_ack_monotonic'],
+              dhcp_t1_seconds=observed['t1_seconds'], dhcp_t2_seconds=observed['t2_seconds']))
 
 if __name__ == '__main__':
     BOOT = pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
