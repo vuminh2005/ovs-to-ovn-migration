@@ -1,0 +1,43 @@
+- name: Snapshot source OpenStack resources in machine-readable form
+  ansible.builtin.shell: 'set -euo pipefail
+
+    source {{ openrc_path }}
+
+    openstack network list -f json > {{ migration_run_dir }}/networks.before.json
+
+    openstack subnet list -f json > {{ migration_run_dir }}/subnets.before.json
+
+    openstack router list -f json > {{ migration_run_dir }}/routers.before.json
+
+    openstack server list --all-projects -f json > {{ migration_run_dir }}/servers.before.json
+
+    openstack port list -f json > {{ migration_run_dir }}/ports.before.json
+
+    openstack port list --device-owner compute:nova -f json > {{ migration_run_dir
+    }}/compute-ports.before.json
+
+    openstack port list --device-owner compute:nova -f value -c ID | sort > {{ migration_run_dir
+    }}/compute-port-ids.txt
+
+    openstack network agent list -f json > {{ migration_run_dir }}/agents.before.json
+
+    '
+  args:
+    executable: /bin/bash
+  changed_when: false
+- name: Save compact source resource counts
+  ansible.builtin.shell: "set -euo pipefail\npython3 - <<'PY'\nimport json, pathlib\n\
+    root = pathlib.Path(\"{{ migration_run_dir }}\")\nkeys = {\n  \"networks\": \"\
+    networks.before.json\",\n  \"subnets\": \"subnets.before.json\",\n  \"routers\"\
+    : \"routers.before.json\",\n  \"servers\": \"servers.before.json\",\n  \"ports\"\
+    : \"ports.before.json\",\n  \"compute_ports\": \"compute-ports.before.json\",\n\
+    }\nout = {k: len(json.loads((root/f).read_text())) for k,f in keys.items()}\n\
+    (root/\"resource-counts.before.json\").write_text(json.dumps(out, indent=2, sort_keys=True))\n\
+    PY\n"
+  args:
+    executable: /bin/bash
+  changed_when: false
+- name: Publish source network count for remote validation guards
+  ansible.builtin.set_fact:
+    source_network_count_runtime: '{{ (lookup(''file'', migration_run_dir + ''/resource-counts.before.json'')
+      | from_json).networks | int }}'

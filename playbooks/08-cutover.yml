@@ -22,6 +22,15 @@
         executable: /bin/bash
       when: dataplane_probe_target | length > 0
 
+    - name: Checkpoint VM1 sequence immediately before stopping legacy agents
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} anchor-start {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
 - name: Phase 6 - Stop legacy Neutron agents on network nodes
   hosts: network
   gather_facts: false

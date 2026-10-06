@@ -55,7 +55,7 @@ binding_poll_interval_seconds: 5
 # required and no permanent tenant resource is left behind.
 validation_ephemeral_network: true
 
-# Optional REAL dataplane probe. For isolated tenant networks a deployment host
+# Legacy optional deployment-host canary (separate from tenant VM probe). For isolated tenant networks a deployment host
 # usually cannot reach VM fixed IPs, so packet loss cannot be measured safely
 # without a reachable canary. Set only when a target is reachable from the
 # machine running ansible-playbook, e.g.:
@@ -67,3 +67,29 @@ dataplane_probe_interval_seconds: 0.2
 # Prefer passing explicitly for safety:
 #   -e migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>
 migration_resume_run_dir: "{{ lookup('env', 'OVS_TO_OVN_RESUME_RUN_DIR') | default('', true) }}"
+
+# Workload POC: UUID or unambiguous name. Ubuntu cloud images must already
+# contain cloud-init, Python3, ping, iproute2, systemd and ttyS0 support.
+validation_workloads_enabled: true
+validation_image: "{{ lookup('env', 'MIGRATION_VALIDATION_IMAGE') | default('', true) }}"
+validation_flavor: "{{ lookup('env', 'MIGRATION_VALIDATION_FLAVOR') | default('', true) }}"
+validation_name_prefix: ovn-validation
+validation_pre_cidrs: ['10.231.0.0/24', '10.231.1.0/24']
+validation_post_cidrs: ['10.232.0.0/24', '10.232.1.0/24']
+validation_timeout_seconds: 300
+validation_probe_lifetime_seconds: 14400
+validation_console_poll_seconds: 2
+# ~65 minutes of VM1 packet/health records at the default 5 packets/s.
+# Nova may retain fewer lines: missing anchored sequences remain UNAVAILABLE.
+validation_console_tail_lines: 20000
+
+# Empty image/flavor overrides select automatically prepared reusable defaults.
+validation_managed_image_name: ovn-validation-ubuntu-24.04
+validation_managed_image_url: https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
+validation_managed_flavor_name: ovn-validation.small
+validation_image_cache_dir: /var/cache/ovs-to-ovn-validation
+validation_image_download_timeout_seconds: 120
+validation_image_active_timeout_seconds: 900
+# Shared prerequisites are intentionally not part of normal workload cleanup.
+# True is rejected before migration; remove shared resources explicitly instead.
+validation_cleanup_prerequisites: false

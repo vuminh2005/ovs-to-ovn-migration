@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""POC validation orchestration; state is checkpointed after each owned creation."""
+import argparse
+import base64
+import fcntl
+import json
+import math
+import os
+import pathlib
+import signal
+import sys
+import time
+
+PREFIX = 'OVN_MIGRATION_JSON '
+
+def save(path, value):
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(json.dumps(value, indent=2, sort_keys=True))
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+def records(text, run, vm):
+    out = []
+    for line in text.splitlines():
+        if PREFIX not in line:
+            continue
+        try:
+            item = json.JSONDecoder().raw_decode(line.split(PREFIX, 1)[1])[0]
+            if isinstance(item, dict) and item.get('run') == run and item.get('vm') == vm:
+                out.append(item)
+        except (ValueError, TypeError):
+            pass
+    return out
+
+def valid_marker(row):
+    return (isinstance(row, dict) and isinstance(row.get('boot'), str) and bool(row['boot'])
+            and type(row.get('seq')) is int and row['seq'] > 0)
+
+
+def valid_packet(row):
+    return (valid_marker(row) and row.get('kind') == 'packet' and
+            type(row.get('success')) is bool and type(row.get('ts')) in (int, float) and
+            math.isfinite(row['ts']) and type(row.get('mono', row['ts'])) in (int, float) and
+            math.isfinite(row.get('mono', row['ts'])))
+
+
+def sequence_anchor(rows):
+    """Most recently observed packet boot and highest completed sequence on it."""
+    packets = [r for r in rows if valid_packet(r)]
+    if not packets:
+        return None
+    # rows retain console observation order, independent of guest wall clocks.
+    boot = packets[-1]['boot']
+    return {'boot': boot, 'seq': max(r['seq'] for r in packets if r['boot'] == boot)}
+
+
+def freshness_anchor(rows):
+    anchor = sequence_anchor(rows)
+    if anchor:
+        # Also fence out a health result associated with an in-flight packet.
+        anchor['seq'] = max(r['seq'] for r in rows if valid_marker(r) and r['boot'] == anchor['boot'])
+    return anchor
+
+
+def guest_checks(rows, anchor, interval):
+    """Only sequence growth on the anchored boot can establish fresh evidence."""
+    result = {'connectivity': 'UNAVAILABLE', 'dhcp': 'UNAVAILABLE', 'metadata': 'UNAVAILABLE'}
+    if not anchor or sequence_anchor(rows) is None:
+        return result
+    if sequence_anchor(rows)['boot'] != anchor['boot']:
+        return result
+    packets = {r['seq']: r for r in rows if r.get('kind') == 'packet' and valid_marker(r)
+               and r['boot'] == anchor['boot'] and r['seq'] > anchor['seq']
+               and type(r.get('success')) is bool}
+    ordered = sorted(packets.values(), key=lambda r: r['seq'])
+    if not ordered:
+        return result
+    newest = ordered[-1]['seq']
+    tail = ordered[-5:]
+    if len(tail) >= 5:
+        result['connectivity'] = 'PASS' if (all(r['success'] for r in tail) and
+            [r['seq'] for r in tail] == list(range(newest-4, newest+1))) else 'FAIL'
+    health = [r for r in rows if r.get('kind') == 'health' and valid_marker(r)
+              and r['boot'] == anchor['boot'] and anchor['seq'] < r['seq'] <= newest
+              and newest-r['seq'] <= int(10/interval)+1]
+    if health:
+        latest = max(health, key=lambda r: r['seq'])
+        for key in ('dhcp', 'metadata'):
+            result[key] = 'PASS' if latest.get(key) is True else 'FAIL'
+    return result
+
+
+def probe_metrics(rows, start, end, interval):
+    """Measure (start.seq, end.seq] on one boot; wall clocks never select rows."""
+    result = dict(status='UNAVAILABLE', packets_attempted=None, packets_successful=None,
+                  packets_failed=None, packet_loss_percent=None, failure_burst_count=None,
+                  first_failure_timestamp=None, recovery_timestamp=None,
+                  maximum_consecutive_failed_probes=None, longest_outage_start_timestamp=None,
+                  longest_outage_recovery_timestamp=None, actual_dataplane_outage_seconds=None,
+                  coverage_complete=False, start_anchor=start, end_anchor=end,
+                  measurement='longest recovered consecutive-loss burst in (start sequence, end sequence]; VM1 ICMP')
+    if not start or not end or start['boot'] != end['boot'] or end['seq'] <= start['seq']:
+        return result
+    indexed = {}
+    conflict = False
+    reboot = False
+    for r in rows:
+        if not valid_packet(r):
+            continue
+        if r['boot'] != start['boot']:
+            # A newly observed boot anywhere in the retained stream invalidates
+            # this run's continuous probe, even if its sequence counter resets.
+            reboot = True
+            continue
+        if start['seq'] < r['seq'] <= end['seq']:
+            if r['seq'] in indexed and indexed[r['seq']] != r:
+                conflict = True
+            indexed[r['seq']] = r
+    ordered = [indexed[k] for k in sorted(indexed)]
+    if not ordered:
+        return result
+    complete = (not conflict and not reboot and
+                len(ordered) == end['seq']-start['seq'] and
+                ordered[0]['seq'] == start['seq']+1 and ordered[-1]['seq'] == end['seq'] and
+                all(type(r.get('success')) is bool for r in ordered) and
+                all(b['seq'] == a['seq']+1 for a,b in zip(ordered, ordered[1:])))
+    # Monotonic guest launch times survive wall-clock adjustments. Older guest
+    # records may use epochs only if internally monotonic, never host epochs.
+    def clock(r):
+        return r.get('mono', r['ts'])
+    timing_valid = all(0 < clock(b)-clock(a) < 3*interval and
+                       0 < b['ts']-a['ts'] < 3*interval for a,b in zip(ordered, ordered[1:]))
+    failed = sum(r.get('success') is False for r in ordered)
+    bursts = []
+    burst = None
+    for row in ordered:
+        if row.get('success') is False:
+            if burst is None:
+                burst = {'start_timestamp': row['ts'], 'start_monotonic': clock(row),
+                         'start_sequence': row['seq'], 'failed_probes': 0,
+                         'recovery_timestamp': None, 'recovery_sequence': None, 'duration_seconds': None}
+            burst['failed_probes'] += 1
+        elif row.get('success') is True and burst is not None:
+            burst.update(recovery_timestamp=row['ts'], recovery_sequence=row['seq'],
+                         duration_seconds=row['ts']-burst['start_timestamp'])
+            bursts.append(burst)
+            burst = None
+    if burst is not None:
+        bursts.append(burst)
+    recovered = [b for b in bursts if b['recovery_timestamp'] is not None]
+    longest = max(recovered, key=lambda b:b['duration_seconds']) if recovered else None
+    valid = complete and timing_valid and burst is None
+    result.update(status='PASS' if valid else 'UNAVAILABLE', packets_attempted=len(ordered),
+                  packets_successful=sum(r.get('success') is True for r in ordered), packets_failed=failed,
+                  packet_loss_percent=100*failed/len(ordered), failure_burst_count=len(bursts),
+                  first_failure_timestamp=bursts[0]['start_timestamp'] if bursts else None,
+                  recovery_timestamp=bursts[0]['recovery_timestamp'] if bursts else None,
+                  maximum_consecutive_failed_probes=max((b['failed_probes'] for b in bursts), default=0),
+                  longest_outage_start_timestamp=longest['start_timestamp'] if longest and valid else None,
+                  longest_outage_recovery_timestamp=longest['recovery_timestamp'] if longest and valid else None,
+                  actual_dataplane_outage_seconds=longest['duration_seconds'] if longest and valid else (0.0 if valid else None),
+                  coverage_complete=complete, timing_valid=timing_valid, failure_bursts=bursts)
+    return result
+
+
+def read_evidence(root, name):
+    path = root/name
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def workload_pass(rows, network_type):
+    keys = ('identity', 'active', 'bound', 'dhcp', 'connectivity', 'metadata')
+    return (set(rows) == {'0','1'} and all(row.get('network_type') == network_type and
+            all(row.get(k) == 'PASS' for k in keys) for row in rows.values()))
+
+
+def validation_ready(root):
+    """Single fail-closed cleanup gate shared by normal execution and retries."""
+    orchestration = read_evidence(root, 'validation-orchestration.json')
+    consistency = read_evidence(root, 'resource-consistency.json')
+    return (workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
+            workload_pass(read_evidence(root, 'pre-workload-checks.json'), 'geneve') and
+            workload_pass(read_evidence(root, 'post-workload-checks.json'), 'geneve') and
+            read_evidence(root, 'post-ovn-bindings.json').get('status') == 'PASS' and
+            read_evidence(root, 'existing-network-semantics.json').get('status') == 'PASS' and
+            read_evidence(root, 'tenant-dataplane-probe.json').get('status') == 'PASS' and
+            orchestration.get('semantics_rc') == 0 and orchestration.get('workload_rc') == 0 and
+            not read_evidence(root, 'workload-errors.json') and bool(consistency) and
+            all(row.get('unchanged') is True for row in consistency.values()))
+
+class Validation:
+    def __init__(self, root):
+        import openstack
+        self.cloud = openstack.connect()
+        self.root = root
+        self.cfg = json.loads((root/'validation-config.json').read_text())
+        self.path = root/'validation-resources.json'
+        self.state = json.loads(self.path.read_text()) if self.path.exists() else {}
+    def commit(self):
+        save(self.path, self.state)
+    def create(self, stage):
+        c, cfg = self.cloud, self.cfg
+        s = self.state.setdefault(stage, {})
+        prefix = cfg['prefix'] + '-' + cfg['run'] + '-' + stage
+        image = c.image.find_image(cfg['image'], ignore_missing=False)
+        flavor = c.compute.find_flavor(cfg['flavor'], ignore_missing=False)
+        # Before any writes, verify image and flavor resolution and API availability.
+        if not s.get('security_group'):
+            sg = c.network.create_security_group(name=prefix)
+            s['security_group'] = sg.id
+            self.commit()
+        sg = s['security_group']
+        rules = list(c.network.security_group_rules(security_group_id=sg))
+        if not any(r.direction == 'ingress' and r.protocol == 'icmp' for r in rules):
+            c.network.create_security_group_rule(security_group_id=sg, direction='ingress',
+                                                ether_type='IPv4', protocol='icmp')
+        if not s.get('router'):
+            s['router'] = c.network.create_router(name=prefix).id
+            self.commit()
+        for i in range(2):
+            vm = s.setdefault(str(i), {})
+            name = prefix + '-' + str(i+1)
+            if not vm.get('network'):
+                vm['network'] = c.network.create_network(name=name).id
+                self.commit()
+            if not vm.get('subnet'):
+                vm['subnet'] = c.network.create_subnet(name=name, network_id=vm['network'],
+                    ip_version=4, cidr=cfg['cidrs'][stage][i], enable_dhcp=True).id
+                self.commit()
+            if not vm.get('interface'):
+                existing = list(c.network.ports(device_id=s['router'], network_id=vm['network']))
+                if not existing:
+                    c.network.add_interface_to_router(s['router'], subnet_id=vm['subnet'])
+                vm['interface'] = True
+                self.commit()
+            if not vm.get('port'):
+                port = c.network.create_port(name=name, network_id=vm['network'],
+                                             security_group_ids=[sg])
+                vm.update(port=port.id, fixed_ips=port.fixed_ips, ip=port.fixed_ips[0]['ip_address'])
+                self.commit()
+        for i in range(2):
+            vm = s[str(i)]
+            if vm.get('server'):
+                continue
+            guest = (pathlib.Path(__file__).parent/'guest_probe.py').read_text()
+            config = dict(run=cfg['run'], vm=stage+str(i), peer=s[str(1-i)]['ip'],
+                          ip=vm['ip'], interval=cfg['interval'], lifetime=cfg['lifetime'])
+            # Guest obtains its own immutable instance UUID from cloud-init's datasource.
+            launcher = "import json,pathlib; p=pathlib.Path('/etc/migration-probe.json'); c=json.loads(p.read_text()); c['server_id']=pathlib.Path('/var/lib/cloud/data/instance-id').read_text().strip(); p.write_text(json.dumps(c))"
+            user_data = '#cloud-config\n' + __import__('yaml').safe_dump(dict(
+                write_files=[dict(path='/usr/local/bin/migration-probe.py', content=guest, permissions='0700'),
+                             dict(path='/etc/migration-probe.json', content=json.dumps(config), permissions='0600'),
+                             dict(path='/etc/systemd/system/migration-probe.service', content='[Unit]\nAfter=network-online.target\n[Service]\nExecStart=/usr/bin/python3 /usr/local/bin/migration-probe.py\n[Install]\nWantedBy=multi-user.target\n')],
+                runcmd=[['python3', '-c', launcher], ['systemctl', 'enable', '--now', 'migration-probe']]))
+            # Stable name + explicit port lets retry recover a server if API reply was lost.
+            matches = list(c.compute.servers(name=prefix+'-'+str(i+1)))
+            matches = [v for v in matches if v.name == prefix+'-'+str(i+1)]
+            if len(matches) > 1:
+                raise RuntimeError('Ambiguous owned server name; inspect checkpoint')
+            server = matches[0] if matches else c.compute.create_server(name=prefix+'-'+str(i+1),
+                image_id=image.id, flavor_id=flavor.id, networks=[{'port': vm['port']}],
+                user_data=base64.b64encode(user_data.encode()).decode())
+            vm['server'] = server.id
+            self.commit()
+    def collect(self, stage):
+        s = self.state[stage]
+        all_rows = {}
+        for i in range(2):
+            vm = stage+str(i)
+            path = self.root/(vm+'-console-records.json')
+            text = self.cloud.compute.get_server_console_output(s[str(i)]['server'], length=int(self.cfg.get('console_tail_lines', 20000)))['output']
+            with (self.root/(vm+'-records.lock')).open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                old = json.loads(path.read_text()) if path.exists() else []
+                (self.root/(vm+'-console-latest.log')).write_text(text)
+                merged = {json.dumps(r, sort_keys=True): r for r in old + records(text, self.cfg['run'], vm)}
+                rows = list(merged.values())
+                save(path, rows)
+            all_rows[str(i)] = rows
+        return all_rows
+    def anchors(self, stage):
+        rows = self.collect(stage)
+        return {key: freshness_anchor(value) for key,value in rows.items()}
+
+    def checkpoint_start(self):
+        path = self.root/'validation-window.json'
+        window = read_evidence(self.root, path.name)
+        if window.get('start_anchor'):
+            return window['start_anchor']
+        anchor = sequence_anchor(self.collect('pre')['0'])
+        if not anchor:
+            raise RuntimeError('No valid VM1 sequence available before dataplane cutover')
+        save(path, {'start_anchor': anchor, 'window': '(start sequence, recovery end sequence]'})
+        return anchor
+
+    def check(self, stage, anchors, rows):
+        checks = {}
+        for i in range(2):
+            vm = self.state[stage][str(i)]
+            server = self.cloud.compute.get_server(vm['server'])
+            port = self.cloud.network.get_port(vm['port'])
+            checks[str(i)] = dict(identity='PASS' if port.device_id == vm['server'] and port.fixed_ips == vm['fixed_ips'] else 'FAIL',
+                active='PASS' if server.status == 'ACTIVE' else 'FAIL',
+                bound='PASS' if port.status == 'ACTIVE' and port.binding_host_id and port.binding_vif_type not in ('unbound','binding_failed') else 'FAIL')
+            checks[str(i)].update(guest_checks(rows[str(i)], anchors[str(i)], self.cfg['interval']))
+            checks[str(i)]['network_type'] = self.cloud.network.get_network(vm['network']).provider_network_type
+        return checks
+
+    def wait(self, stage):
+        # Snapshot the console at the beginning of EACH validation invocation.
+        # When a guest has not emitted yet, latch its first batch and require
+        # later sequence growth; that batch itself can never satisfy the gate.
+        anchors = self.anchors(stage)
+        save(self.root/(stage+'-freshness-anchors.json'), anchors)
+        deadline = time.monotonic()+self.cfg['timeout']
+        while True:
+            rows = self.collect(stage)
+            for key in anchors:
+                if anchors[key] is None:
+                    anchors[key] = freshness_anchor(rows[key])
+                    save(self.root/(stage+'-freshness-anchors.json'), anchors)
+            checks = self.check(stage, anchors, rows)
+            save(self.root/(stage+'-workload-checks.json'), checks)
+            network_type = 'vxlan' if stage == 'pre' and self.cfg.get('initial') else 'geneve'
+            if workload_pass(checks, network_type):
+                return rows
+            if time.monotonic() >= deadline:
+                raise RuntimeError('Guest validation failed/unavailable: require NEW sequence-based packet and health records; use Ubuntu cloud image with cloud-init, Python3, iproute2, ping, DHCP leases and ttyS0; inspect console evidence')
+            time.sleep(5)
+
+    def cleanup(self, stage):
+        s = self.state[stage]
+        evidence_path = self.root/(stage+'-cleanup.json')
+        evidence = read_evidence(self.root, evidence_path.name) or {'status': 'IN_PROGRESS', 'deleted': []}
+        evidence.setdefault('deleted', [])
+        # Journal a completed operation before moving to the next owned UUID.
+        # Only exact IDs in this stage of validation-resources.json are used.
+        def remove(kind, resource_id, operation):
+            token = {'kind': kind, 'id': resource_id}
+            if token not in evidence['deleted']:
+                operation()
+                evidence['deleted'].append(token)
+                save(evidence_path, evidence)
+        try:
+            if s.get('cleaned'):
+                return
+            s['cleanup_started'] = True
+            self.commit()
+            for i in range(2):
+                vm = s[str(i)]
+                def delete_server():
+                    self.cloud.compute.delete_server(vm['server'], ignore_missing=True)
+                    deadline = time.monotonic()+self.cfg['timeout']
+                    while self.cloud.compute.find_server(vm['server']) is not None:
+                        if time.monotonic()>deadline:
+                            raise RuntimeError('Server deletion timeout')
+                        time.sleep(2)
+                remove('server', vm['server'], delete_server)
+                remove('port', vm['port'], lambda: self.cloud.network.delete_port(vm['port'], ignore_missing=True))
+                if vm.get('interface'):
+                    # Query only the checkpointed router/network/subnet. This
+                    # handles a crash after detach but before journal commit.
+                    if any(any(f['subnet_id'] == vm['subnet'] for f in port.fixed_ips)
+                           for port in self.cloud.network.ports(device_id=s['router'], network_id=vm['network'])):
+                        self.cloud.network.remove_interface_from_router(s['router'], subnet_id=vm['subnet'])
+                    vm['interface'] = False
+                    self.commit()
+                remove('subnet', vm['subnet'], lambda: self.cloud.network.delete_subnet(vm['subnet'], ignore_missing=True))
+                remove('network', vm['network'], lambda: self.cloud.network.delete_network(vm['network'], ignore_missing=True))
+            remove('router', s['router'], lambda: self.cloud.network.delete_router(s['router'], ignore_missing=True))
+            remove('security_group', s['security_group'], lambda: self.cloud.network.delete_security_group(s['security_group'], ignore_missing=True))
+            evidence.update(status='PASS')
+            evidence.pop('error', None)
+            save(evidence_path, evidence)
+            s['cleaned'] = True
+            self.commit()
+        except Exception as exc:
+            evidence.update(status='FAIL', error=str(exc))
+            save(evidence_path, evidence)
+            raise
+
+    def finalize(self):
+        if not validation_ready(self.root):
+            return False
+        self.cleanup('post')
+        self.cleanup('pre')
+        return True
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready'])
+    p.add_argument('root', type=pathlib.Path)
+    args = p.parse_args()
+    if args.action == 'cleanup-ready':
+        return 0 if validation_ready(args.root) else 1
+    v = Validation(args.root)
+    if args.action == 'collect':
+        running = True
+        def stop(*_):
+            nonlocal running
+            running = False
+        signal.signal(signal.SIGTERM, stop)
+        while running:
+            try:
+                v.collect('pre')
+            except Exception as exc:
+                with (v.root/'console-collector-errors.log').open('a') as f:
+                    f.write(str(exc)+'\n')
+            time.sleep(v.cfg['console_interval'])
+    elif args.action == 'anchor-start':
+        v.checkpoint_start()
+    elif args.action == 'finalize':
+        v.finalize()
+    elif args.action == 'pre':
+        v.cfg['initial'] = True
+        v.create('pre')
+        v.wait('pre')
+        save(v.root/'initial-freshness-anchors.json', read_evidence(v.root, 'pre-freshness-anchors.json'))
+    else:
+        failures = []
+        recovered = None
+        try:
+            recovered = v.wait('pre')
+        except Exception as exc:
+            failures.append(str(exc))
+        window = read_evidence(v.root, 'validation-window.json')
+        # Keep the first successful recovery end immutable across late retries.
+        # Failed validation does not capture a fabricated recovery end.
+        if recovered is not None and window.get('start_anchor') and not window.get('end_anchor'):
+            window['end_anchor'] = sequence_anchor(recovered['0'])
+            save(v.root/'validation-window.json', window)
+        rows = v.collect('pre')['0']
+        save(v.root/'tenant-dataplane-probe.json', probe_metrics(rows, window.get('start_anchor'),
+             window.get('end_anchor'), v.cfg['interval']))
+        try:
+            if not v.state.get('post', {}).get('cleaned'):
+                v.create('post')
+                v.wait('post')
+        except Exception as exc:
+            failures.append(str(exc))
+        save(v.root/'workload-errors.json', failures)
+        return int(bool(failures))
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

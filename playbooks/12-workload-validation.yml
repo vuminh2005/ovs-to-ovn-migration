@@ -1,0 +1,114 @@
+---
+- name: Collect OVN logical-switch and chassis encapsulation evidence
+  hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Read OVN logical switch names
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker exec ovn_northd ovn-nbctl --db={{ hostvars['localhost']['ovn_nb_connection_runtime'] | quote }} --format=json --columns=name list Logical_Switch
+      args:
+        executable: /bin/bash
+      register: validation_switches
+      changed_when: false
+    - name: Read registered chassis encapsulation types
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker exec ovn_northd ovn-sbctl --db={{ hostvars['localhost']['ovn_sb_connection_runtime'] | quote }} --format=json --columns=type list Encap
+      args:
+        executable: /bin/bash
+      register: validation_encaps
+      changed_when: false
+    - name: Persist OVN evidence on deployment host
+      ansible.builtin.copy:
+        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/{{ item.name }}"
+        content: "{{ item.content }}"
+        mode: '0600'
+      loop:
+        - {name: ovn-logical-switches.json, content: "{{ validation_switches.stdout }}"}
+        - {name: ovn-encaps.json, content: "{{ validation_encaps.stdout }}"}
+      delegate_to: localhost
+
+- name: Validate surviving and fresh workloads without automatic rollback
+  hosts: localhost
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Audit existing VXLAN to Geneve segment conversion
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/network_semantics.py') | quote }} after {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      register: semantics_result
+      failed_when: false
+
+    - name: Stop only this run's Nova console collector before final collection
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - {{ migration_run_dir | quote }} <<'PYCODE'
+        import pathlib, sys, os, signal
+        root = pathlib.Path(sys.argv[1])
+        p = root/'collector.pid'
+        if p.exists():
+            pid = int(p.read_text())
+            cmd = pathlib.Path('/proc')/str(pid)/'cmdline'
+            if cmd.exists():
+                parts = cmd.read_bytes().split(b'\0')
+                if b'collect' in parts and str(root).encode() in parts and any(b'workload_validation.py' in x for x in parts):
+                    os.kill(pid, signal.SIGTERM)
+        PYCODE
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
+    - name: Require fresh recovery evidence from VM1 VM2 and provision VM3 VM4
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} post {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      register: workload_result
+      failed_when: false
+      when: validation_workloads_enabled | bool
+
+    - name: Record orchestration failures for final report
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir }}/validation-orchestration.json"
+        mode: '0600'
+        content: "{{ {'semantics_rc': semantics_result.rc, 'semantics_error': semantics_result.stderr, 'workload_rc': workload_result.rc | default(none), 'workload_error': workload_result.stderr | default('disabled')} | to_nice_json }}"
+
+- name: Verify fresh VM OVN Southbound bindings before cleanup
+  hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Load fresh workload UUID checkpoint from deployment host
+      ansible.builtin.set_fact:
+        fresh_state: "{{ lookup('file', hostvars['localhost']['migration_run_dir'] + '/validation-resources.json', errors='ignore') | default('{}', true) | from_json }}"
+    - name: Check each fresh port has an OVN chassis and up true
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker exec ovn_northd ovn-sbctl --db={{ hostvars['localhost']['ovn_sb_connection_runtime'] | quote }} --format=json --columns=chassis,up find Port_Binding logical_port={{ item | quote }} | python3 -c 'import json,sys; rows=json.load(sys.stdin)["data"]; assert len(rows)==1 and rows[0][0][0]=="uuid" and rows[0][1] is True'
+      args:
+        executable: /bin/bash
+      loop: "{{ [fresh_state.post['0'].port, fresh_state.post['1'].port] if fresh_state.get('post') and not fresh_state.post.get('cleaned') else [] }}"
+      register: fresh_bindings
+      failed_when: false
+      changed_when: false
+    - name: Persist fresh binding evidence
+      ansible.builtin.copy:
+        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/post-ovn-bindings.json"
+        mode: '0600'
+        content: "{{ {'status': ('PASS' if (fresh_bindings.results | default([]) | length == 2 and fresh_bindings.results | map(attribute='rc') | select('equalto', 0) | list | length == 2) else 'UNAVAILABLE'), 'results': fresh_bindings.results | default([])} | to_nice_json }}"
+      delegate_to: localhost
+

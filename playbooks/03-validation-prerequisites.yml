@@ -1,0 +1,35 @@
+---
+- name: Prepare reusable Ubuntu validation image and flavor before migration
+  hosts: localhost
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Retain reusable prerequisites during normal workload cleanup
+      ansible.builtin.assert:
+        that:
+          - not (validation_cleanup_prerequisites | bool)
+        fail_msg: Automatic prerequisite deletion is not supported; retain the shared image/flavor and remove explicitly if needed.
+      when: validation_workloads_enabled | bool
+
+    - name: Save prerequisite preparation settings
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir }}/validation-prerequisites-config.json"
+        mode: '0600'
+        content: "{{ {'image': validation_image, 'flavor': validation_flavor, 'managed_image_name': validation_managed_image_name, 'managed_flavor_name': validation_managed_flavor_name, 'image_url': validation_managed_image_url, 'cache_dir': validation_image_cache_dir, 'download_timeout': validation_image_download_timeout_seconds | int, 'image_active_timeout': validation_image_active_timeout_seconds | int} | to_nice_json }}"
+      when: validation_workloads_enabled | bool
+
+    - name: Resolve or download checksum-verify upload and activate validation prerequisites
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation_prerequisites.py') | quote }} {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
+    - name: Publish resolved prerequisite UUIDs for workload configuration
+      ansible.builtin.set_fact:
+        validation_prerequisites_runtime: "{{ lookup('file', migration_run_dir + '/validation-prerequisites.json') | from_json }}"
+      when: validation_workloads_enabled | bool

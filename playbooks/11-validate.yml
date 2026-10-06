@@ -40,6 +40,17 @@
         }
         result = {}
         ok = True
+        # A late retry may retain the retained fresh validation pair.
+        # Exclude only its checkpointed UUIDs from additions; all original
+        # identities and all unrelated additions remain guarded.
+        state_path = root/'validation-resources.json'
+        state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        post = state.get('post', {})
+        owned = {k:set() for k in pairs}
+        if post.get('router'): owned['routers'].add(post['router'])
+        for vm in (post.get('0', {}), post.get('1', {})):
+          for kind, field in [('networks','network'),('subnets','subnet'),('servers','server'),('compute_ports','port')]:
+            if vm.get(field): owned[kind].add(vm[field])
         for key,(bf,af) in pairs.items():
           b = json.loads((root/bf).read_text())
           a = json.loads((root/af).read_text())
@@ -50,9 +61,10 @@
               if v: out.add(v)
             return out
           bi, ai = ids(b), ids(a)
+          excluded = sorted((ai-bi) & owned[key])
           missing = sorted(bi-ai)
-          added = sorted(ai-bi)
-          result[key] = {'before':len(bi),'after':len(ai),'missing':missing,'added':added,'preserved':not missing,'unchanged':not missing and not added}
+          added = sorted((ai-bi)-owned[key])
+          result[key] = {'before':len(bi),'after':len(ai),'missing':missing,'added':added,'preserved':not missing,'unchanged':not missing and not added,'owned_post_validation_excluded':excluded}
           if missing or added: ok=False
         (root/'resource-consistency.json').write_text(json.dumps(result, indent=2, sort_keys=True))
         if not ok:

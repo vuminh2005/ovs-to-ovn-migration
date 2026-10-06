@@ -1,0 +1,65 @@
+---
+- name: Prepare routed guest validation before migration downtime
+  hosts: localhost
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Verify resolved prerequisites and validation topology settings
+      ansible.builtin.assert:
+        that:
+          - validation_prerequisites_runtime.image.id | length > 0
+          - validation_prerequisites_runtime.flavor.id | length > 0
+          - validation_pre_cidrs | length == 2
+          - validation_post_cidrs | length == 2
+          - dataplane_probe_interval_seconds | float >= 0.1
+          - validation_console_tail_lines | int > 0
+        fail_msg: Validation prerequisites must be resolved by 03-validation-prerequisites.yml; check topology settings.
+      when: validation_workloads_enabled | bool
+
+    - name: Save non-secret guest validation configuration
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir }}/validation-config.json"
+        mode: '0600'
+        content: "{{ {'run': migration_run_id, 'image': validation_prerequisites_runtime.image.id, 'flavor': validation_prerequisites_runtime.flavor.id, 'prefix': validation_name_prefix, 'cidrs': {'pre': validation_pre_cidrs, 'post': validation_post_cidrs}, 'interval': dataplane_probe_interval_seconds | float, 'lifetime': validation_probe_lifetime_seconds | int, 'timeout': validation_timeout_seconds | int, 'console_interval': validation_console_poll_seconds | float, 'console_tail_lines': validation_console_tail_lines | int} | to_nice_json }}"
+      when: validation_workloads_enabled | bool
+
+    - name: Create VM1 and VM2 and require initial routed packets DHCP and metadata
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} pre {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
+    - name: Retain initial workload checks separately
+      ansible.builtin.copy:
+        src: "{{ migration_run_dir }}/pre-workload-checks.json"
+        dest: "{{ migration_run_dir }}/initial-workload-checks.json"
+        remote_src: true
+        mode: '0600'
+      when: validation_workloads_enabled | bool
+
+    - name: Start periodic Nova console collection before downtime
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        nohup python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} collect {{ migration_run_dir | quote }} > {{ (migration_run_dir + '/collector.log') | quote }} 2>&1 < /dev/null &
+        echo "$!" > {{ (migration_run_dir + '/collector.pid') | quote }}
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
+    - name: Refresh preservation baseline including pre-migration validation VMs
+      ansible.builtin.include_tasks: validation-snapshot-tasks.yml
+      when: validation_workloads_enabled | bool
+
+    - name: Capture existing network segment semantics before authoritative migration
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/network_semantics.py') | quote }} before {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash

@@ -1,0 +1,63 @@
+---
+- name: Phase 10 - Build migration metrics report
+  hosts: localhost
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Mark report phase start
+      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase10.start
+      changed_when: false
+
+    - name: Mark total end
+      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/total.end
+      changed_when: false
+
+    - name: Build JSON and human-readable migration report
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 {{ (playbook_dir + '/../scripts/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }} {{ dataplane_probe_target | quote }} {{ dataplane_probe_interval_seconds | quote }}
+      args:
+        executable: /bin/bash
+      register: migration_report_output
+      changed_when: false
+
+    - name: Finalize owned pairs only after all guest binding semantics and probe evidence passes
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} finalize {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      register: validation_finalize
+      failed_when: false
+      when: validation_workloads_enabled | bool
+
+    - name: Rebuild final report including both pairs cleanup evidence
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 {{ (playbook_dir + '/../scripts/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }} {{ dataplane_probe_target | quote }} {{ dataplane_probe_interval_seconds | quote }}
+      args:
+        executable: /bin/bash
+      register: migration_report_output
+      changed_when: false
+
+    - name: Show final report locations
+      ansible.builtin.debug:
+        msg:
+          - "{{ migration_report_output.stdout }}"
+          - "JSON report: {{ migration_run_dir }}/migration-report.json"
+          - "Text report: {{ migration_run_dir }}/migration-report.txt"
+
+    - name: Return an honest failure after persisting validation report without rollback
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - {{ migration_run_dir | quote }} <<'PYCODE'
+        import json, pathlib, sys
+        report=json.loads((pathlib.Path(sys.argv[1])/'migration-report.json').read_text())
+        sys.exit(report['result'] != 'SUCCESS')
+        PYCODE
+      args:
+        executable: /bin/bash
+      changed_when: false

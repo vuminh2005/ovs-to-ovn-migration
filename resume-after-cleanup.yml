@@ -1,0 +1,9 @@
+---
+- import_playbook: playbooks/resume-bootstrap.yml
+- import_playbook: playbooks/09-cleanup.yml
+- import_playbook: playbooks/10-restore-neutron.yml
+- import_playbook: playbooks/11-validate.yml
+  when: not (hostvars['localhost']['validation_cleanup_pending'] | default(false) | bool)
+- import_playbook: playbooks/12-workload-validation.yml
+  when: not (hostvars['localhost']['validation_cleanup_pending'] | default(false) | bool)
+- import_playbook: playbooks/13-report.yml
