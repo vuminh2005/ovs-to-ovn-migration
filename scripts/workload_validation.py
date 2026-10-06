@@ -458,9 +458,17 @@ class Validation:
                     ack_mono = health.get('dhcp_last_ack_monotonic') if health else None
                     fresh_renewal = (type(ack_mono) in (int, float) and math.isfinite(ack_mono)
                                      and anchor_mono[key] is not None and ack_mono > anchor_mono[key])
+                    t1 = health.get('dhcp_t1_seconds') if health else None
+                    t2 = health.get('dhcp_t2_seconds') if health else None
+                    cadence = health.get('dhcp_last_renewal_interval_seconds') if health else None
+                    timers_sane = (type(t1) in (int, float) and math.isfinite(t1) and
+                                   type(t2) in (int, float) and math.isfinite(t2) and
+                                   0 < t1 <= self.cfg.get('dhcp_t1',30) and
+                                   t1 < t2 <= self.cfg.get('dhcp_t2',60))
+                    short_cadence = (type(cadence) in (int, float) and math.isfinite(cadence) and
+                                     0 < cadence <= self.cfg.get('dhcp_t1',30) + self.cfg.get('dhcp_renewal_tolerance',5))
                     good = bool(health and health.get('dhcp') is True and
-                                health.get('dhcp_t1_seconds') == self.cfg.get('dhcp_t1',30) and
-                                health.get('dhcp_t2_seconds') == self.cfg.get('dhcp_t2',60) and
+                                timers_sane and short_cadence and
                                 health.get('dhcp_ack_count',0) >= 2 and fresh_renewal and same_boot and
                                 guest_checks(rows[key], baseline[key], self.cfg['interval'])['connectivity']=='PASS')
                     if target:
@@ -471,7 +479,8 @@ class Validation:
                         # metadata next-hop checks belong to post-migration.
                         good = good and health.get('metadata') is True
                     evidence[key] = {'status':'PASS' if good else 'UNAVAILABLE', 'health':health,
-                                     'same_boot':same_boot, 'fresh_renewal':fresh_renewal}
+                                     'same_boot':same_boot, 'fresh_renewal':fresh_renewal,
+                                     'timers_sane':timers_sane, 'short_renewal_cadence':short_cadence}
                 save(self.root/name, {'status':'PASS' if all(r['status']=='PASS' for r in evidence.values()) else 'IN_PROGRESS',
                                      'anchors':baseline, 'anchor_monotonic':anchor_mono, 'guests':evidence})
                 if all(r['status']=='PASS' for r in evidence.values()): return

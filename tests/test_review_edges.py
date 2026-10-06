@@ -101,18 +101,39 @@ class ReviewEdges(unittest.TestCase):
     def test_real_frame_decoder_ignores_wrong_guest_and_nak(self):
         def frame(ip='10.0.0.2',message=5):
             body=bytearray(240); body[0]=1 if message==3 else 2; body[12:16]=socket.inet_aton(ip) if message==3 else bytes(4); body[16:20]=socket.inet_aton(ip); body[236:240]=b'\x63\x82\x53\x63'
-            body.extend(bytes([53,1,message,58,4])+struct.pack('!I',30)+bytes([59,4])+struct.pack('!I',60)+b'\xff')
+            body.extend(bytes([53,1,message,58,4])+struct.pack('!I',27)+bytes([59,4])+struct.pack('!I',57)+b'\xff')
             udp=struct.pack('!HHHH',68 if message==3 else 67,67 if message==3 else 68,8+len(body),0)+body
             ipheader=bytearray(20); ipheader[0]=0x45; ipheader[9]=17
             return bytes(12)+b'\x08\x00'+ipheader+udp
-        stream=Mock(); stream.recv.side_effect=[frame(ip='10.0.0.9'),frame(message=6),frame(),frame(message=3),frame(),frame(),frame(message=3),frame(),RuntimeError('stop fixture')]
+        stream=Mock(); stream.recv.side_effect=[frame(ip='10.0.0.9'),frame(message=6),frame(),frame(message=3),frame(),frame(),frame(message=3),frame(),frame(),RuntimeError('stop fixture')]
         context=Mock(); context.__enter__=Mock(return_value=stream); context.__exit__=Mock(return_value=False)
         observed={'ack_count':0,'t1_seconds':None,'t2_seconds':None,'last_ack_monotonic':None}
-        with patch.object(g,'CONFIG',{'ip':'10.0.0.2','dhcp_t1':30}),patch.object(g,'DHCP',observed),patch.object(g.socket,'socket',return_value=context),patch.object(g.time,'monotonic',side_effect=[1,31]),patch.object(g,'emit'):
+        with patch.object(g,'CONFIG',{'ip':'10.0.0.2','dhcp_t1':30}),patch.object(g,'DHCP',observed),patch.object(g.socket,'socket',return_value=context),patch.object(g.time,'monotonic',side_effect=[1,29]),patch.object(g,'emit'):
             g.observe_dhcp()
         self.assertEqual(observed['ack_count'],2)
-        self.assertEqual(observed['t1_seconds'],30)
-        self.assertEqual(observed['t2_seconds'],60)
+        self.assertEqual(observed['t1_seconds'],27)
+        self.assertEqual(observed['t2_seconds'],57)
+        self.assertEqual(observed['last_ack_monotonic'],29)
+        self.assertEqual(observed['last_renewal_interval_seconds'],28)
+
+    def test_duplicate_ack_cannot_create_renewal_interval(self):
+        def frame(message):
+            body=bytearray(240); body[0]=1 if message==3 else 2
+            body[12:16]=socket.inet_aton('10.0.0.2') if message==3 else bytes(4)
+            body[16:20]=socket.inet_aton('10.0.0.2'); body[236:240]=b'\x63\x82\x53\x63'
+            body.extend(bytes([53,1,message,58,4])+struct.pack('!I',28)+bytes([59,4])+struct.pack('!I',58)+b'\xff')
+            udp=struct.pack('!HHHH',68 if message==3 else 67,67 if message==3 else 68,8+len(body),0)+body
+            ipheader=bytearray(20); ipheader[0]=0x45; ipheader[9]=17
+            return bytes(12)+b'\x08\x00'+ipheader+udp
+        stream=Mock(); stream.recv.side_effect=[frame(3),frame(5),frame(5),frame(5),RuntimeError('stop fixture')]
+        context=Mock(); context.__enter__=Mock(return_value=stream); context.__exit__=Mock(return_value=False)
+        observed={'ack_count':0,'t1_seconds':None,'t2_seconds':None,'last_ack_monotonic':None,'last_renewal_interval_seconds':None}
+        with patch.object(g,'CONFIG',{'ip':'10.0.0.2','dhcp_t1':30}),patch.object(g,'DHCP',observed),patch.object(g.socket,'socket',return_value=context),patch.object(g.time,'monotonic',side_effect=[1,29,57]) as clock,patch.object(g,'emit'):
+            g.observe_dhcp()
+        self.assertEqual(clock.call_count,1)
+        self.assertEqual(observed['ack_count'],1)
+        self.assertEqual(observed['last_ack_monotonic'],1)
+        self.assertIsNone(observed['last_renewal_interval_seconds'])
 
 
 if __name__=='__main__': unittest.main()

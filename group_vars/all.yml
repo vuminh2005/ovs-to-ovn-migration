@@ -93,5 +93,7 @@ validation_cleanup_prerequisites: false
 validation_dhcp_t1_seconds: 30
 # Bound rebinding to the new server after OVS DHCP disappears.
 validation_dhcp_t2_seconds: 60
+# Allow small scheduling/network delays in the observed renewal cadence.
+validation_dhcp_renewal_tolerance_seconds: 5
 validation_dhcp_convergence_timeout: 180
 target_geneve_mtu: 1442

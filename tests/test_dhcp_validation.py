@@ -80,7 +80,7 @@ class DhcpTests(unittest.TestCase):
     def healthy(self, **changes):
         health=dict(dhcp=True,metadata=True,metadata_gateway='10.231.0.2',mtu=1450,
                     dhcp_t1_seconds=30,dhcp_t2_seconds=60,dhcp_ack_count=2,
-                    dhcp_last_ack_monotonic=1.8)
+                    dhcp_last_ack_monotonic=1.8,dhcp_last_renewal_interval_seconds=28)
         health.update(changes)
         return health
 
@@ -112,6 +112,43 @@ class DhcpTests(unittest.TestCase):
     def test_initial_requires_working_ovs_metadata(self):
         with tempfile.TemporaryDirectory() as d:
             obj=self.preparation(pathlib.Path(d),self.healthy(metadata=False))
+            with patch.object(v.time,'monotonic',side_effect=[0,2]):
+                with self.assertRaises(TimeoutError): obj.prepare_dhcp()
+
+    def test_effective_timers_and_observed_short_cadence_pass_both_gates(self):
+        for target in (False,True):
+            for t1,t2 in ((27,57),(28,58)):
+                with self.subTest(target=target,t1=t1,t2=t2),tempfile.TemporaryDirectory() as d:
+                    obj=self.preparation(pathlib.Path(d),self.healthy(
+                        mtu=1442 if target else 1450,dhcp_t1_seconds=t1,dhcp_t2_seconds=t2),target=target)
+                    obj.prepare_dhcp(target=target)
+                    name='dhcp-precutover-preparation.json' if target else 'dhcp-initial-preparation.json'
+                    self.assertEqual(v.read_evidence(obj.root,name)['status'],'PASS')
+
+    def test_missing_invalid_or_long_cadence_fails_both_gates(self):
+        for target in (False,True):
+            for cadence in (None,0,-1,36,100,float('nan'),float('inf'),True):
+                with self.subTest(target=target,cadence=cadence),tempfile.TemporaryDirectory() as d:
+                    obj=self.preparation(pathlib.Path(d),self.healthy(
+                        mtu=1442 if target else 1450,dhcp_last_renewal_interval_seconds=cadence),target=target)
+                    with patch.object(v.time,'monotonic',side_effect=[0,2]):
+                        with self.assertRaises(TimeoutError): obj.prepare_dhcp(target=target)
+
+    def test_effective_timer_sanity_rejects_invalid_values(self):
+        for t1,t2 in ((0,57),(31,60),(27,27),(27,61),(None,57),(27,float('nan'))):
+            with self.subTest(t1=t1,t2=t2),tempfile.TemporaryDirectory() as d:
+                obj=self.preparation(pathlib.Path(d),self.healthy(dhcp_t1_seconds=t1,dhcp_t2_seconds=t2))
+                with patch.object(v.time,'monotonic',side_effect=[0,2]):
+                    with self.assertRaises(TimeoutError): obj.prepare_dhcp()
+
+    def test_configurable_cadence_tolerance(self):
+        with tempfile.TemporaryDirectory() as d:
+            obj=self.preparation(pathlib.Path(d),self.healthy(dhcp_last_renewal_interval_seconds=32))
+            obj.cfg['dhcp_renewal_tolerance']=2
+            obj.prepare_dhcp()
+        with tempfile.TemporaryDirectory() as d:
+            obj=self.preparation(pathlib.Path(d),self.healthy(dhcp_last_renewal_interval_seconds=32.1))
+            obj.cfg['dhcp_renewal_tolerance']=2
             with patch.object(v.time,'monotonic',side_effect=[0,2]):
                 with self.assertRaises(TimeoutError): obj.prepare_dhcp()
 

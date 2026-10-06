@@ -12,7 +12,8 @@ import urllib.request
 
 BOOT = None
 CONFIG = {}
-DHCP = {'ack_count': 0, 't1_seconds': None, 't2_seconds': None, 'last_ack_monotonic': None}
+DHCP = {'ack_count': 0, 't1_seconds': None, 't2_seconds': None, 'last_ack_monotonic': None,
+        'last_renewal_interval_seconds': None}
 DHCP_LOCK = threading.Lock()
 
 def emit(record):
@@ -67,6 +68,8 @@ def observe_dhcp():
                         received = time.monotonic()
                         # A duplicated ACK must not masquerade as lease renewal.
                         if DHCP['last_ack_monotonic'] is None or received-DHCP['last_ack_monotonic'] >= max(1, CONFIG.get('dhcp_t1',30)/2):
+                            previous = DHCP['last_ack_monotonic']
+                            DHCP['last_renewal_interval_seconds'] = received-previous if previous is not None else None
                             DHCP['ack_count'] += 1
                             DHCP['last_ack_monotonic'] = received
                         DHCP['t1_seconds'] = int.from_bytes(options[58], 'big') if len(options.get(58,b'')) == 4 else None
@@ -107,6 +110,7 @@ def health(seq):
               mtu=interfaces[0].get('mtu') if interfaces else None,
               metadata_gateway=route[0].get('gateway') if route else None,
               dhcp_ack_count=observed['ack_count'], dhcp_last_ack_monotonic=observed['last_ack_monotonic'],
+              dhcp_last_renewal_interval_seconds=observed['last_renewal_interval_seconds'],
               dhcp_t1_seconds=observed['t1_seconds'], dhcp_t2_seconds=observed['t2_seconds']))
 
 if __name__ == '__main__':

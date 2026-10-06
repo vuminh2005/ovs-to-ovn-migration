@@ -378,12 +378,17 @@ server disappears; T1 alone would keep renewing against that old server.
 
 The root guest service passively observes guest DHCP renewal REQUESTs and their
 matching ACKs with an Ethernet packet socket filtered to IPv4 DHCP. Initial preparation requires at least two guest renewal REQUEST/ACK exchanges
-carrying the configured T1/T2, including a renewal observed after the initial
+with sane effective T1/T2 values, including a renewal observed after the initial
 preparation anchor, a usable lease, fresh packet success, working OVS metadata
 and the same boot. Source VXLAN MTU (normally 1450) and the existing OVS metadata
 route are valid in phase 04; target MTU and OVN metadata next-hop are not checked
 at this stage. This proves the
 owned guests are renewing rather than merely having Neutron-assigned addresses.
+The interval between matched renewal ACKs must be positive and no greater than
+configured T1 plus `validation_dhcp_renewal_tolerance_seconds` (default 5).
+Effective ACK timers may be smaller than configured values: preparation accepts
+`0 < observed T1 <= configured T1` and `observed T1 < observed T2 <= configured T2`.
+The same checks apply to the phase-06 gate; exact timer equality is not required.
 `dhcp-initial-preparation.json` retains the evidence. The official Ubuntu image
 must permit AF_PACKET and its DHCP client must request/honor these options.
 Unsupported or missing ACK evidence fails before migration rather than guessing.
