@@ -241,6 +241,9 @@ class Validation:
         for i in range(2):
             vm = s[str(i)]
             if vm.get('server'):
+                # Missing checkpointed IDs fail closed; never silently replace
+                # a VM whose identity is part of the preservation evidence.
+                self.wait_active(vm['server'])
                 continue
             guest = (pathlib.Path(__file__).parent/'guest_probe.py').read_text()
             config = dict(run=cfg['run'], vm=stage+str(i), peer=s[str(1-i)]['ip'],
@@ -262,13 +265,47 @@ class Validation:
                 user_data=base64.b64encode(user_data.encode()).decode())
             vm['server'] = server.id
             self.commit()
-    def collect(self, stage):
+            self.wait_active(server.id)
+
+    def wait_active(self, server_id):
+        server = self.cloud.compute.get_server(server_id)
+        if server.status == 'ERROR':
+            raise RuntimeError(f'Validation server {server_id} is ERROR; resources preserved; Nova fault: {getattr(server, "fault", None)}')
+        try:
+            return self.cloud.compute.wait_for_server(server, status='ACTIVE', failures=['ERROR'],
+                                                     wait=self.cfg['timeout'], interval=2)
+        except Exception as exc:
+            raise RuntimeError(f'Validation server {server_id} failed to become ACTIVE within {self.cfg["timeout"]}s; resources preserved: {exc}') from exc
+
+    def console_output(self, server_id, deadline):
+        while True:
+            try:
+                return self.cloud.compute.get_server_console_output(
+                    server_id, length=int(self.cfg.get('console_tail_lines', 20000)))['output']
+            except Exception as exc:
+                status = getattr(exc, 'status_code', getattr(exc, 'http_status', None))
+                message = str(exc).lower()
+                if status != 409 or 'instance' not in message or 'not ready' not in message:
+                    raise
+                # Recheck Nova after a readiness conflict; permanent failures
+                # (including a disappearing instance) must not be retried.
+                server = self.cloud.compute.get_server(server_id)
+                if server.status == 'ERROR':
+                    raise RuntimeError(f'Validation server {server_id} entered ERROR while collecting console; resources preserved; Nova fault: {getattr(server, "fault", None)}') from exc
+                remaining = deadline-time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f'Nova console for validation server {server_id} remained not ready within validation timeout; resources preserved') from exc
+                time.sleep(min(2, remaining))
+
+    def collect(self, stage, deadline=None):
+        if deadline is None:
+            deadline = time.monotonic()+self.cfg.get('timeout', 300)
         s = self.state[stage]
         all_rows = {}
         for i in range(2):
             vm = stage+str(i)
             path = self.root/(vm+'-console-records.json')
-            text = self.cloud.compute.get_server_console_output(s[str(i)]['server'], length=int(self.cfg.get('console_tail_lines', 20000)))['output']
+            text = self.console_output(s[str(i)]['server'], deadline)
             with (self.root/(vm+'-records.lock')).open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 old = json.loads(path.read_text()) if path.exists() else []
@@ -278,8 +315,8 @@ class Validation:
                 save(path, rows)
             all_rows[str(i)] = rows
         return all_rows
-    def anchors(self, stage):
-        rows = self.collect(stage)
+    def anchors(self, stage, deadline=None):
+        rows = self.collect(stage, deadline=deadline)
         return {key: freshness_anchor(value) for key,value in rows.items()}
 
     def checkpoint_start(self):
@@ -310,11 +347,11 @@ class Validation:
         # Snapshot the console at the beginning of EACH validation invocation.
         # When a guest has not emitted yet, latch its first batch and require
         # later sequence growth; that batch itself can never satisfy the gate.
-        anchors = self.anchors(stage)
-        save(self.root/(stage+'-freshness-anchors.json'), anchors)
         deadline = time.monotonic()+self.cfg['timeout']
+        anchors = self.anchors(stage, deadline=deadline)
+        save(self.root/(stage+'-freshness-anchors.json'), anchors)
         while True:
-            rows = self.collect(stage)
+            rows = self.collect(stage, deadline=deadline)
             for key in anchors:
                 if anchors[key] is None:
                     anchors[key] = freshness_anchor(rows[key])
