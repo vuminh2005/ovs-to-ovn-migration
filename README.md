@@ -389,6 +389,18 @@ configured T1 plus `validation_dhcp_renewal_tolerance_seconds` (default 5).
 Effective ACK timers may be smaller than configured values: preparation accepts
 `0 < observed T1 <= configured T1` and `observed T1 < observed T2 <= configured T2`.
 The same checks apply to the phase-06 gate; exact timer equality is not required.
+Guest health records also include read-only MTU diagnostics for the interface
+holding the validation IP: `network_backend`, `configured_static_mtu`,
+`dhcp_use_mtu`, and `mtu_configuration` (`static_mtu`, `dhcp_mtu_disabled`,
+`dhcp_mtu_enabled`, or `unknown`). A selected networkd file and its drop-ins
+take precedence over netplan intent; the parser follows
+[systemd's file/drop-in ordering](https://github.com/systemd/systemd/blob/v255/man/systemd.network.xml)
+and [netplan's YAML ordering](https://github.com/canonical/netplan/blob/1.0/doc/netplan-generate.md).
+Only compact settings and source paths are emitted, never whole files. Missing
+or unsupported configuration remains unknown. These on-disk diagnostics do not
+prove that a daemon has reloaded edited files, and they do not change networking
+or migration gates. Netplan parsing uses optional PyYAML; networkd diagnostics
+remain available if that parser is absent.
 `dhcp-initial-preparation.json` retains the evidence. The official Ubuntu image
 must permit AF_PACKET and its DHCP client must request/honor these options.
 Unsupported or missing ACK evidence fails before migration rather than guessing.

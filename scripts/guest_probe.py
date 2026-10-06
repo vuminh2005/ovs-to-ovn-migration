@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Root guest service: structured serial evidence, no tenant SSH dependency."""
 import concurrent.futures
+import fnmatch
 import json
 import pathlib
 import re
 import subprocess
 import socket
+import shlex
 import threading
 import time
 import urllib.request
@@ -15,6 +17,193 @@ CONFIG = {}
 DHCP = {'ack_count': 0, 't1_seconds': None, 't2_seconds': None, 'last_ack_monotonic': None,
         'last_renewal_interval_seconds': None}
 DHCP_LOCK = threading.Lock()
+
+def config_files(root, directories, pattern):
+    """Same basename is shadowed by later directories; names sort globally."""
+    selected = {}
+    for directory in directories:
+        for path in (root/directory).glob(pattern):
+            selected[path.name] = path
+    return [selected[name] for name in sorted(selected)]
+
+
+def networkd_entries(text):
+    """Read sectioned settings in order, including repeated sections/resets."""
+    section = ''
+    for line in text.replace('\\\n', '').splitlines():
+        line = line.strip()
+        if not line or line.startswith(('#', ';')):
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            section = line[1:-1]
+        elif '=' in line:
+            key, value = line.split('=', 1)
+            yield section, key.strip(), value.strip()
+
+
+def config_boolean(value):
+    if type(value) is bool:
+        return value
+    if isinstance(value, str):
+        if value.lower() in ('yes', 'true', 'on', '1'):
+            return True
+        if value.lower() in ('no', 'false', 'off', '0'):
+            return False
+    return None
+
+
+def config_mtu(value):
+    if type(value) is int and value > 0:
+        return value
+    if isinstance(value, str) and value.isdecimal() and int(value) > 0:
+        return int(value)
+    return None
+
+
+def netplan_settings(root, interface):
+    files = config_files(root, ('lib/netplan', 'etc/netplan', 'run/netplan'), '*.yaml')
+    if not files:
+        return {}
+    # Optional: Ubuntu cloud-init normally supplies PyYAML. Its absence must
+    # not interrupt health evidence or prevent reading generated networkd INI.
+    try:
+        import yaml
+    except ImportError:
+        return {'note': 'netplan_parser_unavailable'}
+    def merge(old, new):
+        for key, value in new.items():
+            if isinstance(value, dict) and isinstance(old.get(key), dict):
+                merge(old[key], value)
+            elif isinstance(value, list) and isinstance(old.get(key), list):
+                old[key] += value
+            else:
+                old[key] = value
+    config = {}
+    try:
+        for path in files:
+            data = yaml.safe_load(path.read_text()) or {}
+            if not isinstance(data, dict):
+                return {'note': 'netplan_parse_unknown'}
+            merge(config, data)
+    except (OSError, ValueError, yaml.YAMLError):
+        return {'note': 'netplan_parse_unknown'}
+    network = config.get('network', {})
+    matches = []
+    for kind in ('ethernets', 'wifis', 'bridges', 'bonds', 'vlans'):
+        for name, settings in network.get(kind, {}).items():
+            match = settings.get('match')
+            if match is None:
+                matched = name == interface.get('ifname')
+            else:
+                # Unsupported criteria must never attribute another NIC's MTU.
+                matched = bool(match) and not (set(match)-{'name', 'macaddress'})
+                if 'name' in match:
+                    matched = matched and fnmatch.fnmatchcase(interface.get('ifname',''), match['name'])
+                if 'macaddress' in match:
+                    matched = matched and interface.get('address','').lower() == match['macaddress'].lower()
+                if settings.get('set-name') == interface.get('ifname') and set(match) == {'name'}:
+                    matched = True
+            if matched:
+                matches.append(settings)
+    if len(matches) != 1:
+        return {'note': 'netplan_interface_unknown'}
+    settings = matches[0]
+    return {'renderer': settings.get('renderer', network.get('renderer')),
+            'mtu': config_mtu(settings.get('mtu')),
+            'use_mtu': config_boolean(settings.get('dhcp4-overrides', {}).get('use-mtu'))}
+
+
+def networkd_match(entries, interface):
+    matches = {}
+    for section, key, value in entries:
+        if section == 'Match':
+            matches.setdefault(key, [])
+            if not value:
+                matches[key] = []
+            else:
+                matches[key] += shlex.split(value)
+    if set(matches)-{'Name', 'MACAddress'}:
+        return None
+    for key, patterns in matches.items():
+        if not patterns:
+            continue
+        actual = interface.get('ifname','') if key == 'Name' else interface.get('address','').lower()
+        inverted = patterns[0].startswith('!')
+        if inverted:
+            patterns = [patterns[0][1:]] + patterns[1:]
+        matched = any(fnmatch.fnmatchcase(actual, p if key == 'Name' else p.lower()) for p in patterns)
+        if matched == inverted:
+            return False
+    return True
+
+
+def network_diagnostics(interface, root=pathlib.Path('/')):
+    """Read-only, best-effort MTU configuration evidence for the IP-bearing NIC."""
+    result = dict(network_backend='unknown', configured_static_mtu=None,
+                  dhcp_use_mtu=None, mtu_configuration='unknown')
+    if not interface or not interface.get('ifname'):
+        return result
+    try:
+        netplan = netplan_settings(root, interface)
+        if netplan.get('note'):
+            result['network_config_note'] = netplan['note']
+        if netplan.get('renderer') in ('networkd', 'NetworkManager'):
+            result['network_backend'] = netplan['renderer']
+        result['configured_static_mtu'] = netplan.get('mtu')
+        result['dhcp_use_mtu'] = netplan.get('use_mtu')
+        directories = ('usr/lib/systemd/network', 'usr/local/lib/systemd/network',
+                       'run/systemd/network', 'etc/systemd/network')
+        selected = None
+        # Prefer the file actually selected for this link over guessing matches.
+        if type(interface.get('ifindex')) is int:
+            state = root/'run/systemd/netif/links'/str(interface['ifindex'])
+            if state.is_file():
+                active = dict((k,v) for _,k,v in networkd_entries(state.read_text())).get('NETWORK_FILE')
+                if active:
+                    selected = root/active.lstrip('/')
+                    result['network_config_selection'] = 'networkd_active'
+        if selected is None and result['network_backend'] != 'NetworkManager':
+            for path in config_files(root, directories, '*.network'):
+                if not path.read_text().strip():  # masked or empty
+                    continue
+                dropins = config_files(root, tuple(d+'/'+path.name+'.d' for d in directories), '*.conf')
+                entries = list(networkd_entries('\n'.join(p.read_text() for p in [path]+dropins)))
+                matched = networkd_match(entries, interface)
+                if matched is None:
+                    result['network_config_note'] = 'networkd_match_unknown'
+                    break
+                if matched:
+                    selected = path
+                    result['network_config_selection'] = 'networkd_match'
+                    break
+        if selected is not None:
+            result['network_backend'] = 'networkd'
+            result['network_config_file'] = '/'+str(selected.relative_to(root))
+            dropins = config_files(root, tuple(d+'/'+selected.name+'.d' for d in directories), '*.conf')
+            # Generated networkd settings take precedence over netplan intent.
+            result['dhcp_use_mtu'] = None
+            anonymize = False
+            for section, key, value in networkd_entries('\n'.join(p.read_text() for p in [selected]+dropins)):
+                if section == 'Link' and key == 'MTUBytes':
+                    result['configured_static_mtu'] = config_mtu(value)
+                elif section in ('DHCP', 'DHCPv4') and key == 'UseMTU':
+                    result['dhcp_use_mtu'] = config_boolean(value)
+                elif section in ('DHCP', 'DHCPv4') and key == 'Anonymize':
+                    anonymize = config_boolean(value)
+            if anonymize is True:
+                result['dhcp_use_mtu'] = False
+        if result['configured_static_mtu'] is not None:
+            result['mtu_configuration'] = 'static_mtu'
+        elif result['dhcp_use_mtu'] is False:
+            result['mtu_configuration'] = 'dhcp_mtu_disabled'
+        elif result['dhcp_use_mtu'] is True:
+            result['mtu_configuration'] = 'dhcp_mtu_enabled'
+    except Exception as exc:
+        # Diagnostics must never suppress existing DHCP/packet/metadata evidence.
+        result = dict(network_backend='unknown', configured_static_mtu=None, dhcp_use_mtu=None,
+                      mtu_configuration='unknown', network_config_note=type(exc).__name__)
+    return result
+
 
 def emit(record):
     record.update(run=CONFIG['run'], vm=CONFIG['vm'], boot=BOOT)
@@ -111,7 +300,8 @@ def health(seq):
               metadata_gateway=route[0].get('gateway') if route else None,
               dhcp_ack_count=observed['ack_count'], dhcp_last_ack_monotonic=observed['last_ack_monotonic'],
               dhcp_last_renewal_interval_seconds=observed['last_renewal_interval_seconds'],
-              dhcp_t1_seconds=observed['t1_seconds'], dhcp_t2_seconds=observed['t2_seconds']))
+              dhcp_t1_seconds=observed['t1_seconds'], dhcp_t2_seconds=observed['t2_seconds'],
+              **network_diagnostics(interfaces[0] if interfaces else None)))
 
 if __name__ == '__main__':
     BOOT = pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
