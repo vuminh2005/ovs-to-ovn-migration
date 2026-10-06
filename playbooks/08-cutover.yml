@@ -12,7 +12,7 @@
         cp {{ migration_run_dir }}/metrics/phase06.start {{ migration_run_dir }}/metrics/dataplane_convergence.start
       changed_when: false
 
-    - name: Checkpoint VM1 sequence immediately before stopping legacy agents
+    - name: Preserve the existing Pair A measurement start anchor
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}

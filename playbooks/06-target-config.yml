@@ -31,15 +31,20 @@
     - name: Reduce each existing VXLAN network MTU by VXLAN-to-Geneve delta
       ansible.builtin.shell: |
         set -euo pipefail
-        source {{ openrc_path }}
-        : > {{ migration_run_dir }}/network-mtu-migration.tsv
+        source {{ openrc_path | quote }}
+        # Retain original-to-target pairs across preparation retries.
+        mtu_journal={{ (migration_run_dir + '/network-mtu-migration.tsv') | quote }}
+        touch "$mtu_journal"
         for id in $(openstack network list -f value -c ID); do
           type=$(openstack network show "$id" -f value -c provider:network_type)
           [ "$type" = "{{ source_tenant_network_type }}" ] || continue
           old=$(openstack network show "$id" -f value -c mtu)
-          new=$((old - {{ mtu_delta_vxlan_to_geneve }}))
+          new=$(awk -v id="$id" '$1 == id {print $3}' "$mtu_journal")
+          if [ -z "$new" ]; then
+            new=$((old - {{ mtu_delta_vxlan_to_geneve }}))
+            printf '%s\t%s\t%s\n' "$id" "$old" "$new" >> "$mtu_journal"
+          fi
           test "$new" -gt 0
-          printf '%s\t%s\t%s\n' "$id" "$old" "$new" >> {{ migration_run_dir }}/network-mtu-migration.tsv
           if [ "$old" -ne "$new" ]; then
             openstack network set --mtu "$new" "$id"
           fi

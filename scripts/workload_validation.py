@@ -12,6 +12,7 @@ import sys
 import time
 
 PREFIX = 'OVN_MIGRATION_JSON '
+ROLES = {'measure': ('pre', 'measure'), 'pre': ('pre', 'existing'), 'post': ('post', 'fresh')}
 
 def save(path, value):
     tmp = path.with_suffix('.tmp')
@@ -79,6 +80,17 @@ def dhcp_convergence(health, expected_mtu, metadata_ip):
                       health.get('metadata_gateway') == metadata_ip) else 'FAIL'
 
 
+def renewal_flags(health, anchor_mono, cfg):
+    health = health or {}
+    ack, t1, t2, cadence = (health.get(k) for k in ('dhcp_last_ack_monotonic', 'dhcp_t1_seconds',
+                                                   'dhcp_t2_seconds', 'dhcp_last_renewal_interval_seconds'))
+    def number(value):
+        return type(value) in (int,float) and math.isfinite(value)
+    return dict(fresh_renewal=number(ack) and anchor_mono is not None and ack>anchor_mono,
+        timers_sane=number(t1) and number(t2) and 0<t1<=cfg.get('dhcp_t1',30) and t1<t2<=cfg.get('dhcp_t2',60),
+        short_renewal_cadence=number(cadence) and 0<cadence<=cfg.get('dhcp_t1',30)+cfg.get('dhcp_renewal_tolerance',5))
+
+
 def metadata_port_ip(ports, subnet_id):
     # Count matching ports/allocations, not distinct IP strings: duplicate
     # ports claiming the same address are still ambiguous resource evidence.
@@ -123,7 +135,8 @@ def probe_metrics(rows, start, end, interval):
                   maximum_consecutive_failed_probes=None, longest_outage_start_timestamp=None,
                   longest_outage_recovery_timestamp=None, actual_dataplane_outage_seconds=None,
                   coverage_complete=False, start_anchor=start, end_anchor=end,
-                  measurement='longest recovered consecutive-loss burst in (start sequence, end sequence]; VM1 ICMP')
+                  measurement='small-packet routed tenant dataplane; longest recovered loss burst in (start.seq, end.seq]',
+                  measurement_workload='Pair A', measurement_guest='measure0')
     if not start or not end or start['boot'] != end['boot'] or end['seq'] <= start['seq']:
         return result
     indexed = {}
@@ -212,7 +225,17 @@ def validation_ready(root):
     """Single fail-closed cleanup gate shared by normal execution and retries."""
     orchestration = read_evidence(root, 'validation-orchestration.json')
     consistency = read_evidence(root, 'resource-consistency.json')
-    return (workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
+    state = read_evidence(root, 'validation-resources.json')
+    role_ready = (state.get('schema_version') != 2 or state.get('historical_dual_pair') is True or (
+        read_evidence(root, 'measure-readiness.json').get('status') == 'PASS' and
+        read_evidence(root, 'measure-post-checks.json').get('status') == 'PASS' and
+        read_evidence(root, 'tenant-dataplane-probe.json').get('pair_a_boot_continuity') == 'PASS' and
+        read_evidence(root, 'dhcp-precutover-preparation.json').get('status') == 'PASS' and
+        read_evidence(root, 'existing-migration-baseline.json') and
+        all(row.get('boot_continuity') == 'PASS' and row.get('mtu') == 'PASS'
+            for row in read_evidence(root, 'pre-workload-checks.json').values()) and
+        all(row.get('mtu') == 'PASS' for row in read_evidence(root, 'post-workload-checks.json').values())))
+    return (role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
             workload_pass(read_evidence(root, 'pre-workload-checks.json'), 'geneve') and
             workload_pass(read_evidence(root, 'post-workload-checks.json'), 'geneve') and
             read_evidence(root, 'post-ovn-bindings.json').get('status') == 'PASS' and
@@ -230,12 +253,45 @@ class Validation:
         self.cfg = json.loads((root/'validation-config.json').read_text())
         self.path = root/'validation-resources.json'
         self.state = json.loads(self.path.read_text()) if self.path.exists() else {}
+        if not self.state:
+            self.state['schema_version'] = 2
+        elif self.state.get('schema_version') != 2:
+            # Preserve old UUIDs and console labels. Never reinterpret the old
+            # dual-purpose pre pair as an independent measurement workload.
+            for stage, role in (('pre','existing'), ('post','fresh')):
+                s = self.state.get(stage)
+                if not s:
+                    continue
+                s['networks'] = {k: {x:s[k][x] for x in ('network','subnet','interface') if x in s[k]}
+                                 for k in ('0','1') if k in s}
+                s[role] = {k:s.pop(k) for k in ('0','1') if k in s}
+                for k, vm in s[role].items():
+                    vm['record_vm'] = stage+k
+                    vm['owned'] = False  # old ownership cannot authorize reboot
+            self.state.update(schema_version=2, historical_dual_pair=True)
+            self.commit()
     def commit(self):
         save(self.path, self.state)
+    def pair(self, stage):
+        topology, role = ROLES[stage]
+        s = self.state[topology]
+        if role in s:
+            return s[role]
+        if stage != 'measure' and '0' in s:  # historical readers/tests
+            return s
+        raise RuntimeError(f'Missing {role} pair; resources preserved; no role substitution allowed')
+
     def create(self, stage):
         c, cfg = self.cloud, self.cfg
-        s = self.state.setdefault(stage, {})
-        prefix = cfg['prefix'] + '-' + cfg['run'] + '-' + stage
+        topology, role = ROLES[stage]
+        s = self.state.setdefault(topology, {})
+        modern = self.state.get('schema_version') == 2
+        if modern and stage=='post' and any(self.cloud.network.get_network(vm['network']).provider_network_type!='geneve'
+                                           for key,vm in self.pair('pre').items() if key in ('0','1')):
+            raise RuntimeError('Pair C creation requires active OVN/Geneve tenant networks')
+        pair = s.setdefault(role, {}) if modern else s
+        networks = s.setdefault('networks', {}) if modern else s
+        prefix = cfg['prefix'] + '-' + cfg['run'] + '-' + topology
         image = c.image.find_image(cfg['image'], ignore_missing=False)
         flavor = c.compute.find_flavor(cfg['flavor'], ignore_missing=False)
         # Before any writes, verify image and flavor resolution and API availability.
@@ -252,41 +308,51 @@ class Validation:
             s['router'] = c.network.create_router(name=prefix).id
             self.commit()
         for i in range(2):
-            vm = s.setdefault(str(i), {})
-            name = prefix + '-' + str(i+1)
-            if not vm.get('network'):
-                vm['network'] = c.network.create_network(name=name).id
+            net = networks.setdefault(str(i), {})
+            name = prefix + '-network-' + str(i)
+            if not net.get('network'):
+                net['network'] = c.network.create_network(name=name).id
                 self.commit()
-            if not vm.get('subnet'):
-                vm['subnet'] = c.network.create_subnet(name=name, network_id=vm['network'],
-                    ip_version=4, cidr=cfg['cidrs'][stage][i], enable_dhcp=True).id
+            if not net.get('subnet'):
+                net['subnet'] = c.network.create_subnet(name=name, network_id=net['network'],
+                    ip_version=4, cidr=cfg['cidrs'][topology][i], enable_dhcp=True).id
                 self.commit()
-            if not vm.get('interface'):
-                existing = list(c.network.ports(device_id=s['router'], network_id=vm['network']))
+            if not net.get('interface'):
+                existing = list(c.network.ports(device_id=s['router'], network_id=net['network']))
                 if not existing:
-                    c.network.add_interface_to_router(s['router'], subnet_id=vm['subnet'])
-                vm['interface'] = True
+                    c.network.add_interface_to_router(s['router'], subnet_id=net['subnet'])
+                net['interface'] = True
                 self.commit()
+            vm = pair.setdefault(str(i), {})
+            vm.update(network=net['network'], subnet=net['subnet'])
+            name = prefix + '-' + role + str(i) if modern else prefix + '-' + str(i+1)
+            vm.setdefault('record_vm', role+str(i) if modern else stage+str(i))
+            vm.setdefault('name', name)
             if not vm.get('port'):
-                port = c.network.create_port(name=name, network_id=vm['network'],
-                                             security_group_ids=[sg])
-                vm.update(port=port.id, fixed_ips=port.fixed_ips, ip=port.fixed_ips[0]['ip_address'])
+                if vm.get('server'):
+                    raise RuntimeError('Checkpointed server has no explicit owned port; refusing duplicate/replacement port')
+                candidates = [p for p in c.network.ports(network_id=vm['network'], name=name) if p.name == name]
+                if len(candidates)>1 or (candidates and sg not in candidates[0].security_group_ids):
+                    raise RuntimeError('Ambiguous owned validation port; refusing duplicate creation')
+                port = candidates[0] if candidates else c.network.create_port(name=name, network_id=vm['network'],
+                                                                             security_group_ids=[sg])
+                vm.update(port=port.id, fixed_ips=port.fixed_ips, ip=port.fixed_ips[0]['ip_address'], owned=True)
                 self.commit()
         if stage == 'pre':
             for i in range(2):
-                vm = s[str(i)]
+                vm = pair[str(i)]
                 self.cloud.network.update_port(vm['port'], extra_dhcp_opts=[
                     {'opt_name': '58', 'opt_value': str(cfg.get('dhcp_t1', 30)), 'ip_version': 4},
                     {'opt_name': '59', 'opt_value': str(cfg.get('dhcp_t2', 60)), 'ip_version': 4}])
         for i in range(2):
-            vm = s[str(i)]
+            vm = pair[str(i)]
             if vm.get('server'):
                 # Missing checkpointed IDs fail closed; never silently replace
                 # a VM whose identity is part of the preservation evidence.
                 self.wait_active(vm['server'])
                 continue
             guest = (pathlib.Path(__file__).parent/'guest_probe.py').read_text()
-            config = dict(run=cfg['run'], vm=stage+str(i), peer=s[str(1-i)]['ip'],
+            config = dict(run=cfg['run'], vm=vm['record_vm'], peer=pair[str(1-i)]['ip'],
                           ip=vm['ip'], interval=cfg['interval'], lifetime=cfg['lifetime'], dhcp_t1=cfg.get('dhcp_t1',30))
             # Guest obtains its own immutable instance UUID from cloud-init's datasource.
             launcher = "import json,pathlib; p=pathlib.Path('/etc/migration-probe.json'); c=json.loads(p.read_text()); c['server_id']=pathlib.Path('/var/lib/cloud/data/instance-id').read_text().strip(); p.write_text(json.dumps(c))"
@@ -296,12 +362,18 @@ class Validation:
                              dict(path='/etc/systemd/system/migration-probe.service', content='[Unit]\nAfter=network-online.target\n[Service]\nExecStart=/usr/bin/python3 /usr/local/bin/migration-probe.py\n[Install]\nWantedBy=multi-user.target\n')],
                 runcmd=[['python3', '-c', launcher], ['systemctl', 'enable', '--now', 'migration-probe']]))
             # Stable name + explicit port lets retry recover a server if API reply was lost.
-            matches = list(c.compute.servers(name=prefix+'-'+str(i+1)))
-            matches = [v for v in matches if v.name == prefix+'-'+str(i+1)]
+            matches = list(c.compute.servers(name=vm['name']))
+            matches = [v for v in matches if v.name == vm['name']]
             if len(matches) > 1:
                 raise RuntimeError('Ambiguous owned server name; inspect checkpoint')
-            server = matches[0] if matches else c.compute.create_server(name=prefix+'-'+str(i+1),
+            if matches and c.network.get_port(vm['port']).device_id != matches[0].id:
+                raise RuntimeError('Recovered server does not own the checkpointed port')
+            if modern and matches and (matches[0].metadata.get('ovn_migration_run')!=cfg['run'] or
+                                       matches[0].metadata.get('ovn_validation_role')!=role):
+                raise RuntimeError('Recovered server ownership metadata does not match this validation role')
+            server = matches[0] if matches else c.compute.create_server(name=vm['name'],
                 image_id=image.id, flavor_id=flavor.id, networks=[{'port': vm['port']}],
+                metadata={'ovn_migration_run': cfg['run'], 'ovn_validation_role': role},
                 user_data=base64.b64encode(user_data.encode()).decode())
             vm['server'] = server.id
             self.commit()
@@ -340,10 +412,10 @@ class Validation:
     def collect(self, stage, deadline=None):
         if deadline is None:
             deadline = time.monotonic()+self.cfg.get('timeout', 300)
-        s = self.state[stage]
+        s = self.pair(stage)
         all_rows = {}
         for i in range(2):
-            vm = stage+str(i)
+            vm = s[str(i)].get('record_vm', stage+str(i))
             path = self.root/(vm+'-console-records.json')
             text = self.console_output(s[str(i)]['server'], deadline)
             with (self.root/(vm+'-records.lock')).open('a') as lock:
@@ -363,26 +435,44 @@ class Validation:
         path = self.root/'validation-window.json'
         window = read_evidence(self.root, path.name)
         if window.get('start_anchor'):
+            if getattr(self,'state',{}).get('schema_version')==2 and window.get('measurement_workload')!='Pair A':
+                raise RuntimeError('Historical measurement window cannot be relabeled Pair A; use a new run')
             return window['start_anchor']
-        anchor = sequence_anchor(self.collect('pre')['0'])
+        if getattr(self,'state',{}).get('schema_version')==2 and read_evidence(self.root,'measure-readiness.json').get('status')!='PASS':
+            raise RuntimeError('Pair A must be fully ready before establishing the measurement start')
+        rows = self.collect('measure')
+        anchor = sequence_anchor(rows['0'])
         if not anchor:
-            raise RuntimeError('No valid VM1 sequence available before dataplane cutover')
-        save(path, {'start_anchor': anchor, 'window': '(start sequence, recovery end sequence]'})
+            raise RuntimeError('No valid Pair-A sequence available before migration-affecting work')
+        save(path, {'start_anchor': anchor, 'pair_anchors':{k:sequence_anchor(r) for k,r in rows.items()},
+                    'measurement_workload':'Pair A', 'window': '(start sequence, recovery end sequence]'})
         return anchor
 
     def check(self, stage, anchors, rows):
         checks = {}
         for i in range(2):
-            vm = self.state[stage][str(i)]
+            vm = self.pair(stage)[str(i)]
             server = self.cloud.compute.get_server(vm['server'])
             port = self.cloud.network.get_port(vm['port'])
-            checks[str(i)] = dict(identity='PASS' if port.device_id == vm['server'] and port.fixed_ips == vm['fixed_ips'] else 'FAIL',
+            identity = port.device_id == vm['server'] and port.fixed_ips == vm['fixed_ips']
+            if self.state.get('schema_version') == 2:
+                identity = identity and server.id == vm['server'] and port.id == vm['port']
+            checks[str(i)] = dict(identity='PASS' if identity else 'FAIL',
                 active='PASS' if server.status == 'ACTIVE' else 'FAIL',
                 bound='PASS' if port.status == 'ACTIVE' and port.binding_host_id and port.binding_vif_type not in ('unbound','binding_failed') else 'FAIL')
             checks[str(i)].update(guest_checks(rows[str(i)], anchors[str(i)], self.cfg['interval']))
             network = self.cloud.network.get_network(vm['network'])
             checks[str(i)]['network_type'] = network.provider_network_type
             checks[str(i)]['dhcp_availability'] = checks[str(i)]['dhcp']
+            health = latest_health(rows[str(i)], anchors[str(i)], self.cfg['interval'])
+            expected_mtu = self.cfg.get('source_mtu',1450) if self.cfg.get('initial') else self.cfg.get('target_mtu',1442)
+            checks[str(i)]['mtu'] = 'PASS' if health and health.get('mtu') == expected_mtu and network.mtu==expected_mtu else 'FAIL'
+            baseline = read_evidence(self.root, 'existing-migration-baseline.json') if stage == 'pre' and not self.cfg.get('initial') else {}
+            if self.state.get('schema_version') == 2 and stage == 'pre' and not self.cfg.get('initial'):
+                old = baseline.get(str(i), {})
+                current = sequence_anchor(rows[str(i)])
+                checks[str(i)]['boot_continuity'] = 'PASS' if current and current['boot'] == old.get('boot') else 'FAIL'
+                checks[str(i)]['identity'] = 'PASS' if identity and all(vm.get(k)==old.get(k) for k in ('server','port','fixed_ips')) else 'FAIL'
             if network.provider_network_type == 'geneve':
                 ports = list(self.cloud.network.ports(network_id=vm['network'], device_owner='network:distributed'))
                 expected_ip = metadata_port_ip(ports, vm['subnet'])
@@ -407,12 +497,13 @@ class Validation:
                 if anchors[key] is None:
                     anchors[key] = freshness_anchor(rows[key])
                     save(self.root/(stage+'-freshness-anchors.json'), anchors)
-            if stage == 'pre' and not self.cfg.get('initial'):
-                self.checkpoint_recovery(rows, anchors)
             checks = self.check(stage, anchors, rows)
             save(self.root/(stage+'-workload-checks.json'), checks)
             network_type = 'vxlan' if stage == 'pre' and self.cfg.get('initial') else 'geneve'
-            if workload_pass(checks, network_type):
+            modern_ready = (self.state.get('schema_version') != 2 or
+                            all(r.get('mtu') == 'PASS' and (stage != 'pre' or self.cfg.get('initial') or
+                                r.get('boot_continuity') == 'PASS') for r in checks.values()))
+            if workload_pass(checks, network_type) and modern_ready:
                 return rows
             if time.monotonic() >= deadline:
                 phase = ('Initial OVS workload validation' if self.cfg.get('initial') else
@@ -420,23 +511,93 @@ class Validation:
                 raise RuntimeError(phase + ' timed out: require NEW sequence-based packet and health records; use Ubuntu cloud image with cloud-init, Python3, iproute2, ping, DHCP leases and ttyS0; inspect console evidence')
             time.sleep(5)
 
+    def baseline(self, stage, rows):
+        return {key:dict(server=vm['server'], port=vm['port'], fixed_ips=vm['fixed_ips'],
+                         boot=sequence_anchor(rows[key])['boot']) for key,vm in self.pair(stage).items() if key in ('0','1')}
+
+    def measure_checks(self, rows, anchors):
+        baseline = read_evidence(self.root, 'measure-baseline.json')
+        checks = {}
+        for key in ('0','1'):
+            vm = self.pair('measure')[key]
+            server = self.cloud.compute.get_server(vm['server'])
+            port = self.cloud.network.get_port(vm['port'])
+            current = sequence_anchor(rows[key])
+            old = baseline.get(key, {})
+            identity = (server.id == vm['server'] and port.id == vm['port'] and
+                        port.device_id == vm['server'] and port.fixed_ips == vm['fixed_ips'] and
+                        (not old or all(vm[k] == old.get(k) for k in ('server','port','fixed_ips'))))
+            checks[key] = dict(identity='PASS' if identity else 'FAIL',
+                active='PASS' if server.status == 'ACTIVE' else 'FAIL',
+                bound='PASS' if port.status == 'ACTIVE' and port.binding_host_id and port.binding_vif_type not in ('unbound','binding_failed') else 'FAIL',
+                boot_continuity='PASS' if current and (not old or current['boot']==old.get('boot')) else 'FAIL',
+                connectivity=guest_checks(rows[key], anchors[key], self.cfg['interval'])['connectivity'])
+        return checks
+
+    def wait_measure(self, initial=False):
+        deadline = time.monotonic()+self.cfg['timeout']
+        anchors = self.anchors('measure', deadline=deadline)
+        while True:
+            rows = self.collect('measure', deadline=deadline)
+            for key in anchors:
+                if anchors[key] is None:
+                    anchors[key] = freshness_anchor(rows[key])
+            checks = self.measure_checks(rows, anchors)
+            good = all(all(v=='PASS' for v in row.values()) for row in checks.values())
+            if not initial:
+                # Packet-only recovery boundary: health/MTU never enter this gate.
+                self.checkpoint_recovery(rows, anchors)
+            save(self.root/('measure-readiness.json' if initial else 'measure-post-checks.json'),
+                 {'status':'PASS' if good else 'IN_PROGRESS', 'guests':checks})
+            if good:
+                if initial and not read_evidence(self.root, 'measure-baseline.json'):
+                    save(self.root/'measure-baseline.json', self.baseline('measure',rows))
+                return rows
+            if time.monotonic()>=deadline:
+                raise TimeoutError('Pair-A small-packet recovery/identity/boot continuity unavailable; no MTU or metadata remediation allowed')
+            time.sleep(2)
+
     def checkpoint_recovery(self, rows, anchors):
         if not all(guest_checks(rows[k], anchors[k], self.cfg['interval'])['connectivity'] == 'PASS' for k in ('0','1')):
             return False
         window = read_evidence(self.root, 'validation-window.json')
+        original = window.get('pair_anchors',{})
+        if original and any(not sequence_anchor(rows[k]) or sequence_anchor(rows[k])['boot']!=a['boot'] for k,a in original.items()):
+            self.save_measurement(rows)
+            return False
         end = sequence_anchor(rows['0'])
         if window.get('start_anchor') and end and not window.get('end_anchor'):
             window['end_anchor'] = end
             save(self.root/'validation-window.json', window)
         if window.get('end_anchor'):
-            save(self.root/'tenant-dataplane-probe.json', probe_metrics(
-                rows['0'], window['start_anchor'], window['end_anchor'], self.cfg['interval']))
+            self.save_measurement(rows)
         return bool(window.get('end_anchor'))
+
+    def save_measurement(self, rows):
+        window = read_evidence(self.root, 'validation-window.json')
+        result = probe_metrics(rows['0'], window.get('start_anchor'), window.get('end_anchor'), self.cfg['interval'])
+        expected = window.get('pair_anchors', {})
+        continuity = all(sequence_anchor(rows[k]) and sequence_anchor(rows[k])['boot']==a['boot']
+                         for k,a in expected.items()) if len(expected)==2 else None
+        result['pair_a_boot_continuity'] = 'PASS' if continuity is True else ('FAIL' if continuity is False else 'UNAVAILABLE')
+        if continuity is False:
+            result.update(status='UNAVAILABLE', actual_dataplane_outage_seconds=None)
+        if getattr(self,'state',{}).get('schema_version')==2 and (continuity is not True or window.get('measurement_workload')!='Pair A'):
+            result.update(status='UNAVAILABLE',actual_dataplane_outage_seconds=None)
+        save(self.root/'tenant-dataplane-probe.json', result)
 
     def prepare_dhcp(self, target=False):
         name = 'dhcp-precutover-preparation.json' if target else 'dhcp-initial-preparation.json'
         deadline = time.monotonic()+self.cfg.get('dhcp_timeout', 180)
         try:
+            if target and self.state.get('schema_version')==2:
+                prior = read_evidence(self.root, 'existing-mtu-remediation.json')
+                if any(r.get('reboot_requested') for r in prior.get('guests',{}).values()):
+                    self.remediate(prior)
+                    return
+                if read_evidence(self.root, 'existing-migration-baseline.json'):
+                    self.verify_precutover()
+                    return
             # Phase 06 invokes this AFTER updating network MTUs. Snapshot anew
             # for each gate; phase-04 renewals cannot satisfy phase 06.
             baseline_rows = self.collect('pre', deadline=deadline)
@@ -447,7 +608,8 @@ class Validation:
                          and r['boot'] == anchor['boot'] and r['seq'] <= anchor['seq']
                          and type(r.get('mono')) in (int, float) and math.isfinite(r['mono'])]
                 anchor_mono[key] = max(times) if times else None
-            initial = read_evidence(self.root, 'initial-freshness-anchors.json') or baseline
+            initial = (read_evidence(self.root, 'existing-initial-baseline.json') or
+                       read_evidence(self.root, 'initial-freshness-anchors.json') or baseline)
             while True:
                 rows = self.collect('pre', deadline=deadline)
                 evidence = {}
@@ -455,36 +617,50 @@ class Validation:
                     health = latest_health(rows[key], baseline[key], self.cfg['interval'])
                     current = sequence_anchor(rows[key])
                     same_boot = bool(current and initial[key] and current['boot'] == initial[key]['boot'])
-                    ack_mono = health.get('dhcp_last_ack_monotonic') if health else None
-                    fresh_renewal = (type(ack_mono) in (int, float) and math.isfinite(ack_mono)
-                                     and anchor_mono[key] is not None and ack_mono > anchor_mono[key])
-                    t1 = health.get('dhcp_t1_seconds') if health else None
-                    t2 = health.get('dhcp_t2_seconds') if health else None
-                    cadence = health.get('dhcp_last_renewal_interval_seconds') if health else None
-                    timers_sane = (type(t1) in (int, float) and math.isfinite(t1) and
-                                   type(t2) in (int, float) and math.isfinite(t2) and
-                                   0 < t1 <= self.cfg.get('dhcp_t1',30) and
-                                   t1 < t2 <= self.cfg.get('dhcp_t2',60))
-                    short_cadence = (type(cadence) in (int, float) and math.isfinite(cadence) and
-                                     0 < cadence <= self.cfg.get('dhcp_t1',30) + self.cfg.get('dhcp_renewal_tolerance',5))
+                    flags = renewal_flags(health,anchor_mono[key],self.cfg)
                     good = bool(health and health.get('dhcp') is True and
-                                timers_sane and short_cadence and
-                                health.get('dhcp_ack_count',0) >= 2 and fresh_renewal and same_boot and
+                                all(flags.values()) and
+                                health.get('dhcp_ack_count',0) >= 2 and same_boot and
                                 guest_checks(rows[key], baseline[key], self.cfg['interval'])['connectivity']=='PASS')
                     if target:
-                        network = self.cloud.network.get_network(self.state['pre'][key]['network'])
-                        good = good and network.mtu == self.cfg.get('target_mtu',1442) and health.get('mtu') == network.mtu
+                        network = self.cloud.network.get_network(self.pair('pre')[key]['network'])
+                        common = good
+                        source_network = self.state.get('schema_version')!=2 or network.provider_network_type=='vxlan'
+                        good = good and source_network and network.mtu == self.cfg.get('target_mtu',1442) and health.get('mtu') == network.mtu
                     else:
                         # Source OVS metadata and MTU remain valid here; OVN
                         # metadata next-hop checks belong to post-migration.
                         good = good and health.get('metadata') is True
                     evidence[key] = {'status':'PASS' if good else 'UNAVAILABLE', 'health':health,
-                                     'same_boot':same_boot, 'fresh_renewal':fresh_renewal,
-                                     'timers_sane':timers_sane, 'short_renewal_cadence':short_cadence}
+                                     'same_boot':same_boot, **flags}
+                    if target:
+                        eligible = bool(common and source_network and network.mtu==self.cfg.get('target_mtu',1442) and
+                            health.get('mtu') is not None and health['mtu']!=network.mtu and health.get('metadata') is True and
+                            health.get('mtu_configuration')=='dhcp_mtu_enabled' and
+                            'configured_static_mtu' in health and health['configured_static_mtu'] is None and health.get('dhcp_use_mtu') is True)
+                        evidence[key]['classification'] = 'PASS' if good else ('REBOOT_REQUIRED' if eligible else 'FAIL')
                 save(self.root/name, {'status':'PASS' if all(r['status']=='PASS' for r in evidence.values()) else 'IN_PROGRESS',
                                      'anchors':baseline, 'anchor_monotonic':anchor_mono, 'guests':evidence})
-                if all(r['status']=='PASS' for r in evidence.values()): return
+                if all(r['status']=='PASS' for r in evidence.values()):
+                    if target and self.state.get('schema_version')==2:
+                        self.complete_automatic(evidence, rows)
+                    return
                 if time.monotonic() >= deadline:
+                    if target and self.state.get('schema_version')==2:
+                        save(self.root/'existing-mtu-automatic.json', {'status':'FAIL','guests':evidence,
+                            'anchors':baseline, 'anchor_monotonic':anchor_mono})
+                        journal = {'automatic_mtu_convergence':'FAIL', 'remediation_required':any(r.get('classification')=='REBOOT_REQUIRED' for r in evidence.values()),
+                                   'remediation_action':'none', 'status':'IN_PROGRESS', 'guests':{}}
+                        for key,row in evidence.items():
+                            vm = self.pair('pre')[key]
+                            journal['guests'][key] = dict(row, original_boot=initial[key]['boot'],
+                                server=vm['server'], port=vm['port'], fixed_ips=vm['fixed_ips'],
+                                guest_mtu_before=row['health'].get('mtu') if row['health'] else None,
+                                target_mtu=self.cfg.get('target_mtu',1442), reboot_requested=False)
+                        save(self.root/'existing-mtu-remediation.json', journal)
+                        if all(r.get('classification') in ('PASS','REBOOT_REQUIRED') for r in evidence.values()):
+                            self.remediate(journal)
+                            return
                     message = ('Guest MTU convergence before cutover timed out: require target MTU, usable lease, fresh renewal, running probe and unchanged boot' if target else
                                'Short-T1 renewal preparation timed out: require fresh guest DHCPREQUEST/ACK renewal, usable lease, running probe, unchanged boot and source OVS metadata')
                     raise TimeoutError(message)
@@ -493,6 +669,164 @@ class Validation:
             save(self.root/name, {'status':'FAIL', 'reason':str(exc), 'anchors':locals().get('baseline',{}),
                                  'anchor_monotonic':locals().get('anchor_mono',{}), 'guests':locals().get('evidence',{})})
             raise
+
+    def complete_automatic(self, evidence, rows):
+        save(self.root/'existing-mtu-automatic.json', {'status':'PASS','guests':evidence})
+        baseline = self.baseline('pre',rows)
+        details = {k:dict(row, original_boot=baseline[k]['boot'],post_remediation_boot=baseline[k]['boot'],
+                         guest_mtu_before=row['health']['mtu'], guest_mtu_after=row['health']['mtu'],
+                         target_mtu=self.cfg.get('target_mtu',1442), **self.identity_evidence(self.pair('pre')[k])) for k,row in evidence.items()}
+        identity_ok = all(row[k]=='PASS' for row in details.values() for k in
+                          ('server_uuid_preservation','port_uuid_preservation','fixed_ip_preservation'))
+        save(self.root/'existing-mtu-remediation.json', {'automatic_mtu_convergence':'PASS',
+             'remediation_required':False, 'remediation_action':'none', 'status':'PASS' if identity_ok else 'FAIL', 'guests':details})
+        if not identity_ok:
+            raise RuntimeError('Pair-B resource preservation failed after automatic MTU convergence; refusing DB freeze')
+        save(self.root/'existing-migration-baseline.json', baseline)
+
+    def identity_evidence(self, vm):
+        server = self.cloud.compute.get_server(vm['server'])
+        port = self.cloud.network.get_port(vm['port'])
+        return dict(server_uuid_preservation='PASS' if server.id==vm['server'] else 'FAIL',
+                    port_uuid_preservation='PASS' if port.id==vm['port'] and port.device_id==vm['server'] else 'FAIL',
+                    fixed_ip_preservation='PASS' if port.fixed_ips==vm['fixed_ips'] else 'FAIL')
+
+    def assert_reboot_owner(self, key, entry, require_ready=True):
+        if self.state.get('schema_version')!=2 or (require_ready and self.cfg.get('allow_pre_cutover_guest_reboot') is not True):
+            raise RuntimeError('Pair-B reboot remediation disabled; pre-cutover MTU readiness failed; resources preserved')
+        if any((self.root/'metrics'/name).exists() for name in ('phase05.start','phase06.start','control_plane_downtime.start')):
+            raise RuntimeError('Pair-B reboot prohibited after DB freeze/cutover checkpoint')
+        vm = self.pair('pre')[key]
+        if vm.get('owned') is not True or any(vm['server']==v['server'] or vm['port']==v['port'] for v in self.pair('measure').values()):
+            raise RuntimeError('Reboot requires distinct validation-owned Pair-B UUIDs; Pair A is protected')
+        if any(vm.get(k)!=entry.get(k) for k in ('server','port','fixed_ips')):
+            raise RuntimeError('Pair-B checkpoint identity changed; refusing reboot')
+        if require_ready and self.cloud.network.get_network(vm['network']).provider_network_type!='vxlan':
+            raise RuntimeError('Pair-B reboot prohibited after OVN activation; source VXLAN required')
+        server = self.cloud.compute.get_server(vm['server'])
+        port = self.cloud.network.get_port(vm['port'])
+        entry.update(server_uuid_preservation='PASS' if server.id==entry['server'] else 'FAIL',
+                     port_uuid_preservation='PASS' if port.id==entry['port'] and port.device_id==entry['server'] else 'FAIL',
+                     fixed_ip_preservation='PASS' if port.fixed_ips==entry['fixed_ips'] else 'FAIL')
+        if (server.id!=entry['server'] or port.id!=entry['port'] or port.device_id!=server.id or port.fixed_ips!=entry['fixed_ips'] or
+            (require_ready and (server.status!='ACTIVE' or port.status!='ACTIVE' or not port.binding_host_id or port.binding_vif_type in ('unbound','binding_failed'))) or
+            server.metadata.get('ovn_migration_run')!=self.cfg['run'] or server.metadata.get('ovn_validation_role')!='existing'):
+            raise RuntimeError('Live Pair-B ownership/server/port/fixed IP changed; refusing reboot')
+
+    def wait_remediated(self, key, entry):
+        deadline = time.monotonic()+self.cfg['timeout']
+        self.wait_active(entry['server'])
+        anchor = None
+        while True:
+            rows = self.collect('pre', deadline=deadline)
+            current = sequence_anchor(rows[key])
+            if entry.get('reboot_completed') and current and current['boot']!=entry.get('post_remediation_boot'):
+                entry['observed_boot'] = current['boot']
+                raise RuntimeError('Completed Pair-B guest boot changed; refusing further remediation')
+            if current and current['boot']!=entry['original_boot'] and anchor is None:
+                anchor = freshness_anchor(rows[key])
+            health = latest_health(rows[key], anchor, self.cfg['interval'])
+            if not entry.get('reboot_completed') and current and current['boot']!=entry['original_boot']:
+                entry['post_remediation_boot'] = current['boot']
+            if health:
+                entry['guest_mtu_after'] = health.get('mtu')
+            self.assert_reboot_owner(key, entry, require_ready=False)
+            server = self.cloud.compute.get_server(entry['server'])
+            port = self.cloud.network.get_port(entry['port'])
+            good = (current and anchor and current['boot']==anchor['boot'] and
+                    guest_checks(rows[key],anchor,self.cfg['interval'])['connectivity']=='PASS' and health and
+                    health.get('dhcp') is True and health.get('metadata') is True and health.get('mtu')==entry['target_mtu'] and
+                    server.status=='ACTIVE' and port.status=='ACTIVE' and port.binding_host_id and port.binding_vif_type not in ('unbound','binding_failed'))
+            if good:
+                entry.update(reboot_completed=True, post_remediation_boot=current['boot'], guest_mtu_after=health['mtu'],
+                    server_uuid_preservation='PASS', port_uuid_preservation='PASS', fixed_ip_preservation='PASS')
+                return
+            if time.monotonic()>=deadline:
+                raise TimeoutError('Pair-B soft reboot completion/target MTU/DHCP/metadata/connectivity not proven; request will not be repeated')
+            time.sleep(2)
+
+    def remediate(self, journal):
+        path = self.root/'existing-mtu-remediation.json'
+        try:
+            for key in ('0','1'):
+                entry = journal['guests'][key]
+                if entry.get('reboot_completed'):
+                    self.wait_remediated(key,entry)
+                    save(path,journal)
+                    continue
+                if entry.get('classification')=='PASS':
+                    continue
+                self.assert_reboot_owner(key, entry, require_ready=not entry.get('reboot_requested'))
+                if not entry.get('reboot_requested'):
+                    # Re-evaluate all eligibility conditions immediately before
+                    # requesting this UUID's reboot, including a fresh renewal.
+                    attempt = read_evidence(self.root, 'existing-mtu-automatic.json')
+                    rows = self.collect('pre')
+                    a = attempt['anchors'][key]
+                    health = latest_health(rows[key],a,self.cfg['interval'])
+                    flags = renewal_flags(health, attempt['anchor_monotonic'][key], self.cfg)
+                    current = sequence_anchor(rows[key])
+                    network = self.cloud.network.get_network(self.pair('pre')[key]['network'])
+                    if not (all(flags.values()) and health and health.get('dhcp') is True and health.get('metadata') is True and
+                        health.get('dhcp_ack_count',0)>=2 and current and current['boot']==entry['original_boot'] and
+                        guest_checks(rows[key],a,self.cfg['interval'])['connectivity']=='PASS' and network.mtu==entry['target_mtu'] and
+                        health.get('mtu') is not None and health['mtu']!=entry['target_mtu'] and
+                        health.get('mtu_configuration')=='dhcp_mtu_enabled' and 'configured_static_mtu' in health and
+                        health['configured_static_mtu'] is None and health.get('dhcp_use_mtu') is True):
+                        raise RuntimeError('Pair-B reboot eligibility no longer proven; refusing remediation')
+                    entry['reboot_requested'] = True
+                    journal['remediation_action'] = 'soft reboot'
+                    save(path,journal)  # at-most-once; ambiguous API reply never resends
+                    self.cloud.compute.reboot_server(entry['server'], reboot_type='SOFT')
+                self.wait_remediated(key,entry)
+                save(path,journal)
+            expected = {k:dict(server=r['server'],port=r['port'],fixed_ips=r['fixed_ips'],
+                              boot=r.get('post_remediation_boot') or r['original_boot']) for k,r in journal['guests'].items()}
+            self.verify_precutover(expected)
+            save(self.root/'existing-migration-baseline.json',expected)
+            ready = read_evidence(self.root,'dhcp-precutover-preparation.json')['guests']
+            for key,entry in journal['guests'].items():
+                entry.update(post_remediation_boot=expected[key]['boot'], guest_mtu_after=ready[key]['health']['mtu'],
+                             server_uuid_preservation='PASS',port_uuid_preservation='PASS',fixed_ip_preservation='PASS')
+            journal['status']='PASS'
+            save(path,journal)
+        except Exception as exc:
+            journal.update(status='FAIL', reason=str(exc))
+            save(path,journal)
+            raise
+
+    def verify_precutover(self, expected=None):
+        expected = expected or read_evidence(self.root,'existing-migration-baseline.json')
+        if set(expected)!= {'0','1'}:
+            raise RuntimeError('Missing authoritative Pair-B pre-cutover baseline; refusing DB freeze')
+        deadline = time.monotonic()+self.cfg['timeout']
+        anchors = self.anchors('pre',deadline=deadline)
+        while True:
+            rows = self.collect('pre',deadline=deadline)
+            ready = {}
+            for key in ('0','1'):
+                vm = self.pair('pre')[key]
+                current = sequence_anchor(rows[key])
+                health = latest_health(rows[key],anchors[key],self.cfg['interval'])
+                server = self.cloud.compute.get_server(vm['server'])
+                port = self.cloud.network.get_port(vm['port'])
+                network = self.cloud.network.get_network(vm['network'])
+                good = (all(vm.get(k)==expected[key][k] for k in ('server','port','fixed_ips')) and
+                    server.id==expected[key]['server'] and port.id==expected[key]['port'] and port.device_id==server.id and
+                    port.fixed_ips==expected[key]['fixed_ips'] and server.status=='ACTIVE' and port.status=='ACTIVE' and
+                    port.binding_host_id and port.binding_vif_type not in ('unbound','binding_failed') and
+                    current and current['boot']==expected[key]['boot'] and health and health.get('dhcp') is True and
+                    health.get('metadata') is True and health.get('mtu')==self.cfg.get('target_mtu',1442) and
+                    network.mtu==self.cfg.get('target_mtu',1442) and network.provider_network_type=='vxlan' and
+                    guest_checks(rows[key],anchors[key],self.cfg['interval'])['connectivity']=='PASS')
+                ready[key]={'status':'PASS' if good else 'FAIL','health':health,'boot':current}
+            if all(r['status']=='PASS' for r in ready.values()):
+                save(self.root/'dhcp-precutover-preparation.json',{'status':'PASS','guests':ready})
+                return
+            if time.monotonic()>=deadline:
+                save(self.root/'dhcp-precutover-preparation.json',{'status':'FAIL','guests':ready})
+                raise TimeoutError('Pair-B pre-cutover identity/boot/MTU/DHCP/metadata readiness failed; refusing DB freeze')
+            time.sleep(2)
 
     def cleanup(self, stage):
         s = self.state[stage]
@@ -512,8 +846,9 @@ class Validation:
                 return
             s['cleanup_started'] = True
             self.commit()
-            for i in range(2):
-                vm = s[str(i)]
+            roles = ('measure','existing') if stage=='pre' else ('fresh',)
+            vms = [vm for role in roles for vm in s.get(role,{}).values()] if 'networks' in s else [s[k] for k in ('0','1')]
+            for vm in vms:
                 def delete_server():
                     self.cloud.compute.delete_server(vm['server'], ignore_missing=True)
                     deadline = time.monotonic()+self.cfg['timeout']
@@ -523,6 +858,9 @@ class Validation:
                         time.sleep(2)
                 remove('server', vm['server'], delete_server)
                 remove('port', vm['port'], lambda: self.cloud.network.delete_port(vm['port'], ignore_missing=True))
+            networks = s.get('networks',s)
+            for key in ('0','1'):
+                vm = networks[key]
                 if vm.get('interface'):
                     # Query only the checkpointed router/network/subnet. This
                     # handles a crash after detach but before journal commit.
@@ -555,7 +893,7 @@ class Validation:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready', 'prepare-dhcp'])
+    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready', 'prepare-dhcp', 'precutover-ready'])
     p.add_argument('root', type=pathlib.Path)
     args = p.parse_args()
     if args.action == 'cleanup-ready':
@@ -569,7 +907,7 @@ def main():
         signal.signal(signal.SIGTERM, stop)
         while running:
             try:
-                v.collect('pre')
+                v.collect('measure')
             except Exception as exc:
                 with (v.root/'console-collector-errors.log').open('a') as f:
                     f.write(str(exc)+'\n')
@@ -578,36 +916,51 @@ def main():
         v.checkpoint_start()
     elif args.action == 'prepare-dhcp':
         v.prepare_dhcp(target=True)
+    elif args.action == 'precutover-ready':
+        v.verify_precutover()
     elif args.action == 'finalize':
         v.finalize()
     elif args.action == 'pre':
         v.cfg['initial'] = True
+        v.create('measure')
+        v.wait_measure(initial=True)
+        v.checkpoint_start()
         v.create('pre')
-        v.wait('pre')
+        rows = v.wait('pre')
+        if not read_evidence(v.root,'existing-initial-baseline.json'):
+            save(v.root/'existing-initial-baseline.json',v.baseline('pre',rows))
         save(v.root/'initial-freshness-anchors.json', read_evidence(v.root, 'pre-freshness-anchors.json'))
         v.prepare_dhcp()
     else:
         failures = []
-        recovered = None
         try:
-            recovered = v.wait('pre')
+            v.wait_measure()
         except Exception as exc:
             failures.append(str(exc))
-        window = read_evidence(v.root, 'validation-window.json')
         try:
-            rows = v.collect('pre')['0']
+            rows = v.collect('measure')
         except Exception as exc:
             failures.append('Final console collection: '+str(exc))
             # API failure cannot erase a fully captured, anchored measurement.
-            rows = read_evidence(v.root, 'pre0-console-records.json') or []
-        save(v.root/'tenant-dataplane-probe.json', probe_metrics(rows, window.get('start_anchor'),
-             window.get('end_anchor'), v.cfg['interval']))
+            rows = {k:read_evidence(v.root,'measure'+k+'-console-records.json') or [] for k in ('0','1')}
+        v.save_measurement(rows)
+        try:
+            v.wait('pre')
+        except Exception as exc:
+            failures.append(str(exc))
         try:
             if not v.state.get('post', {}).get('cleaned'):
                 v.create('post')
                 v.wait('post')
         except Exception as exc:
             failures.append(str(exc))
+        if getattr(v,'state',{}).get('schema_version')==2 and not v.state.get('historical_dual_pair'):
+            try:
+                # Keep Pair A running throughout B/C validation, and confirm
+                # continuity again without changing either measurement anchor.
+                v.wait_measure()
+            except Exception as exc:
+                failures.append(str(exc))
         save(v.root/'workload-errors.json', failures)
         return int(bool(failures))
     return 0

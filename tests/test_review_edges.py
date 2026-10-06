@@ -75,7 +75,7 @@ class ReviewEdges(unittest.TestCase):
             root=pathlib.Path(d); obj=v.Validation.__new__(v.Validation)
             obj.root=root; obj.cfg={'interval':.2}; obj.state={'post':{'cleaned':True}}
             v.save(root/'validation-window.json',{'start_anchor':anchor(1),'end_anchor':anchor(11)})
-            v.save(root/'pre0-console-records.json',[packet(i,i not in (3,4,5)) for i in range(1,12)])
+            v.save(root/'measure0-console-records.json',[packet(i,i not in (3,4,5)) for i in range(1,12)])
             obj.wait=Mock(side_effect=RuntimeError('metadata failed'))
             obj.collect=Mock(side_effect=OSError('Nova API unavailable'))
             with patch.object(v,'Validation',return_value=obj),patch.object(sys,'argv',['workload_validation.py','post',d]):
@@ -90,7 +90,7 @@ class ReviewEdges(unittest.TestCase):
             checks=v.read_evidence(root,'pre-workload-checks.json')
             checks['0'].update(metadata='FAIL',dhcp_convergence='FAIL')
             v.save(root/'pre-workload-checks.json',checks)
-            v.save(root/'tenant-dataplane-probe.json',{'status':'PASS','packet_loss_percent':3,'actual_dataplane_outage_seconds':.6})
+            v.save(root/'tenant-dataplane-probe.json',{'status':'PASS','measurement_workload':'Pair A','packet_loss_percent':3,'actual_dataplane_outage_seconds':.6})
             subprocess.run([sys.executable,str(ROOT/'scripts/migration_report.py'),d,'run','inventory'],check=True,stdout=subprocess.DEVNULL)
             report=v.read_evidence(root,'migration-report.json'); text=(root/'migration-report.txt').read_text()
             self.assertEqual(report['result'],'MIGRATED_VALIDATION_INCOMPLETE')

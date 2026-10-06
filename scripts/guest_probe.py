@@ -212,7 +212,7 @@ def emit(record):
 
 def packet(seq, ts, mono):
     try:
-        ok = subprocess.run(['ping', '-n', '-c', '1', '-W', '1', CONFIG['peer']],
+        ok = subprocess.run(['ping', '-n', '-c', '1', '-W', '1', '-s', '56', CONFIG['peer']],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
         emit(dict(kind='packet', seq=seq, ts=ts, mono=mono, completed=time.time(), success=ok))
     except Exception as exc:

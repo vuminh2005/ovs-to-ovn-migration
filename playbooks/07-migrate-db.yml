@@ -6,6 +6,15 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Require authoritative Pair B MTU and workload readiness before any Neutron freeze
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} precutover-ready {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
     - name: Mark DB migration and control-plane downtime start
       ansible.builtin.shell: |
         date +%s.%N > {{ migration_run_dir }}/metrics/phase05.start

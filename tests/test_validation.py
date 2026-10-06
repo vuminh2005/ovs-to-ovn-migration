@@ -28,14 +28,22 @@ def ready_evidence(root):
                           ('pre-workload-checks.json','geneve'),
                           ('post-workload-checks.json','geneve')]:
         row={k:'PASS' for k in ('identity','active','bound','dhcp','metadata','connectivity')}
+        row.update(mtu='PASS',boot_continuity='PASS')
         row['network_type']=nettype
         if nettype=='geneve': row.update(dhcp_availability='PASS',dhcp_convergence='PASS')
         v.save(root/name, {'0':row,'1':row})
     for name in ('existing-network-semantics.json','post-ovn-bindings.json','tenant-dataplane-probe.json'):
         v.save(root/name, {'status':'PASS'})
+    v.save(root/'tenant-dataplane-probe.json',{'status':'PASS','measurement_workload':'Pair A',
+           'pair_a_boot_continuity':'PASS','packet_loss_percent':0,'actual_dataplane_outage_seconds':0})
     v.save(root/'resource-consistency.json', {'networks':{'unchanged':True}})
     v.save(root/'validation-orchestration.json', {'semantics_rc':0, 'workload_rc':0})
     v.save(root/'workload-errors.json', [])
+    for name in ('measure-readiness.json','measure-post-checks.json','dhcp-initial-preparation.json','dhcp-precutover-preparation.json'):
+        v.save(root/name,{'status':'PASS'})
+    v.save(root/'existing-mtu-automatic.json',{'status':'PASS'})
+    v.save(root/'existing-mtu-remediation.json',{'status':'PASS','automatic_mtu_convergence':'PASS','remediation_required':False,'remediation_action':'none'})
+    v.save(root/'existing-migration-baseline.json',{'0':{'boot':'one'},'1':{'boot':'one'}})
 
 
 class EvidenceTests(unittest.TestCase):

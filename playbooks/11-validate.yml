@@ -48,7 +48,8 @@
         post = state.get('post', {})
         owned = {k:set() for k in pairs}
         if post.get('router'): owned['routers'].add(post['router'])
-        for vm in (post.get('0', {}), post.get('1', {})):
+        fresh = post.get('fresh', post)
+        for vm in (fresh.get('0', {}), fresh.get('1', {})):
           for kind, field in [('networks','network'),('subnets','subnet'),('servers','server'),('compute_ports','port')]:
             if vm.get(field): owned[kind].add(vm[field])
         for key,(bf,af) in pairs.items():

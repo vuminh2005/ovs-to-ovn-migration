@@ -50,26 +50,7 @@
       register: semantics_result
       failed_when: false
 
-    - name: Stop only this run's Nova console collector before final collection
-      ansible.builtin.shell: |
-        set -euo pipefail
-        python3 - {{ migration_run_dir | quote }} <<'PYCODE'
-        import pathlib, sys, os, signal
-        root = pathlib.Path(sys.argv[1])
-        p = root/'collector.pid'
-        if p.exists():
-            pid = int(p.read_text())
-            cmd = pathlib.Path('/proc')/str(pid)/'cmdline'
-            if cmd.exists():
-                parts = cmd.read_bytes().split(b'\0')
-                if b'collect' in parts and str(root).encode() in parts and any(b'workload_validation.py' in x for x in parts):
-                    os.kill(pid, signal.SIGTERM)
-        PYCODE
-      args:
-        executable: /bin/bash
-      when: validation_workloads_enabled | bool
-
-    - name: Require fresh recovery evidence from VM1 VM2 and provision VM3 VM4
+    - name: Recover Pair A packets validate Pair B and provision fresh Pair C
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -96,13 +77,16 @@
     - name: Load fresh workload UUID checkpoint from deployment host
       ansible.builtin.set_fact:
         fresh_state: "{{ lookup('file', hostvars['localhost']['migration_run_dir'] + '/validation-resources.json', errors='ignore') | default('{}', true) | from_json }}"
+    - name: Resolve fresh Pair C checkpoint with historical fallback
+      ansible.builtin.set_fact:
+        fresh_pair_checkpoint: "{{ fresh_state.get('post', {}).get('fresh', fresh_state.get('post', {})) }}"
     - name: Check each fresh port has an OVN chassis and up true
       ansible.builtin.shell: |
         set -euo pipefail
         docker exec ovn_northd ovn-sbctl --db={{ hostvars['localhost']['ovn_sb_connection_runtime'] | quote }} --format=json --columns=chassis,up find Port_Binding logical_port={{ item | quote }} | python3 -c 'import json,sys; rows=json.load(sys.stdin)["data"]; assert len(rows)==1 and rows[0][0][0]=="uuid" and rows[0][1] is True'
       args:
         executable: /bin/bash
-      loop: "{{ [fresh_state.post['0'].port, fresh_state.post['1'].port] if fresh_state.get('post') and not fresh_state.post.get('cleaned') else [] }}"
+      loop: "{{ [fresh_pair_checkpoint.get('0', {}).get('port'), fresh_pair_checkpoint.get('1', {}).get('port')] | reject('equalto', none) | list if not fresh_state.get('post', {}).get('cleaned') else [] }}"
       register: fresh_bindings
       failed_when: false
       changed_when: false
@@ -112,4 +96,31 @@
         dest: "{{ hostvars['localhost']['migration_run_dir'] }}/post-ovn-bindings.json"
         mode: '0600'
         content: "{{ {'status': ('PASS' if (fresh_bindings.results | default([]) | length == 2 and fresh_bindings.results | map(attribute='rc') | select('equalto', 0) | list | length == 2) else 'UNAVAILABLE'), 'results': fresh_bindings.results | default([])} | to_nice_json }}"
+
+
+- name: Stop owned console collector after validation
+  hosts: localhost
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Stop only this run's Nova console collector after all validation evidence is collected
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - {{ migration_run_dir | quote }} <<'PYCODE'
+        import pathlib, sys, os, signal
+        root = pathlib.Path(sys.argv[1])
+        p = root/'collector.pid'
+        if p.exists():
+            pid = int(p.read_text())
+            cmd = pathlib.Path('/proc')/str(pid)/'cmdline'
+            if cmd.exists():
+                parts = cmd.read_bytes().split(b'\0')
+                if b'collect' in parts and str(root).encode() in parts and any(b'workload_validation.py' in x for x in parts):
+                    os.kill(pid, signal.SIGTERM)
+        PYCODE
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
 

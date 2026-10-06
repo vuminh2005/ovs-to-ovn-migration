@@ -34,7 +34,7 @@
       failed_when: false
       when: validation_workloads_enabled | bool
 
-    - name: Rebuild final report including both pairs cleanup evidence
+    - name: Rebuild final report including all three pairs cleanup evidence
       ansible.builtin.shell: |
         set -euo pipefail
         python3 {{ (playbook_dir + '/../scripts/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }}
