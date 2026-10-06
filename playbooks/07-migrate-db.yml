@@ -80,7 +80,7 @@
       changed_when: false
 
 - name: Phase 5 - Verify migrated OVN topology exists
-  hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
+  hosts: localhost
   gather_facts: false
   become: true
   vars_files:
@@ -95,9 +95,8 @@
         executable: /bin/bash
       run_once: true
       changed_when: false
-
+      delegate_to: "{{ ovn_cli_host_runtime }}"
     - name: Mark DB migration phase end
       ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase05.end
-      delegate_to: localhost
       run_once: true
       changed_when: false

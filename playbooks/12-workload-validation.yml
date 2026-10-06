@@ -1,6 +1,6 @@
 ---
 - name: Collect OVN logical-switch and chassis encapsulation evidence
-  hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
+  hosts: localhost
   gather_facts: false
   become: true
   vars_files:
@@ -14,6 +14,7 @@
         executable: /bin/bash
       register: validation_switches
       changed_when: false
+      delegate_to: "{{ ovn_cli_host_runtime }}"
     - name: Read registered chassis encapsulation types
       ansible.builtin.shell: |
         set -euo pipefail
@@ -22,6 +23,7 @@
         executable: /bin/bash
       register: validation_encaps
       changed_when: false
+      delegate_to: "{{ ovn_cli_host_runtime }}"
     - name: Persist OVN evidence on deployment host
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['migration_run_dir'] }}/{{ item.name }}"
@@ -30,7 +32,6 @@
       loop:
         - {name: ovn-logical-switches.json, content: "{{ validation_switches.stdout }}"}
         - {name: ovn-encaps.json, content: "{{ validation_encaps.stdout }}"}
-      delegate_to: localhost
 
 - name: Validate surviving and fresh workloads without automatic rollback
   hosts: localhost
@@ -86,7 +87,7 @@
         content: "{{ {'semantics_rc': semantics_result.rc, 'semantics_error': semantics_result.stderr, 'workload_rc': workload_result.rc | default(none), 'workload_error': workload_result.stderr | default('disabled')} | to_nice_json }}"
 
 - name: Verify fresh VM OVN Southbound bindings before cleanup
-  hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
+  hosts: localhost
   gather_facts: false
   become: true
   vars_files:
@@ -105,10 +106,10 @@
       register: fresh_bindings
       failed_when: false
       changed_when: false
+      delegate_to: "{{ ovn_cli_host_runtime }}"
     - name: Persist fresh binding evidence
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['migration_run_dir'] }}/post-ovn-bindings.json"
         mode: '0600'
         content: "{{ {'status': ('PASS' if (fresh_bindings.results | default([]) | length == 2 and fresh_bindings.results | map(attribute='rc') | select('equalto', 0) | list | length == 2) else 'UNAVAILABLE'), 'results': fresh_bindings.results | default([])} | to_nice_json }}"
-      delegate_to: localhost
 

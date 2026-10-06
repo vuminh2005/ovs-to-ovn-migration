@@ -39,7 +39,7 @@
       changed_when: false
 
 - name: Phase 3 - Verify OVN central process is present
-  hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
+  hosts: localhost
   gather_facts: false
   become: true
   vars_files:
@@ -50,3 +50,4 @@
         docker inspect ovn_northd | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
       run_once: true
       changed_when: false
+      delegate_to: "{{ ovn_cli_host_runtime }}"

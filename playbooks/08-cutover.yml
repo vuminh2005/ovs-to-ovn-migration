@@ -113,7 +113,7 @@
       changed_when: false
 
 - name: Phase 6 - Wait for OVN workload takeover using SB Port_Binding
-  hosts: "{{ hostvars['localhost']['ovn_cli_host_runtime'] }}"
+  hosts: localhost
   gather_facts: false
   become: true
   vars_files:
@@ -128,14 +128,14 @@
         executable: /bin/bash
       run_once: true
       changed_when: false
-
+      delegate_to: "{{ ovn_cli_host_runtime }}"
     - name: Copy pre-existing VM port IDs to OVN CLI host
       ansible.builtin.copy:
         src: "{{ hostvars['localhost']['migration_run_dir'] }}/compute-port-ids.txt"
         dest: /tmp/ovs-to-ovn-compute-port-ids.txt
         mode: "0600"
       run_once: true
-
+      delegate_to: "{{ ovn_cli_host_runtime }}"
     - name: Wait until every pre-existing VM port has chassis and up=true
       ansible.builtin.shell: |
         set -euo pipefail
@@ -158,10 +158,9 @@
         executable: /bin/bash
       run_once: true
       changed_when: false
-
+      delegate_to: "{{ ovn_cli_host_runtime }}"
     - name: Mark dataplane convergence end
       ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/dataplane_convergence.end
-      delegate_to: localhost
       run_once: true
       changed_when: false
 
