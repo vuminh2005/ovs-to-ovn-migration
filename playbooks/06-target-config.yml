@@ -47,6 +47,15 @@
       args:
         executable: /bin/bash
 
+    - name: Require owned guest DHCP MTU convergence before DB freeze
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} prepare-dhcp {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
     - name: Generate target Neutron config without restarting services
       ansible.builtin.shell: |
         set -euo pipefail

@@ -29,6 +29,7 @@ def ready_evidence(root):
                           ('post-workload-checks.json','geneve')]:
         row={k:'PASS' for k in ('identity','active','bound','dhcp','metadata','connectivity')}
         row['network_type']=nettype
+        if nettype=='geneve': row.update(dhcp_availability='PASS',dhcp_convergence='PASS')
         v.save(root/name, {'0':row,'1':row})
     for name in ('existing-network-semantics.json','post-ovn-bindings.json','tenant-dataplane-probe.json'):
         v.save(root/name, {'status':'PASS'})
@@ -224,7 +225,7 @@ class CleanupTests(unittest.TestCase):
 class ReportTests(unittest.TestCase):
     def run_report(self, root):
         subprocess.run([sys.executable,str(ROOT/'scripts/migration_report.py'),str(root),
-                        'test-run','test-inventory','','0.2'],check=True,stdout=subprocess.DEVNULL)
+                        'test-run','test-inventory'],check=True,stdout=subprocess.DEVNULL)
         return json.loads((root/'migration-report.json').read_text())
 
     def test_optional_evidence_absent(self):
@@ -233,6 +234,12 @@ class ReportTests(unittest.TestCase):
             report=self.run_report(root)
             self.assertEqual(report['dataplane_probe']['status'],'NOT TESTED')
             self.assertEqual(report['initial_ovs_workload_validation'],'NOT TESTED')
+            self.assertNotIn('deployment_host_probe',report)
+            text=(root/'migration-report.txt').read_text()
+            self.assertNotIn('deployment-host',text)
+            self.assertNotIn('estimated_outage_seconds',json.dumps(report))
+            self.assertIn('Packet loss: UNAVAILABLE',text)
+            self.assertIn('Actual dataplane outage: UNAVAILABLE',text)
             self.assertEqual(report['existing_workload_metadata'],'NOT TESTED')
             self.assertEqual(report['result'],'MIGRATED_VALIDATION_INCOMPLETE')
 

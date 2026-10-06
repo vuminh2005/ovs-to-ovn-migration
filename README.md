@@ -165,8 +165,9 @@ The guest probes run through staging, but staging is excluded from migration
 packet-loss accounting. The `anchor-start` action at the end of Phase 6's opening
 localhost play, immediately before legacy agents stop, saves VM1's latest
 completed `(boot, seq)` in `validation-window.json`. That start anchor is never
-rewritten on retry. After BOTH pre-existing guests pass fresh post-migration
-checks, the first recovery end anchor is saved. Packet metrics use precisely
+rewritten on retry. As soon as BOTH pre-existing guests have five consecutive fresh successful
+packet attempts on their original boot, the first recovery end anchor is saved.
+DHCP or metadata failures cannot delay or invalidate this packet-only boundary. Packet metrics use precisely
 `start.seq < packet.seq <= end.seq` on the same boot. The start boundary is the
 latest API-observed completed attempt immediately before cutover, with Nova
 console delivery and the probe interval limiting its resolution. OVN PortBinding
@@ -237,14 +238,12 @@ Use an Ubuntu cloud image containing cloud-init, Python3, ping, iproute2,
 systemd, DHCP lease files in `/run/systemd/netif/leases` or `/var/lib/dhcp`,
 and writable ttyS0. Unsupported images fail before downtime with console
 instructions. DHCP evidence proves a real lease and usable configuration; it
-also proves new OVN DHCP for VM3/VM4, but VM1/VM2 may retain their source lease.
+also checks that VM1/VM2 have received the target MTU and the actual OVN metadata
+next-hop after migration; a stale source lease is insufficient for convergence.
 Nova must expose serial
 console output through the API, and the deployment Python environment must contain
 `openstacksdk` and PyYAML. Credentials must permit the existing admin snapshots
 and creating/deleting the dedicated resources. Supply non-overlapping lab CIDRs.
-
-The optional `MIGRATION_PROBE_TARGET` remains a separate deployment-host canary
-under `deployment_host_probe`; it is not used for tenant workload conclusions.
 
 ### Existing VXLAN segment semantics
 
@@ -337,7 +336,8 @@ explicitly. New top-level results are:
 
 - `existing_workload_post_migration_validation`
 - `existing_workload_post_migration_connectivity`
-- `existing_workload_dhcp`
+- `existing_workload_dhcp_availability`
+- `existing_workload_dhcp_convergence`
 - `existing_workload_metadata`
 - `existing_workload_identity_preservation`
 - `existing_workload_cleanup`
@@ -359,9 +359,53 @@ explicitly. New top-level results are:
 null when no records exist; incomplete captures retain observed counts but must
 not be treated as complete packet-loss measurement. `initial_ovs_workload_validation` records the pre-downtime guest gate.
 `workload_checks` contains independent initial and post-migration per-VM checks, `existing_network_semantics` contains the segment audit,
-and `validation_orchestration` retains subprocess failure details. The previous
-host-canary evidence is retained separately as `deployment_host_probe`.
+and `validation_orchestration` retains subprocess failure details.
 
 On late retries, resource-preservation comparisons exclude additions only for
 checkpointed UUIDs belonging to this run's fresh VM3/VM4 topology. Original
 resource deletions and unrelated additions still fail the existing guard.
+
+## Owned validation DHCP preparation
+
+Before VM1/VM2 boot, all owned validation ports on their dedicated subnets receive
+DHCP option 58 (T1, default 30 seconds) and option 59 (T2, default 60 seconds)
+through Neutron `extra_dhcp_opts`. Caracal supports these options in both its
+[dnsmasq agent](https://github.com/openstack/neutron/blob/24.0.0/neutron/agent/linux/dhcp.py)
+and [OVN option mapping](https://github.com/openstack/neutron/blob/24.0.0/neutron/common/ovn/constants.py).
+No database SQL, guest reboot, forced lease renewal or unrelated tenant DHCP
+configuration is used. Short T2 bounds broadcast rebinding when the old OVS DHCP
+server disappears; T1 alone would keep renewing against that old server.
+
+The root guest service passively observes guest DHCP renewal REQUESTs and their
+matching ACKs with an Ethernet packet socket filtered to IPv4 DHCP. Initial preparation requires at least two guest renewal REQUEST/ACK exchanges
+carrying the configured T1/T2, a usable lease, fresh packet success and the same boot. This proves the
+owned guests are renewing rather than merely having Neutron-assigned addresses.
+`dhcp-initial-preparation.json` retains the evidence. The official Ubuntu image
+must permit AF_PACKET and its DHCP client must request/honor these options.
+Unsupported or missing ACK evidence fails before migration rather than guessing.
+
+`06-target-config.yml` retains the existing VXLAN MTU reduction and then polls
+owned guest evidence until both report the advertised target MTU, usable leases,
+short-T1/T2 renewals, continuing packet probes and unchanged boot IDs. This guard
+runs before `07-migrate-db.yml` freezes Neutron or changes the database. It writes
+`dhcp-precutover-preparation.json`; failure includes a reason and stops the run.
+Defaults are `validation_dhcp_t1_seconds: 30`, `validation_dhcp_t2_seconds: 60`,
+`validation_dhcp_convergence_timeout: 180`, and `target_geneve_mtu: 1442`.
+For a different underlay MTU, configure the validation target to match the existing
+per-network VXLAN-minus-overhead MTU calculation. There are no long fixed sleeps.
+
+After migration, DHCP availability means a DHCP lease, expected guest IP, usable
+interface and basic default routing. DHCP convergence additionally requires the
+guest interface MTU to equal the current Neutron network MTU and its selected
+route to 169.254.169.254 to use the fixed IP of the actual `network:distributed`
+port on the correct network/subnet. Missing or ambiguous port evidence yields
+UNAVAILABLE. No address offset or .2/.3 assumption is used. These checks and the
+expected MTU/metadata IP are saved independently in per-VM workload evidence.
+
+Full health failure still preserves validation resources and reports
+MIGRATED_VALIDATION_INCOMPLETE, even when tenant packet recovery and outage
+measurement are valid. Reports print `Packet loss: ... %` and
+`Actual dataplane outage: ... s`, or UNAVAILABLE when packet evidence is invalid.
+Historical phase checkpoint names and late-resume resource IDs are unchanged.
+Older run guests without the new DHCP evidence cannot claim DHCP convergence;
+resume does not fabricate preparation or silently reboot them.

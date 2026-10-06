@@ -55,12 +55,7 @@ binding_poll_interval_seconds: 5
 # required and no permanent tenant resource is left behind.
 validation_ephemeral_network: true
 
-# Legacy optional deployment-host canary (separate from tenant VM probe). For isolated tenant networks a deployment host
-# usually cannot reach VM fixed IPs, so packet loss cannot be measured safely
-# without a reachable canary. Set only when a target is reachable from the
-# machine running ansible-playbook, e.g.:
-#   MIGRATION_PROBE_TARGET=192.0.2.10 ansible-playbook ...
-dataplane_probe_target: "{{ lookup('env', 'MIGRATION_PROBE_TARGET') | default('', true) }}"
+# Guest VM1 tenant ICMP interval.
 dataplane_probe_interval_seconds: 0.2
 
 # Optional resume target. Leave empty to auto-pick the newest migration run.
@@ -93,3 +88,10 @@ validation_image_active_timeout_seconds: 900
 # Shared prerequisites are intentionally not part of normal workload cleanup.
 # True is rejected before migration; remove shared resources explicitly instead.
 validation_cleanup_prerequisites: false
+
+# DHCP option 58 on owned validation ports, before their first lease.
+validation_dhcp_t1_seconds: 30
+# Bound rebinding to the new server after OVS DHCP disappears.
+validation_dhcp_t2_seconds: 60
+validation_dhcp_convergence_timeout: 180
+target_geneve_mtu: 1442

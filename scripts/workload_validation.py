@@ -62,6 +62,31 @@ def freshness_anchor(rows):
     return anchor
 
 
+def latest_health(rows, anchor, interval):
+    current = sequence_anchor(rows)
+    if not anchor or not current or current['boot'] != anchor['boot']:
+        return None
+    candidates = [r for r in rows if r.get('kind') == 'health' and valid_marker(r) and
+                  r['boot'] == anchor['boot'] and anchor['seq'] < r['seq'] <= current['seq'] and
+                  current['seq']-r['seq'] <= int(10/interval)+1]
+    return max(candidates, key=lambda r:r['seq']) if candidates else None
+
+
+def dhcp_convergence(health, expected_mtu, metadata_ip):
+    if not health or expected_mtu is None or metadata_ip is None:
+        return 'UNAVAILABLE'
+    return 'PASS' if (health.get('dhcp') is True and health.get('mtu') == expected_mtu and
+                      health.get('metadata_gateway') == metadata_ip) else 'FAIL'
+
+
+def metadata_port_ip(ports, subnet_id):
+    # Count matching ports/allocations, not distinct IP strings: duplicate
+    # ports claiming the same address are still ambiguous resource evidence.
+    addresses = [fixed['ip_address'] for port in ports if port.device_owner == 'network:distributed'
+                 for fixed in port.fixed_ips if fixed['subnet_id'] == subnet_id]
+    return addresses[0] if len(addresses) == 1 else None
+
+
 def guest_checks(rows, anchor, interval):
     """Only sequence growth on the anchored boot can establish fresh evidence."""
     result = {'connectivity': 'UNAVAILABLE', 'dhcp': 'UNAVAILABLE', 'metadata': 'UNAVAILABLE'}
@@ -69,7 +94,7 @@ def guest_checks(rows, anchor, interval):
         return result
     if sequence_anchor(rows)['boot'] != anchor['boot']:
         return result
-    packets = {r['seq']: r for r in rows if r.get('kind') == 'packet' and valid_marker(r)
+    packets = {r['seq']: r for r in rows if valid_packet(r)
                and r['boot'] == anchor['boot'] and r['seq'] > anchor['seq']
                and type(r.get('success')) is bool}
     ordered = sorted(packets.values(), key=lambda r: r['seq'])
@@ -104,13 +129,18 @@ def probe_metrics(rows, start, end, interval):
     indexed = {}
     conflict = False
     reboot = False
-    for r in rows:
+    start_positions = [i for i,r in enumerate(rows) if valid_packet(r) and r['boot']==start['boot'] and r['seq']==start['seq']]
+    end_positions = [i for i,r in enumerate(rows) if valid_packet(r) and r['boot']==end['boot'] and r['seq']==end['seq']]
+    left = min(start_positions) if start_positions else -1
+    right = max(end_positions) if end_positions else len(rows)
+    for position,r in enumerate(rows):
         if not valid_packet(r):
             continue
         if r['boot'] != start['boot']:
-            # A newly observed boot anywhere in the retained stream invalidates
-            # this run's continuous probe, even if its sequence counter resets.
-            reboot = True
+            # Only a discontinuity inside the anchored interval invalidates
+            # packet measurement; later health failures are independent.
+            if left < position <= right:
+                reboot = True
             continue
         if start['seq'] < r['seq'] <= end['seq']:
             if r['seq'] in indexed and indexed[r['seq']] != r:
@@ -128,8 +158,10 @@ def probe_metrics(rows, start, end, interval):
     # records may use epochs only if internally monotonic, never host epochs.
     def clock(r):
         return r.get('mono', r['ts'])
+    boundary = [rows[start_positions[0]]] if start_positions else []
+    timed = boundary + ordered
     timing_valid = all(0 < clock(b)-clock(a) < 3*interval and
-                       0 < b['ts']-a['ts'] < 3*interval for a,b in zip(ordered, ordered[1:]))
+                       0 < b['ts']-a['ts'] < 3*interval for a,b in zip(timed, timed[1:]))
     failed = sum(r.get('success') is False for r in ordered)
     bursts = []
     burst = None
@@ -170,6 +202,8 @@ def read_evidence(root, name):
 
 def workload_pass(rows, network_type):
     keys = ('identity', 'active', 'bound', 'dhcp', 'connectivity', 'metadata')
+    if network_type == 'geneve':
+        keys += ('dhcp_availability', 'dhcp_convergence')
     return (set(rows) == {'0','1'} and all(row.get('network_type') == network_type and
             all(row.get(k) == 'PASS' for k in keys) for row in rows.values()))
 
@@ -238,6 +272,12 @@ class Validation:
                                              security_group_ids=[sg])
                 vm.update(port=port.id, fixed_ips=port.fixed_ips, ip=port.fixed_ips[0]['ip_address'])
                 self.commit()
+        if stage == 'pre':
+            for i in range(2):
+                vm = s[str(i)]
+                self.cloud.network.update_port(vm['port'], extra_dhcp_opts=[
+                    {'opt_name': '58', 'opt_value': str(cfg.get('dhcp_t1', 30)), 'ip_version': 4},
+                    {'opt_name': '59', 'opt_value': str(cfg.get('dhcp_t2', 60)), 'ip_version': 4}])
         for i in range(2):
             vm = s[str(i)]
             if vm.get('server'):
@@ -247,7 +287,7 @@ class Validation:
                 continue
             guest = (pathlib.Path(__file__).parent/'guest_probe.py').read_text()
             config = dict(run=cfg['run'], vm=stage+str(i), peer=s[str(1-i)]['ip'],
-                          ip=vm['ip'], interval=cfg['interval'], lifetime=cfg['lifetime'])
+                          ip=vm['ip'], interval=cfg['interval'], lifetime=cfg['lifetime'], dhcp_t1=cfg.get('dhcp_t1',30))
             # Guest obtains its own immutable instance UUID from cloud-init's datasource.
             launcher = "import json,pathlib; p=pathlib.Path('/etc/migration-probe.json'); c=json.loads(p.read_text()); c['server_id']=pathlib.Path('/var/lib/cloud/data/instance-id').read_text().strip(); p.write_text(json.dumps(c))"
             user_data = '#cloud-config\n' + __import__('yaml').safe_dump(dict(
@@ -340,7 +380,15 @@ class Validation:
                 active='PASS' if server.status == 'ACTIVE' else 'FAIL',
                 bound='PASS' if port.status == 'ACTIVE' and port.binding_host_id and port.binding_vif_type not in ('unbound','binding_failed') else 'FAIL')
             checks[str(i)].update(guest_checks(rows[str(i)], anchors[str(i)], self.cfg['interval']))
-            checks[str(i)]['network_type'] = self.cloud.network.get_network(vm['network']).provider_network_type
+            network = self.cloud.network.get_network(vm['network'])
+            checks[str(i)]['network_type'] = network.provider_network_type
+            checks[str(i)]['dhcp_availability'] = checks[str(i)]['dhcp']
+            if network.provider_network_type == 'geneve':
+                ports = list(self.cloud.network.ports(network_id=vm['network'], device_owner='network:distributed'))
+                expected_ip = metadata_port_ip(ports, vm['subnet'])
+                health = latest_health(rows[str(i)], anchors[str(i)], self.cfg['interval'])
+                checks[str(i)]['dhcp_convergence'] = dhcp_convergence(health, network.mtu, expected_ip)
+                checks[str(i)]['dhcp_expected'] = {'mtu': network.mtu, 'metadata_ip': expected_ip}
         return checks
 
     def wait(self, stage):
@@ -356,6 +404,8 @@ class Validation:
                 if anchors[key] is None:
                     anchors[key] = freshness_anchor(rows[key])
                     save(self.root/(stage+'-freshness-anchors.json'), anchors)
+            if stage == 'pre' and not self.cfg.get('initial'):
+                self.checkpoint_recovery(rows, anchors)
             checks = self.check(stage, anchors, rows)
             save(self.root/(stage+'-workload-checks.json'), checks)
             network_type = 'vxlan' if stage == 'pre' and self.cfg.get('initial') else 'geneve'
@@ -364,6 +414,50 @@ class Validation:
             if time.monotonic() >= deadline:
                 raise RuntimeError('Guest validation failed/unavailable: require NEW sequence-based packet and health records; use Ubuntu cloud image with cloud-init, Python3, iproute2, ping, DHCP leases and ttyS0; inspect console evidence')
             time.sleep(5)
+
+    def checkpoint_recovery(self, rows, anchors):
+        if not all(guest_checks(rows[k], anchors[k], self.cfg['interval'])['connectivity'] == 'PASS' for k in ('0','1')):
+            return False
+        window = read_evidence(self.root, 'validation-window.json')
+        end = sequence_anchor(rows['0'])
+        if window.get('start_anchor') and end and not window.get('end_anchor'):
+            window['end_anchor'] = end
+            save(self.root/'validation-window.json', window)
+        if window.get('end_anchor'):
+            save(self.root/'tenant-dataplane-probe.json', probe_metrics(
+                rows['0'], window['start_anchor'], window['end_anchor'], self.cfg['interval']))
+        return bool(window.get('end_anchor'))
+
+    def prepare_dhcp(self, target=False):
+        name = 'dhcp-precutover-preparation.json' if target else 'dhcp-initial-preparation.json'
+        deadline = time.monotonic()+self.cfg.get('dhcp_timeout', 180)
+        try:
+            baseline = self.anchors('pre', deadline=deadline)
+            initial = read_evidence(self.root, 'initial-freshness-anchors.json') or baseline
+            while True:
+                rows = self.collect('pre', deadline=deadline)
+                evidence = {}
+                for key in ('0','1'):
+                    health = latest_health(rows[key], baseline[key], self.cfg['interval'])
+                    current = sequence_anchor(rows[key])
+                    same_boot = bool(current and initial[key] and current['boot'] == initial[key]['boot'])
+                    good = bool(health and health.get('dhcp') is True and
+                                health.get('dhcp_t1_seconds') == self.cfg.get('dhcp_t1',30) and
+                                health.get('dhcp_t2_seconds') == self.cfg.get('dhcp_t2',60) and
+                                health.get('dhcp_ack_count',0) >= 2 and same_boot and
+                                guest_checks(rows[key], baseline[key], self.cfg['interval'])['connectivity']=='PASS')
+                    if target:
+                        network = self.cloud.network.get_network(self.state['pre'][key]['network'])
+                        good = good and network.mtu == self.cfg.get('target_mtu',1442) and health.get('mtu') == network.mtu
+                    evidence[key] = {'status':'PASS' if good else 'UNAVAILABLE', 'health':health, 'same_boot':same_boot}
+                save(self.root/name, {'status':'PASS' if all(r['status']=='PASS' for r in evidence.values()) else 'IN_PROGRESS', 'guests':evidence})
+                if all(r['status']=='PASS' for r in evidence.values()): return
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('DHCP preparation did not converge: require observed short-T1 renewal ACKs, usable lease, running probe, unchanged boot and target MTU before DB freeze')
+                time.sleep(2)
+        except Exception as exc:
+            save(self.root/name, {'status':'FAIL', 'reason':str(exc), 'guests':locals().get('evidence',{})})
+            raise
 
     def cleanup(self, stage):
         s = self.state[stage]
@@ -426,7 +520,7 @@ class Validation:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready'])
+    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready', 'prepare-dhcp'])
     p.add_argument('root', type=pathlib.Path)
     args = p.parse_args()
     if args.action == 'cleanup-ready':
@@ -447,6 +541,8 @@ def main():
             time.sleep(v.cfg['console_interval'])
     elif args.action == 'anchor-start':
         v.checkpoint_start()
+    elif args.action == 'prepare-dhcp':
+        v.prepare_dhcp(target=True)
     elif args.action == 'finalize':
         v.finalize()
     elif args.action == 'pre':
@@ -454,6 +550,7 @@ def main():
         v.create('pre')
         v.wait('pre')
         save(v.root/'initial-freshness-anchors.json', read_evidence(v.root, 'pre-freshness-anchors.json'))
+        v.prepare_dhcp()
     else:
         failures = []
         recovered = None
@@ -462,12 +559,12 @@ def main():
         except Exception as exc:
             failures.append(str(exc))
         window = read_evidence(v.root, 'validation-window.json')
-        # Keep the first successful recovery end immutable across late retries.
-        # Failed validation does not capture a fabricated recovery end.
-        if recovered is not None and window.get('start_anchor') and not window.get('end_anchor'):
-            window['end_anchor'] = sequence_anchor(recovered['0'])
-            save(v.root/'validation-window.json', window)
-        rows = v.collect('pre')['0']
+        try:
+            rows = v.collect('pre')['0']
+        except Exception as exc:
+            failures.append('Final console collection: '+str(exc))
+            # API failure cannot erase a fully captured, anchored measurement.
+            rows = read_evidence(v.root, 'pre0-console-records.json') or []
         save(v.root/'tenant-dataplane-probe.json', probe_metrics(rows, window.get('start_anchor'),
              window.get('end_anchor'), v.cfg['interval']))
         try:
