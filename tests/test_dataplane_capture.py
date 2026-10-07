@@ -1,6 +1,7 @@
 """Synthetic Ethernet PCAP and capture-process journal regressions (no cloud)."""
 import json
 import pathlib
+import signal
 import socket
 import struct
 import subprocess
@@ -80,10 +81,14 @@ class PcapTests(unittest.TestCase):
     def test_capture_drops_lifetime_gap_or_failed_process_invalidate(self):
         self.metrics()
         for changes in ({'dropped_packets':1},{'supervisor_gap':True},{'status':'RUNNING'},
-                        {'started_at':11},{'stopped_at':11},{'returncode':1}):
+                        {'started_at':11},{'stopped_at':11},{'returncode':1},
+                        {'status':'FAILED','returncode':-11}):
             with self.subTest(changes=changes):
                 cp=dict(self.cp,remote=dict(self.cp['remote'],**changes))
-                self.assertEqual(c.pcap_metrics(self.path,cp,self.window,.2)['status'],'UNAVAILABLE')
+                result=c.pcap_metrics(self.path,cp,self.window,.2)
+                self.assertEqual(result['status'],'UNAVAILABLE')
+                self.assertIsNone(result['packet_loss_percent'])
+                self.assertIsNone(result['actual_dataplane_outage_seconds'])
 
     def test_identifier_sequence_rollover_is_valid(self):
         self.assertEqual(self.metrics(initial=65530)['status'],'PASS')
@@ -127,11 +132,93 @@ class PcapTests(unittest.TestCase):
         self.metrics(); self.path.write_bytes(self.path.read_bytes()[:-2])
         self.assertEqual(c.pcap_metrics(self.path,self.cp,self.window,.2)['status'],'UNAVAILABLE')
 
+    def test_zero_byte_and_invalid_pcap_are_unavailable_and_preserved(self):
+        self.metrics()
+        for data in (b'', b'not a pcap', b'\0'*24):
+            with self.subTest(data=data):
+                self.path.write_bytes(data)
+                result=c.pcap_metrics(self.path,self.cp,self.window,.2)
+                self.assertEqual(result['status'],'UNAVAILABLE')
+                self.assertIsNone(result['packet_loss_percent'])
+                self.assertIsNone(result['actual_dataplane_outage_seconds'])
+                self.assertEqual(self.path.read_bytes(),data)
+
     def test_endpoint_reply_timestamp_must_match_raw_pcap(self):
         self.metrics()
         self.window['pcap_end']['reply_timestamp']-=1
         self.assertEqual(c.pcap_metrics(self.path,self.cp,self.window,.2)['status'],'UNAVAILABLE')
 
+
+
+class SupervisorTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root=pathlib.Path(self.tmp.name); self.path=self.root/'measure0.pcap'
+        self.cfg=dict(run='run',server='server',port='port',source_ip='10.0.0.2',peer_ip='10.0.1.2',interval=.2)
+        c.save(self.root/'capture-state.json',dict(config=self.cfg,tap='tapABC',path=str(self.path),status='START_INTENT'))
+
+    def run_supervisor(self, returncode, controlled_stop=False):
+        child=Mock(pid=123,returncode=returncode)
+        child.poll.side_effect=[None,returncode] if controlled_stop else [returncode]
+        if controlled_stop:
+            (self.root/'stop-request').touch()
+        def launch(*args, **kwargs):
+            kwargs['stderr'].write(b'0 packets dropped by kernel\n')
+            self.path.write_bytes(b'')
+            return child
+        with patch.object(c,'verify_saved_tap') as verify,patch.object(c,'identity',return_value={'pid':123}),\
+                patch.object(c.subprocess,'Popen',side_effect=launch) as popen,patch.object(c.time,'sleep'):
+            c.supervise(self.root)
+        verify.assert_called_once_with(self.cfg,'tapABC')
+        return json.loads((self.root/'capture-state.json').read_text()),child,popen
+
+    def test_production_argv_uses_normal_privilege_drop_and_exact_capture_arguments(self):
+        _,_,popen=self.run_supervisor(0,controlled_stop=True)
+        argv=popen.call_args.args[0]
+        self.assertEqual(argv,['tcpdump','-U','-n','-s','0','-i','tapABC','-w',str(self.path),
+                               'icmp and host 10.0.0.2 and host 10.0.1.2'])
+        self.assertNotIn('-Z',argv)
+        self.assertEqual(popen.call_args.kwargs['stdin'],subprocess.DEVNULL)
+        self.assertIs(popen.call_args.kwargs['stdout'],popen.call_args.kwargs['stderr'])
+
+    def test_controlled_sigint_stop_remains_successful(self):
+        state,child,_=self.run_supervisor(0,controlled_stop=True)
+        child.send_signal.assert_called_once_with(signal.SIGINT)
+        self.assertEqual(state['status'],'STOPPED')
+        self.assertEqual(state['returncode'],0)
+        self.assertEqual(state['dropped_packets'],0)
+        self.assertNotIn('reason',state)
+
+    def test_sigsegv_fails_with_signal_reason_and_preserves_evidence_without_restart(self):
+        state,child,_=self.run_supervisor(-11)
+        self.assertEqual(state['status'],'FAILED')
+        self.assertEqual(state['returncode'],-11)
+        self.assertEqual(state['reason'],'tcpdump exited unexpectedly with return code -11 (SIGSEGV)')
+        child.send_signal.assert_not_called()
+        with self.assertRaisesRegex(RuntimeError,'SIGSEGV'):
+            c.agent_snapshot(self.root)
+        before={name:(self.root/name).read_bytes() for name in ('capture-state.json','tcpdump.log','measure0.pcap')}
+        with patch.object(c.subprocess,'Popen') as launch:
+            with self.assertRaises(RuntimeError):
+                c.agent_start(self.root,self.cfg)
+            launch.assert_not_called()
+        self.assertEqual({name:(self.root/name).read_bytes() for name in before},before)
+
+    def test_positive_nonzero_exit_has_useful_failure_reason(self):
+        state,_,_=self.run_supervisor(2)
+        self.assertEqual(state['status'],'FAILED')
+        self.assertEqual(state['returncode'],2)
+        self.assertEqual(state['reason'],'tcpdump exited unexpectedly with return code 2')
+
+    def test_unexpected_zero_exit_is_still_failed(self):
+        state,_,_=self.run_supervisor(0)
+        self.assertEqual(state['status'],'FAILED')
+        self.assertIn('return code 0',state['reason'])
+
+    def test_unknown_signal_has_numeric_failure_reason(self):
+        state,_,_=self.run_supervisor(-999)
+        self.assertEqual(state['status'],'FAILED')
+        self.assertIn('return code -999 (signal 999)',state['reason'])
 
 
 class CaptureJournalTests(unittest.TestCase):

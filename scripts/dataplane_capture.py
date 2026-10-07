@@ -298,7 +298,7 @@ def supervise(root):
     try:
         verify_saved_tap(cfg, state['tap'])
         with (root/'tcpdump.log').open('wb') as log:
-            child=subprocess.Popen(['tcpdump','-Z','root','-U','-n','-s','0','-i',state['tap'],'-w',state['path'],
+            child=subprocess.Popen(['tcpdump','-U','-n','-s','0','-i',state['tap'],'-w',state['path'],
                                     f"icmp and host {cfg['source_ip']} and host {cfg['peer_ip']}"],
                                    stdin=subprocess.DEVNULL,stdout=log,stderr=log)
             state.update(tcpdump=identity(child.pid),started_at=time.time(),status='RUNNING')
@@ -312,6 +312,14 @@ def supervise(root):
                     child.send_signal(signal.SIGINT); stopping=True
                 state['heartbeat_at']=time.time(); save(path,state); time.sleep(.25)
             state.update(stopped_at=time.time(),returncode=child.returncode,status='STOPPED' if stopping and child.returncode==0 else 'FAILED')
+            if state['status']=='FAILED':
+                reason=f'tcpdump exited unexpectedly with return code {child.returncode}'
+                if child.returncode < 0:
+                    try:
+                        reason+=f' ({signal.Signals(-child.returncode).name})'
+                    except ValueError:
+                        reason+=f' (signal {-child.returncode})'
+                state['reason']=reason
         match=re.search(r'(\d+) packets dropped by kernel', (root/'tcpdump.log').read_text())
         state['dropped_packets']=int(match[1]) if match else None
         save(path,state)
