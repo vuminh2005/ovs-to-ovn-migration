@@ -3,6 +3,7 @@
 import argparse
 import json
 import subprocess
+import uuid
 
 
 def value(item):
@@ -15,21 +16,45 @@ def value(item):
     return item
 
 
-def query(tool,db,table,columns,condition):
-    command=['docker','exec','ovn_northd',tool,'--timeout=10','--db='+db,'--format=json','--columns='+columns,'find',table,condition]
-    raw=json.loads(subprocess.check_output(command,text=True))
-    return [dict(zip(raw['headings'],map(value,row))) for row in raw['data']]
+def query(tool,db,table,columns,condition,operation='find'):
+    command=['docker','exec','ovn_northd',tool,'--timeout=10','--db='+db,'--format=json','--columns='+columns,operation,table,condition]
+    try:
+        output=subprocess.check_output(command,text=True,stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError as exc:
+        # Identify the query without including the database connection string.
+        raise RuntimeError(f'{tool} {operation} {table} failed with return code {exc.returncode}; '
+                           f'stderr: {exc.stderr or ""}; stdout: {exc.output or ""}') from None
+    try:
+        raw=json.loads(output)
+        headings=raw['headings']; rows=raw['data']
+        if (not isinstance(headings,list) or not all(isinstance(h,str) for h in headings)
+                or len(set(headings))!=len(headings) or headings!=columns.split(',')
+                or not isinstance(rows,list) or not all(isinstance(row,list) and len(row)==len(headings) for row in rows)):
+            raise ValueError('invalid headings or row shape')
+        return [dict(zip(headings,map(value,row))) for row in rows]
+    except (ValueError,TypeError,KeyError) as exc:
+        raise RuntimeError(f'{tool} {operation} {table} returned malformed OVN JSON: {exc}') from None
 
 
 def evidence(port,nb,sb):
     binding=query('ovn-sbctl',sb,'Port_Binding','logical_port,chassis,up','logical_port='+port)
     lsp=query('ovn-nbctl',nb,'Logical_Switch_Port','name,dhcpv4_options','name='+port)
-    options=[]
-    if len(lsp)==1:
-        refs=lsp[0]['dhcpv4_options']
-        refs=refs if isinstance(refs,list) else [refs]
-        if len(refs)==1:
-            options=query('ovn-nbctl',nb,'DHCP_Options','_uuid,cidr,external_ids,options','_uuid='+refs[0])
+    if len(lsp)!=1 or lsp[0]['name']!=port:
+        raise RuntimeError('Expected exactly one Logical_Switch_Port for the exact Neutron port UUID')
+    refs=lsp[0]['dhcpv4_options']
+    refs=refs if isinstance(refs,list) else [refs]
+    if len(refs)!=1 or not isinstance(refs[0],str):
+        raise RuntimeError('Expected exactly one dhcpv4_options UUID reference for the validation port')
+    dhcp_uuid=refs[0]
+    try:
+        if str(uuid.UUID(dhcp_uuid))!=dhcp_uuid:
+            raise ValueError('noncanonical UUID')
+    except ValueError:
+        raise RuntimeError('Malformed dhcpv4_options UUID reference for the validation port') from None
+    options=query('ovn-nbctl',nb,'DHCP_Options','cidr,external_ids,options',dhcp_uuid,operation='list')
+    if len(options)!=1:
+        raise RuntimeError('Expected exactly one directly addressed DHCP_Options record for '+dhcp_uuid)
+    options[0]['_uuid']=dhcp_uuid
     return dict(port=port,bindings=binding,lsps=lsp,dhcp_options=options)
 
 

@@ -884,8 +884,12 @@ class Validation:
         save(extra,dict(evidence_port=vm['port'],evidence_nb=self.cfg['ovn_nb'],evidence_sb=self.cfg['ovn_sb'],
                         evidence_host=self.cfg['ovn_cli_host'],evidence_path=str(path)))
         helper=pathlib.Path(__file__).parent.parent/'playbooks/workload-ovn-evidence-tasks.yml'
-        subprocess.run(['ansible-playbook','-i',self.cfg['inventory'],str(helper),'-e','@'+str(extra)],
-                       check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=min(60,self.cfg.get('timeout',300)))
+        try:
+            subprocess.run(['ansible-playbook','-i',self.cfg['inventory'],str(helper),'-e','@'+str(extra)],
+                           check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=min(60,self.cfg.get('timeout',300)))
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(f'workload-ovn-evidence-tasks.yml failed with return code {exc.returncode}; '
+                               f'stderr: {exc.stderr or ""}; stdout: {exc.stdout or ""}') from None
         return read_evidence(self.root,path.name)
 
     def post_ovn_health(self, key):
