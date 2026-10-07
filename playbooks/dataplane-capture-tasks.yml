@@ -1,0 +1,53 @@
+---
+# Invoked by the validation helper using the checkpointed inventory/delegate.
+- name: Operate exact Pair A compute-local capture
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Prepare persistent owned capture directory
+      ansible.builtin.file:
+        path: "{{ capture_checkpoint.directory }}"
+        state: directory
+        mode: '0700'
+      delegate_to: "{{ capture_checkpoint.compute_host }}"
+      when: capture_action == 'start'
+    - name: Install standalone capture supervisor before launch
+      ansible.builtin.copy:
+        src: ../scripts/dataplane_capture.py
+        dest: "{{ capture_checkpoint.directory }}/dataplane_capture.py"
+        mode: '0700'
+        force: false
+      delegate_to: "{{ capture_checkpoint.compute_host }}"
+      when: capture_action == 'start'
+    - name: Start reuse inspect or stop the exact capture process
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ capture_checkpoint.directory }}/dataplane_capture.py"
+          - "{{ capture_action }}"
+          - "{{ capture_checkpoint.directory }}"
+          - "{{ capture_checkpoint | to_json }}"
+      delegate_to: "{{ capture_checkpoint.compute_host }}"
+      register: capture_operation
+      when: capture_action != 'remove'
+    - name: Persist compute capture process and observation evidence locally
+      ansible.builtin.copy:
+        dest: "{{ capture_root }}/capture-remote-state.json"
+        content: "{{ capture_operation.stdout }}"
+        mode: '0600'
+      when: capture_action != 'remove'
+    - name: Fetch unmodified PCAP and tcpdump completion diagnostics
+      ansible.builtin.fetch:
+        src: "{{ capture_checkpoint.directory }}/{{ item }}"
+        dest: "{{ capture_root }}/{{ item }}"
+        flat: true
+      loop: [measure0.pcap, tcpdump.log, capture-state.json, supervisor.log]
+      delegate_to: "{{ capture_checkpoint.compute_host }}"
+      when: capture_action == 'stop'
+    - name: Remove only successful stopped capture evidence after final report persistence
+      ansible.builtin.file:
+        path: "{{ capture_checkpoint.directory }}"
+        state: absent
+      delegate_to: "{{ capture_checkpoint.compute_host }}"
+      when: capture_action == 'remove'

@@ -1,0 +1,18 @@
+---
+- name: Read exact Pair B OVN state without changing it
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Execute read-only LSP DHCP and Port Binding query on selected CLI host
+      ansible.builtin.script:
+        cmd: "../scripts/ovn_workload_evidence.py {{ evidence_port | quote }} {{ evidence_nb | quote }} {{ evidence_sb | quote }}"
+        executable: python3
+      delegate_to: "{{ evidence_host }}"
+      register: ovn_evidence
+      changed_when: false
+    - name: Persist exact OVN evidence on deployment host
+      ansible.builtin.copy:
+        dest: "{{ evidence_path }}"
+        content: "{{ ovn_evidence.stdout }}"
+        mode: '0600'

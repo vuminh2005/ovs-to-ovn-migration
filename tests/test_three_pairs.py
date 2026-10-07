@@ -485,6 +485,9 @@ class ThreePairsTests(unittest.TestCase):
         s.obj.prepare_dhcp(target=True); s.obj.wait_measure()
         remediation=v.read_evidence(self.root,'existing-mtu-remediation.json')
         metric=v.read_evidence(self.root,'tenant-dataplane-probe.json')
+        # Synthetic authoritative metric fixture for the report boundary; legacy
+        # console-only measurement is tested separately, never promoted by code.
+        metric['evidence_source']='compute-tap-pcap'
         baseline=v.read_evidence(self.root,'existing-migration-baseline.json')
         ready_evidence(self.root)
         v.save(self.root/'existing-mtu-automatic.json',{'status':'FAIL'})

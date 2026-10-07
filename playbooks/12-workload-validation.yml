@@ -50,6 +50,22 @@
       register: semantics_result
       failed_when: false
 
+    - name: Apply independent post-cutover remediation opt-in to persisted configuration
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - {{ migration_run_dir | quote }} {{ (validation_allow_post_cutover_guest_reboot | bool | string) | quote }} {{ validation_post_cutover_dhcp_timeout_seconds | int }} {{ {'ovn_nb': ovn_nb_connection_runtime, 'ovn_sb': ovn_sb_connection_runtime, 'ovn_cli_host': ovn_cli_host_runtime, 'inventory': kolla_inventory_runtime} | to_json | quote }} <<'PYCODE'
+        import json, pathlib, sys
+        root=pathlib.Path(sys.argv[1]); path=root/'validation-config.json'
+        cfg=json.loads(path.read_text())
+        cfg.update(json.loads(sys.argv[4]))
+        cfg.update(allow_post_cutover_guest_reboot=sys.argv[2].lower()=='true',
+                   post_cutover_timeout=int(sys.argv[3]),post_cutover_dhcp_enabled=True)
+        temp=path.with_suffix('.tmp'); temp.write_text(json.dumps(cfg,indent=2)); temp.chmod(0o600); temp.replace(path)
+        PYCODE
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
     - name: Recover Pair A packets validate Pair B and provision fresh Pair C
       ansible.builtin.shell: |
         set -euo pipefail
@@ -124,3 +140,39 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
+
+- name: Finalize authoritative Pair A capture after all validation
+  hosts: localhost
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Stop owned compute capture fetch raw PCAP and calculate strict metrics
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} capture-finish {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      register: capture_finish_result
+      failed_when: false
+      when: validation_workloads_enabled | bool
+    - name: Preserve capture finalization failure as unavailable evidence
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - {{ migration_run_dir | quote }} {{ (capture_finish_result.stderr | default('')) | quote }} <<'PYCODE'
+        import json, pathlib, sys
+        root=pathlib.Path(sys.argv[1]); path=root/'tenant-dataplane-probe.json'
+        value=json.loads(path.read_text()) if path.exists() else {}
+        if value.get('evidence_source')!='compute-tap-pcap': value={}
+        value.update(status='UNAVAILABLE',evidence_source='compute-tap-pcap',measurement_workload='Pair A',
+                     packet_loss_percent=None,actual_dataplane_outage_seconds=None,
+                     reason=sys.argv[2] or value.get('reason','Capture finalization failed'))
+        path.write_text(json.dumps(value,indent=2))
+        PYCODE
+      args:
+        executable: /bin/bash
+      when:
+        - validation_workloads_enabled | bool
+        - capture_finish_result.rc | default(0) != 0

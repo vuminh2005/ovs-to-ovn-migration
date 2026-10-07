@@ -90,7 +90,7 @@ class ReviewEdges(unittest.TestCase):
             checks=v.read_evidence(root,'pre-workload-checks.json')
             checks['0'].update(metadata='FAIL',dhcp_convergence='FAIL')
             v.save(root/'pre-workload-checks.json',checks)
-            v.save(root/'tenant-dataplane-probe.json',{'status':'PASS','measurement_workload':'Pair A','packet_loss_percent':3,'actual_dataplane_outage_seconds':.6})
+            v.save(root/'tenant-dataplane-probe.json',{'status':'PASS','measurement_workload':'Pair A','evidence_source':'compute-tap-pcap','packet_loss_percent':3,'actual_dataplane_outage_seconds':.6})
             subprocess.run([sys.executable,str(ROOT/'scripts/migration_report.py'),d,'run','inventory'],check=True,stdout=subprocess.DEVNULL)
             report=v.read_evidence(root,'migration-report.json'); text=(root/'migration-report.txt').read_text()
             self.assertEqual(report['result'],'MIGRATED_VALIDATION_INCOMPLETE')

@@ -65,14 +65,17 @@ report.update({
 })
 report['new_ovn_workload_bindings']=(evidence('post-ovn-bindings.json') or {}).get('status','NOT TESTED')
 report['dataplane_probe']=evidence('tenant-dataplane-probe.json') or {'status':'NOT TESTED'}
-if report['dataplane_probe'].get('status')=='PASS' and report['dataplane_probe'].get('measurement_workload')!='Pair A':
+if report['dataplane_probe'].get('status')=='PASS' and (report['dataplane_probe'].get('measurement_workload')!='Pair A' or report['dataplane_probe'].get('evidence_source')!='compute-tap-pcap'):
     report['historical_dataplane_probe']=report['dataplane_probe']
-    report['dataplane_probe']={'status':'NOT TESTED', 'reason':'Historical dual-purpose probe cannot be relabeled Pair A'}
+    report['dataplane_probe']={'status':'NOT TESTED', 'reason':'Historical console probe cannot serve as authoritative compute-PCAP measurement'}
 state = evidence('validation-resources.json') or {}
 modern = state.get('schema_version') == 2 and not state.get('historical_dual_pair')
 automatic = evidence('existing-mtu-automatic.json') or {}
 remediation = evidence('existing-mtu-remediation.json') or {}
 readiness = evidence('dhcp-precutover-preparation.json') or {}
+post_automatic = evidence('existing-post-cutover-automatic.json') or {}
+post_remediation = evidence('existing-post-cutover-remediation.json') or {}
+post_readiness = evidence('existing-post-cutover-readiness.json') or {}
 measurement = evidence('measure-post-checks.json') or {}
 def geneve_result():
     rows=evidence('post-workload-checks.json') or {}
@@ -87,6 +90,21 @@ report.update({
   'existing_workload_boot_continuity':status('pre-workload-checks.json',['boot_continuity']),
   'new_ovn_workload_mtu':status('post-workload-checks.json',['mtu']),
   'new_ovn_workload_geneve':geneve_result(),
+})
+report.update({
+  'automatic_guest_mtu_convergence':report['automatic_mtu_convergence'],
+  'pre_cutover_remediation_required':report['remediation_required'],
+  'pre_cutover_remediation_action':report['remediation_action'],
+  'automatic_post_cutover_dhcp_convergence':post_automatic.get('status','NOT TESTED'),
+  'post_cutover_remediation_required':post_remediation.get('remediation_required'),
+  'post_cutover_remediation_action':post_remediation.get('remediation_action','NOT TESTED'),
+  'post_cutover_dhcp_ready':post_readiness.get('dhcp_ready','UNAVAILABLE'),
+  'post_cutover_metadata_route_ready':post_readiness.get('metadata_route_ready','UNAVAILABLE'),
+  'post_cutover_metadata_ready':post_readiness.get('metadata_ready','UNAVAILABLE'),
+  'server_uuid_preserved':status('pre-workload-checks.json',['server_uuid_preserved']),
+  'port_uuid_preserved':status('pre-workload-checks.json',['port_uuid_preserved']),
+  'fixed_ip_preserved':status('pre-workload-checks.json',['fixed_ip_preserved']),
+  'pair_a_capture':evidence('pair-a-capture.json'),
 })
 report.update({
   'dataplane_continuity':{
@@ -109,6 +127,10 @@ report.update({
     'routed_connectivity':report['existing_workload_post_migration_connectivity'],
     'migration_boot_continuity':report['existing_workload_boot_continuity'],
     'remediation_evidence':remediation,
+    'post_cutover_automatic':post_automatic,
+    'post_cutover_remediation':post_remediation,
+    'post_cutover_readiness':post_readiness,
+    'post_cutover_baseline':evidence('existing-post-cutover-baseline.json'),
     'migration_baseline':evidence('existing-migration-baseline.json'),
   },
   'fresh_ovn_provisioning':{
@@ -132,7 +154,10 @@ if not validation_ready(root) or any(v!='PASS' for v in statuses) or report['dat
 orchestration=report['validation_orchestration'] or {}
 if orchestration.get('semantics_rc',0) or orchestration.get('workload_rc',0):
     report['result']='MIGRATED_VALIDATION_INCOMPLETE'
-report['limitations'][0]='Tenant ICMP outage requires complete guest serial records; missing sequences or unrecovered loss produces UNAVAILABLE. PortBinding convergence remains separate.'
+if report['result']=='SUCCESS' and post_remediation.get('remediation_action')=='soft reboot' and post_remediation.get('status')=='PASS':
+    report['result']='SUCCESS_WITH_REMEDIATION'
+    report['existing_workload_migration']['status']='PASS AFTER REMEDIATION'
+report['limitations'][0]='Pair-A metrics require a continuous drop-free compute-tap PCAP, endpoints and request cadence; gaps or unrecovered loss yield UNAVAILABLE. Console packet history is secondary only. PortBinding convergence remains separate.'
 (root/'migration-report.json').write_text(json.dumps(report,indent=2,sort_keys=True))
 lines=[
   f"RESULT: {report['result']}",
@@ -144,6 +169,7 @@ lines=[
   'Dataplane continuity:',
   'Measurement workload: ' + report['dataplane_continuity']['measurement_workload'],
   'Measurement type: small-packet routed tenant dataplane',
+  'Authoritative evidence: compute-tap PCAP',
   'Packet loss: ' + (str(report['dataplane_probe'].get('packet_loss_percent')) + ' %' if report['dataplane_probe']['status']=='PASS' else 'UNAVAILABLE'),
   'Actual dataplane outage: ' + (str(report['dataplane_probe'].get('actual_dataplane_outage_seconds')) + ' s' if report['dataplane_probe']['status']=='PASS' else 'UNAVAILABLE'),
   'Pair-A boot continuity: ' + report['dataplane_continuity']['pair_a_boot_continuity'],
@@ -156,7 +182,13 @@ lines += ['Existing workload migration (Pair B):',
           'Pre-cutover remediation required: ' + ('YES' if report['remediation_required'] is True else 'NO' if report['remediation_required'] is False else 'UNAVAILABLE'),
           'Remediation: ' + report['remediation_action'],
           'Pre-cutover MTU readiness: ' + report['pre_cutover_mtu_readiness'],
-          'Existing workload migration: ' + report['existing_workload_post_migration_validation'],
+          'Automatic post-cutover DHCP convergence: ' + report['automatic_post_cutover_dhcp_convergence'],
+          'Post-cutover remediation required: ' + ('YES' if report['post_cutover_remediation_required'] is True else 'NO' if report['post_cutover_remediation_required'] is False else 'UNAVAILABLE'),
+          'Post-cutover remediation: ' + report['post_cutover_remediation_action'],
+          'Post-cutover DHCP readiness: ' + report['post_cutover_dhcp_ready'],
+          'Post-cutover metadata route readiness: ' + report['post_cutover_metadata_route_ready'],
+          'Post-cutover metadata readiness: ' + report['post_cutover_metadata_ready'],
+          'Existing workload migration: ' + report['existing_workload_migration']['status'],
           'Pair-B resource preservation: ' + report['existing_workload_identity_preservation'],
           'Pair-B DHCP renewal/delivery: ' + report['existing_workload_migration']['dhcp_renewal_delivery'],
           'Pair-B post-migration MTU: ' + report['existing_workload_mtu'],

@@ -13,6 +13,9 @@ import time
 import urllib.request
 
 BOOT = None
+PING_SEQ = 0
+PING_PROCESS = None
+DHCP_THREAD = None
 CONFIG = {}
 DHCP = {'ack_count': 0, 't1_seconds': None, 't2_seconds': None, 'last_ack_monotonic': None,
         'last_renewal_interval_seconds': None}
@@ -301,22 +304,52 @@ def health(seq):
               dhcp_ack_count=observed['ack_count'], dhcp_last_ack_monotonic=observed['last_ack_monotonic'],
               dhcp_last_renewal_interval_seconds=observed['last_renewal_interval_seconds'],
               dhcp_t1_seconds=observed['t1_seconds'], dhcp_t2_seconds=observed['t2_seconds'],
+              dhcp_observer_running=bool(DHCP_THREAD and DHCP_THREAD.is_alive()),
+              continuous_ping_running=bool(PING_PROCESS and PING_PROCESS.poll() is None),
               **network_diagnostics(interfaces[0] if interfaces else None)))
+
+def continuous_ping():
+    """One lifetime iputils session for Pair A; stdout is secondary evidence only."""
+    global PING_PROCESS, PING_SEQ
+    PING_PROCESS = subprocess.Popen(['ping', '-n', '-D', '-O', '-s', '56', '-i', str(CONFIG['interval']), CONFIG['peer']],
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    for line in PING_PROCESS.stdout:
+        match = re.search(r'icmp_seq[= ](\d+)', line)
+        if not match:
+            continue
+        seq = int(match[1])
+        logical=(PING_SEQ//65536)*65536+seq
+        if logical<PING_SEQ-32768: logical+=65536
+        if logical>PING_SEQ+32768: logical-=65536
+        if logical<=0: continue
+        PING_SEQ = max(PING_SEQ, logical)
+        success = 'bytes from' in line
+        emit(dict(kind='packet',seq=logical,ts=time.time(),mono=time.monotonic(),success=success,
+                  diagnostic_only=True))
+    emit(dict(kind='error',ts=time.time(),error='Continuous ping exited; capture metric must fail coverage'))
+
 
 if __name__ == '__main__':
     BOOT = pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     CONFIG = json.loads(pathlib.Path('/etc/migration-probe.json').read_text())
-    threading.Thread(target=observe_dhcp, daemon=True).start()
+    DHCP_THREAD = threading.Thread(target=observe_dhcp, daemon=True)
+    DHCP_THREAD.start()
     deadline = time.monotonic() + CONFIG['lifetime']
+    continuous = CONFIG.get('continuous_ping') is True
+    if continuous:
+        threading.Thread(target=continuous_ping, daemon=True).start()
     seq = 0
     next_health = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
         while time.monotonic() < deadline:
             started = time.monotonic()
             seq += 1
-            pool.submit(packet, seq, time.time(), started)
+            if not continuous:
+                pool.submit(packet, seq, time.time(), started)
             if started >= next_health:
-                pool.submit(health, seq)
+                pool.submit(health, PING_SEQ if continuous else seq)
                 next_health = started + 5
             time.sleep(max(0, CONFIG['interval'] - (time.monotonic() - started)))
+    if PING_PROCESS and PING_PROCESS.poll() is None:
+        PING_PROCESS.terminate()
     emit(dict(kind='expired', ts=time.time()))

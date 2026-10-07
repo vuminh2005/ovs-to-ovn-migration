@@ -98,4 +98,9 @@ validation_dhcp_renewal_tolerance_seconds: 5
 validation_dhcp_convergence_timeout: 180
 # Opt in only for validation-owned Pair B; Pair A is never rebooted.
 validation_allow_pre_cutover_guest_reboot: false
+# Independent opt-in for owned Pair-B stale DHCP state after OVN takeover.
+validation_allow_post_cutover_guest_reboot: false
+validation_post_cutover_dhcp_timeout_seconds: 180
+# Persistent compute-local evidence, retained until successful final report.
+validation_capture_directory: /var/lib/ovn-migration-validation
 target_geneve_mtu: 1442

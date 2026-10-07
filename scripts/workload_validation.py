@@ -8,6 +8,10 @@ import math
 import os
 import pathlib
 import signal
+import re
+import ipaddress
+import subprocess
+from dataplane_capture import Capture
 import sys
 import time
 
@@ -99,6 +103,32 @@ def metadata_port_ip(ports, subnet_id):
     return addresses[0] if len(addresses) == 1 else None
 
 
+def ovn_dhcp_health(raw, vm, subnet, metadata_ip, cfg):
+    """Unique exact LSP reference, SB up/chassis and matching subnet DHCP options."""
+    result=dict(status='FAIL',metadata_ip=metadata_ip,raw=raw)
+    try:
+        bindings=raw['bindings']; lsps=raw['lsps']; options=raw['dhcp_options']
+        if len(bindings)!=1 or len(lsps)!=1 or len(options)!=1 or metadata_ip is None:
+            return result
+        b,l,d=bindings[0],lsps[0],options[0]
+        up=b.get('up'); up=up[0] if isinstance(up,list) and len(up)==1 else up
+        refs=l.get('dhcpv4_options'); refs=refs if isinstance(refs,list) else [refs]
+        o=d['options']; external=d['external_ids']
+        routes=re.findall(r'169\.254\.169\.254/32\s*,\s*([0-9.]+)',o.get('classless_static_route',''))
+        good=(raw.get('port')==vm['port'] and b['logical_port']==vm['port'] and bool(b['chassis']) and up is True and
+              l['name']==vm['port'] and refs==[d['_uuid']] and external.get('subnet_id')==vm['subnet'] and
+              external.get('port_id',vm['port'])==vm['port'] and
+              ipaddress.ip_network(d['cidr'])==ipaddress.ip_network(subnet.cidr) and
+              ipaddress.ip_address(vm['ip']) in ipaddress.ip_network(subnet.cidr) and subnet.is_dhcp_enabled is True and
+              int(o['mtu'])==cfg.get('target_mtu',1442) and int(o['T1'])==cfg.get('dhcp_t1',30) and
+              int(o['T2'])==cfg.get('dhcp_t2',60) and int(o['lease_time'])>int(o['T2']) and
+              o.get('router')==subnet.gateway_ip and routes==[metadata_ip])
+        result['status']='PASS' if good else 'FAIL'
+    except (KeyError,ValueError,TypeError,AttributeError):
+        pass
+    return result
+
+
 def guest_checks(rows, anchor, interval):
     """Only sequence growth on the anchored boot can establish fresh evidence."""
     result = {'connectivity': 'UNAVAILABLE', 'dhcp': 'UNAVAILABLE', 'metadata': 'UNAVAILABLE'}
@@ -136,7 +166,7 @@ def probe_metrics(rows, start, end, interval):
                   longest_outage_recovery_timestamp=None, actual_dataplane_outage_seconds=None,
                   coverage_complete=False, start_anchor=start, end_anchor=end,
                   measurement='small-packet routed tenant dataplane; longest recovered loss burst in (start.seq, end.seq]',
-                  measurement_workload='Pair A', measurement_guest='measure0')
+                  measurement_workload='Pair A', measurement_guest='measure0', evidence_source='guest-console-secondary')
     if not start or not end or start['boot'] != end['boot'] or end['seq'] <= start['seq']:
         return result
     indexed = {}
@@ -235,6 +265,11 @@ def validation_ready(root):
         all(row.get('boot_continuity') == 'PASS' and row.get('mtu') == 'PASS'
             for row in read_evidence(root, 'pre-workload-checks.json').values()) and
         all(row.get('mtu') == 'PASS' for row in read_evidence(root, 'post-workload-checks.json').values())))
+    cfg=read_evidence(root,'validation-config.json')
+    if cfg.get('post_cutover_dhcp_enabled'):
+        role_ready = role_ready and read_evidence(root,'existing-post-cutover-readiness.json').get('status')=='PASS'
+    if cfg.get('capture_enabled'):
+        role_ready = role_ready and read_evidence(root,'tenant-dataplane-probe.json').get('evidence_source')=='compute-tap-pcap'
     return (role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
             workload_pass(read_evidence(root, 'pre-workload-checks.json'), 'geneve') and
             workload_pass(read_evidence(root, 'post-workload-checks.json'), 'geneve') and
@@ -353,7 +388,7 @@ class Validation:
                 continue
             guest = (pathlib.Path(__file__).parent/'guest_probe.py').read_text()
             config = dict(run=cfg['run'], vm=vm['record_vm'], peer=pair[str(1-i)]['ip'],
-                          ip=vm['ip'], interval=cfg['interval'], lifetime=cfg['lifetime'], dhcp_t1=cfg.get('dhcp_t1',30))
+                          ip=vm['ip'], interval=cfg['interval'], lifetime=cfg['lifetime'], dhcp_t1=cfg.get('dhcp_t1',30), continuous_ping=(stage=='measure'))
             # Guest obtains its own immutable instance UUID from cloud-init's datasource.
             launcher = "import json,pathlib; p=pathlib.Path('/etc/migration-probe.json'); c=json.loads(p.read_text()); c['server_id']=pathlib.Path('/var/lib/cloud/data/instance-id').read_text().strip(); p.write_text(json.dumps(c))"
             user_data = '#cloud-config\n' + __import__('yaml').safe_dump(dict(
@@ -434,6 +469,10 @@ class Validation:
     def checkpoint_start(self):
         path = self.root/'validation-window.json'
         window = read_evidence(self.root, path.name)
+        if getattr(self,'cfg',{}).get('capture_enabled'):
+            Capture(self).start()
+            Capture(self).anchor()
+            return read_evidence(self.root,'validation-window.json')['pcap_start']
         if window.get('start_anchor'):
             if getattr(self,'state',{}).get('schema_version')==2 and window.get('measurement_workload')!='Pair A':
                 raise RuntimeError('Historical measurement window cannot be relabeled Pair A; use a new run')
@@ -460,6 +499,9 @@ class Validation:
             checks[str(i)] = dict(identity='PASS' if identity else 'FAIL',
                 active='PASS' if server.status == 'ACTIVE' else 'FAIL',
                 bound='PASS' if port.status == 'ACTIVE' and port.binding_host_id and port.binding_vif_type not in ('unbound','binding_failed') else 'FAIL')
+            checks[str(i)].update(server_uuid_preserved='PASS' if getattr(server,'id',None)==vm['server'] else 'FAIL',
+                                  port_uuid_preserved='PASS' if getattr(port,'id',None)==vm['port'] and port.device_id==vm['server'] else 'FAIL',
+                                  fixed_ip_preserved='PASS' if port.fixed_ips==vm['fixed_ips'] else 'FAIL')
             checks[str(i)].update(guest_checks(rows[str(i)], anchors[str(i)], self.cfg['interval']))
             network = self.cloud.network.get_network(vm['network'])
             checks[str(i)]['network_type'] = network.provider_network_type
@@ -467,12 +509,15 @@ class Validation:
             health = latest_health(rows[str(i)], anchors[str(i)], self.cfg['interval'])
             expected_mtu = self.cfg.get('source_mtu',1450) if self.cfg.get('initial') else self.cfg.get('target_mtu',1442)
             checks[str(i)]['mtu'] = 'PASS' if health and health.get('mtu') == expected_mtu and network.mtu==expected_mtu else 'FAIL'
-            baseline = read_evidence(self.root, 'existing-migration-baseline.json') if stage == 'pre' and not self.cfg.get('initial') else {}
+            baseline = (read_evidence(self.root, 'existing-post-cutover-baseline.json') or read_evidence(self.root, 'existing-migration-baseline.json')) if stage == 'pre' and not self.cfg.get('initial') else {}
             if self.state.get('schema_version') == 2 and stage == 'pre' and not self.cfg.get('initial'):
                 old = baseline.get(str(i), {})
                 current = sequence_anchor(rows[str(i)])
                 checks[str(i)]['boot_continuity'] = 'PASS' if current and current['boot'] == old.get('boot') else 'FAIL'
                 checks[str(i)]['identity'] = 'PASS' if identity and all(vm.get(k)==old.get(k) for k in ('server','port','fixed_ips')) else 'FAIL'
+                checks[str(i)].update(server_uuid_preserved='PASS' if server.id==vm['server']==old.get('server') else 'FAIL',
+                    port_uuid_preserved='PASS' if port.id==vm['port']==old.get('port') and port.device_id==old.get('server') else 'FAIL',
+                    fixed_ip_preserved='PASS' if port.fixed_ips==vm['fixed_ips']==old.get('fixed_ips') else 'FAIL')
             if network.provider_network_type == 'geneve':
                 ports = list(self.cloud.network.ports(network_id=vm['network'], device_owner='network:distributed'))
                 expected_ip = metadata_port_ip(ports, vm['subnet'])
@@ -544,7 +589,7 @@ class Validation:
                     anchors[key] = freshness_anchor(rows[key])
             checks = self.measure_checks(rows, anchors)
             good = all(all(v=='PASS' for v in row.values()) for row in checks.values())
-            if not initial:
+            if not initial and not self.cfg.get('capture_enabled'):
                 # Packet-only recovery boundary: health/MTU never enter this gate.
                 self.checkpoint_recovery(rows, anchors)
             save(self.root/('measure-readiness.json' if initial else 'measure-post-checks.json'),
@@ -558,6 +603,8 @@ class Validation:
             time.sleep(2)
 
     def checkpoint_recovery(self, rows, anchors):
+        if self.cfg.get('capture_enabled'):
+            return False  # only final compute capture establishes authoritative recovery
         if not all(guest_checks(rows[k], anchors[k], self.cfg['interval'])['connectivity'] == 'PASS' for k in ('0','1')):
             return False
         window = read_evidence(self.root, 'validation-window.json')
@@ -574,6 +621,8 @@ class Validation:
         return bool(window.get('end_anchor'))
 
     def save_measurement(self, rows):
+        if self.cfg.get('capture_enabled'):
+            return  # compute PCAP is finalized after all guest and OVN checks
         window = read_evidence(self.root, 'validation-window.json')
         result = probe_metrics(rows['0'], window.get('start_anchor'), window.get('end_anchor'), self.cfg['interval'])
         expected = window.get('pair_anchors', {})
@@ -828,6 +877,197 @@ class Validation:
                 raise TimeoutError('Pair-B pre-cutover identity/boot/MTU/DHCP/metadata readiness failed; refusing DB freeze')
             time.sleep(2)
 
+    def ovn_evidence(self, key):
+        vm=self.pair('pre')[key]
+        path=self.root/('existing'+key+'-ovn-dhcp.json')
+        extra=self.root/'ovn-evidence-transport.json'
+        save(extra,dict(evidence_port=vm['port'],evidence_nb=self.cfg['ovn_nb'],evidence_sb=self.cfg['ovn_sb'],
+                        evidence_host=self.cfg['ovn_cli_host'],evidence_path=str(path)))
+        helper=pathlib.Path(__file__).parent.parent/'playbooks/workload-ovn-evidence-tasks.yml'
+        subprocess.run(['ansible-playbook','-i',self.cfg['inventory'],str(helper),'-e','@'+str(extra)],
+                       check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=min(60,self.cfg.get('timeout',300)))
+        return read_evidence(self.root,path.name)
+
+    def post_ovn_health(self, key):
+        vm=self.pair('pre')[key]
+        ports=list(self.cloud.network.ports(network_id=vm['network'],device_owner='network:distributed'))
+        metadata_ip=metadata_port_ip(ports,vm['subnet'])
+        raw=self.ovn_evidence(key)
+        subnet=self.cloud.network.get_subnet(vm['subnet'])
+        return ovn_dhcp_health(raw,vm,subnet,metadata_ip,self.cfg)
+
+    def post_owner(self, key, entry, request=False):
+        if self.state.get('schema_version')!=2 or key not in ('0','1'):
+            raise RuntimeError('Post-cutover reboot requires modern checkpointed Pair B')
+        if request and self.cfg.get('allow_post_cutover_guest_reboot') is not True:
+            raise RuntimeError('Post-cutover guest reboot disabled; convergence failed; resources preserved')
+        vm=self.pair('pre')[key]
+        excluded=[p for stage,role in (('pre','measure'),('post','fresh')) for p in self.state.get(stage,{}).get(role,{}).values()]
+        if (vm.get('owned') is not True or any(vm.get(k)!=entry.get(k) for k in ('server','port','fixed_ips')) or
+            any(vm['server']==p.get('server') or vm['port']==p.get('port') for p in excluded)):
+            raise RuntimeError('Only exact owned Pair-B UUIDs may be rebooted; Pair A and C protected')
+        identity=self.identity_evidence(vm)
+        entry.update(identity)
+        server=self.cloud.compute.get_server(vm['server'])
+        network=self.cloud.network.get_network(vm['network'])
+        if (any(v!='PASS' for v in identity.values()) or network.provider_network_type!='geneve' or
+            server.metadata.get('ovn_migration_run')!=self.cfg['run'] or server.metadata.get('ovn_validation_role')!='existing' or
+            (request and server.status!='ACTIVE')):
+            raise RuntimeError('Live Pair-B identity/ownership/OVN activation changed; no reboot')
+
+    def post_guest_evidence(self, key, rows, anchors, anchor_mono, expected, ovn):
+        vm=self.pair('pre')[key]
+        health=latest_health(rows[key],anchors[key],self.cfg['interval'])
+        current=sequence_anchor(rows[key])
+        checks=self.check('pre',anchors,rows)[key]
+        flags=renewal_flags(health,anchor_mono[key],self.cfg)
+        same_boot=bool(current and current['boot']==expected[key]['boot'])
+        preserved=all(vm.get(k)==expected[key].get(k) for k in ('server','port','fixed_ips'))
+        common=bool(health and preserved and same_boot and checks['identity']=='PASS' and
+            checks['active']=='PASS' and checks['bound']=='PASS' and checks['mtu']=='PASS' and
+            checks['connectivity']=='PASS' and health.get('dhcp') is True and ovn.get('status')=='PASS')
+        route=bool(health and health.get('metadata_gateway')==ovn.get('metadata_ip') and ovn.get('metadata_ip'))
+        good=common and route and health.get('metadata') is True and all(flags.values())
+        # Missing observer evidence, generic failures or a fresh renewal with
+        # broken metadata are never converted into guest-state reboot requests.
+        ack=health.get('dhcp_last_ack_monotonic') if health else None
+        observer=bool(health and health.get('dhcp_ack_count',0)>=2 and health.get('dhcp_observer_running') is True and
+                      type(ack) in (int,float) and math.isfinite(ack) and 0<=ack<=anchor_mono[key] and
+                      flags['timers_sane'] and flags['short_renewal_cadence'])
+        gateway=health.get('metadata_gateway') if health else None
+        try:
+            stale_route=bool(gateway and ipaddress.ip_address(gateway).version==4 and gateway!=ovn.get('metadata_ip'))
+        except ValueError:
+            stale_route=False
+        # A correct route with metadata failure may be a metadata-service fault;
+        # absence of renewal alone cannot prove DHCP caused it.
+        stale=common and observer and not flags['fresh_renewal'] and stale_route
+        return dict(status='PASS' if good else 'FAIL',classification='PASS' if good else
+                    'POST_CUTOVER_REBOOT_REQUIRED' if stale else 'FAIL',health=health,boot=current,
+                    same_boot=same_boot,checks=checks,ovn=ovn,metadata_route_ready='PASS' if route else 'FAIL',**flags)
+
+    def post_cutover_dhcp(self):
+        journal=read_evidence(self.root,'existing-post-cutover-remediation.json')
+        if any(e.get('reboot_requested') for e in journal.get('guests',{}).values()):
+            self.post_remediate(journal)
+            return
+        expected=read_evidence(self.root,'existing-migration-baseline.json')
+        if set(expected)!={'0','1'}: raise RuntimeError('Missing authoritative Pair-B migration baseline')
+        anchor_path=self.root/'existing-post-cutover-anchor.json'
+        fence=read_evidence(self.root,anchor_path.name)
+        deadline=time.monotonic()+self.cfg.get('post_cutover_timeout',self.cfg.get('dhcp_timeout',180))
+        if not fence:
+            rows=self.collect('pre',deadline=deadline)
+            anchors={k:freshness_anchor(rows[k]) for k in ('0','1')}
+            mono={k:max((r['mono'] for r in rows[k] if anchors[k] and valid_marker(r) and
+                       r['boot']==anchors[k]['boot'] and type(r.get('mono')) in (int,float)),default=None) for k in ('0','1')}
+            if any(a is None for a in anchors.values()) or any(m is None for m in mono.values()):
+                raise RuntimeError('Post-cutover DHCP freshness anchor unavailable')
+            fence=dict(anchors=anchors,anchor_monotonic=mono,established_after_neutron_restoration=True)
+            save(anchor_path,fence)  # immutable across retry, later than takeover
+        evidence={}
+        while True:
+            rows=self.collect('pre',deadline=deadline)
+            for key in ('0','1'):
+                # Ownership is required even for classification; no discovered VMs.
+                entry=dict(server=expected[key]['server'],port=expected[key]['port'],fixed_ips=expected[key]['fixed_ips'])
+                self.post_owner(key,entry)
+                ovn=self.post_ovn_health(key)
+                evidence[key]=self.post_guest_evidence(key,rows,fence['anchors'],fence['anchor_monotonic'],expected,ovn)
+            good=all(e['status']=='PASS' for e in evidence.values())
+            path=self.root/'existing-post-cutover-automatic.json'
+            if not read_evidence(self.root,path.name).get('status') in ('PASS','FAIL'):
+                save(path,dict(status='PASS' if good else 'IN_PROGRESS',guests=evidence,**fence))
+            if good:
+                save(self.root/'existing-post-cutover-readiness.json',dict(status='PASS',dhcp_ready='PASS',metadata_route_ready='PASS',metadata_ready='PASS',guests=evidence))
+                if not journal:
+                    save(self.root/'existing-post-cutover-remediation.json',dict(status='PASS',remediation_required=False,remediation_action='none',guests=evidence))
+                return
+            if time.monotonic()>=deadline:
+                if read_evidence(self.root,path.name).get('status')!='FAIL':
+                    save(path,dict(status='FAIL',guests=evidence,**fence))
+                journal=dict(status='FAIL',automatic_post_cutover_dhcp_convergence='FAIL',
+                    remediation_required=any(e['classification']=='POST_CUTOVER_REBOOT_REQUIRED' for e in evidence.values()),
+                    remediation_action='none',guests={k:dict(e,server=expected[k]['server'],port=expected[k]['port'],
+                        fixed_ips=expected[k]['fixed_ips'],original_boot=expected[k]['boot'],
+                        metadata_gateway_before=(e.get('health') or {}).get('metadata_gateway'),
+                        guest_mtu_before=(e.get('health') or {}).get('mtu'),target_mtu=self.cfg.get('target_mtu',1442),reboot_requested=False) for k,e in evidence.items()})
+                save(self.root/'existing-post-cutover-remediation.json',journal)
+                if all(e['classification'] in ('PASS','POST_CUTOVER_REBOOT_REQUIRED') for e in evidence.values()):
+                    self.post_remediate(journal)
+                    return
+                save(self.root/'existing-post-cutover-readiness.json',dict(status='FAIL',reason='Post-cutover DHCP/metadata convergence failed; OVN/identity/guest safety conditions not proven',guests=evidence))
+                raise TimeoutError('DHCP/metadata convergence after OVN migration timed out; not eligible for guest reboot')
+            time.sleep(2)
+
+    def wait_post_reboot(self, key, entry):
+        self.post_owner(key,entry)
+        self.wait_active(entry['server'])
+        deadline=time.monotonic()+self.cfg['timeout']; anchor=None
+        while True:
+            self.post_owner(key,entry)
+            rows=self.collect('pre',deadline=deadline); current=sequence_anchor(rows[key])
+            if entry.get('reboot_completed') and current and current['boot']!=entry['post_remediation_boot']:
+                raise RuntimeError('Completed post-cutover reboot boot changed; request will not be repeated')
+            if current and current['boot']!=entry['original_boot'] and anchor is None:
+                anchor=freshness_anchor(rows[key])
+            health=latest_health(rows[key],anchor,self.cfg['interval'])
+            ovn=self.post_ovn_health(key)
+            flags=renewal_flags(health,0,self.cfg)  # new boot; genuine renewal since boot
+            server=self.cloud.compute.get_server(entry['server'])
+            good=bool(anchor and current and current['boot']==anchor['boot'] and health and
+                all(flags.values()) and health.get('dhcp_ack_count',0)>=2 and health.get('dhcp') is True and
+                health.get('mtu')==self.cfg.get('target_mtu',1442) and health.get('metadata') is True and
+                health.get('metadata_gateway')==ovn.get('metadata_ip') and ovn.get('status')=='PASS' and
+                server.status=='ACTIVE' and guest_checks(rows[key],anchor,self.cfg['interval'])['connectivity']=='PASS')
+            entry.update(observed_boot=current,health=health,ovn=ovn,guest_mtu_after=(health or {}).get('mtu'),
+                         metadata_gateway_after=(health or {}).get('metadata_gateway'))
+            if good:
+                entry.update(reboot_completed=True,post_remediation_boot=current['boot'],status='PASS',
+                    dhcp_ready='PASS',metadata_route_ready='PASS',metadata_ready='PASS')
+                return
+            if time.monotonic()>=deadline:
+                raise TimeoutError('Post-cutover soft reboot DHCP/metadata convergence timed out; intent preserved, no duplicate request')
+            time.sleep(2)
+
+    def post_remediate(self, journal):
+        path=self.root/'existing-post-cutover-remediation.json'
+        try:
+            if set(journal.get('guests',{}))!={'0','1'} or any(e.get('classification') not in ('PASS','POST_CUTOVER_REBOOT_REQUIRED') for e in journal['guests'].values()):
+                raise RuntimeError('Both Pair-B classifications must be safe before any post-cutover reboot')
+            for key in ('0','1'):
+                entry=journal['guests'][key]
+                if entry.get('classification')=='PASS' and not entry.get('reboot_requested'): continue
+                if entry.get('classification')!='POST_CUTOVER_REBOOT_REQUIRED':
+                    raise RuntimeError('Arbitrary failure cannot authorize post-cutover reboot')
+                self.post_owner(key,entry,request=not entry.get('reboot_requested'))
+                if not entry.get('reboot_requested'):
+                    automatic=read_evidence(self.root,'existing-post-cutover-automatic.json')
+                    expected=read_evidence(self.root,'existing-migration-baseline.json')
+                    rows=self.collect('pre')
+                    latest=self.post_guest_evidence(key,rows,automatic['anchors'],automatic['anchor_monotonic'],expected,self.post_ovn_health(key))
+                    if latest['classification']!='POST_CUTOVER_REBOOT_REQUIRED':
+                        raise RuntimeError('Post-cutover guest reboot eligibility no longer proven')
+                    entry['reboot_requested']=True
+                    journal['remediation_action']='soft reboot'; save(path,journal)
+                    self.cloud.compute.reboot_server(entry['server'],reboot_type='SOFT')
+                self.wait_post_reboot(key,entry)
+                save(path,journal)
+            # Verify both siblings again against their expected boots, and keep
+            # the immutable pre-cutover baseline for separate continuity evidence.
+            expected={k:dict(server=e['server'],port=e['port'],fixed_ips=e['fixed_ips'],
+                             boot=e.get('post_remediation_boot') or e['original_boot']) for k,e in journal['guests'].items()}
+            old=read_evidence(self.root,'existing-post-cutover-baseline.json')
+            if old and old!=expected: raise RuntimeError('Post-cutover baseline changed; refusing rebase')
+            save(self.root/'existing-post-cutover-baseline.json',expected)
+            self.wait('pre')
+            journal.update(status='PASS'); save(path,journal)
+            save(self.root/'existing-post-cutover-readiness.json',dict(status='PASS',dhcp_ready='PASS',metadata_route_ready='PASS',metadata_ready='PASS',guests=journal['guests']))
+        except Exception as exc:
+            journal.update(status='FAIL',reason=str(exc)); save(path,journal)
+            save(self.root/'existing-post-cutover-readiness.json',dict(status='FAIL',reason=str(exc),guests=journal['guests']))
+            raise
+
     def cleanup(self, stage):
         s = self.state[stage]
         evidence_path = self.root/(stage+'-cleanup.json')
@@ -893,7 +1133,7 @@ class Validation:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready', 'prepare-dhcp', 'precutover-ready'])
+    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready', 'prepare-dhcp', 'precutover-ready', 'capture-finish', 'capture-cleanup'])
     p.add_argument('root', type=pathlib.Path)
     args = p.parse_args()
     if args.action == 'cleanup-ready':
@@ -912,6 +1152,16 @@ def main():
                 with (v.root/'console-collector-errors.log').open('a') as f:
                     f.write(str(exc)+'\n')
             time.sleep(v.cfg['console_interval'])
+    elif args.action == 'capture-finish':
+        return int(Capture(v).finish()['status'] != 'PASS')
+    elif args.action == 'capture-cleanup':
+        report = read_evidence(v.root,'migration-report.json')
+        if report.get('result') in ('SUCCESS','SUCCESS_WITH_REMEDIATION') and validation_ready(v.root):
+            capture = Capture(v)
+            cp = capture.checkpoint()
+            if cp and cp.get('status') == 'STOPPED':
+                capture.transport('remove',cp)
+        return 0
     elif args.action == 'anchor-start':
         v.checkpoint_start()
     elif args.action == 'prepare-dhcp':
@@ -945,6 +1195,8 @@ def main():
             rows = {k:read_evidence(v.root,'measure'+k+'-console-records.json') or [] for k in ('0','1')}
         v.save_measurement(rows)
         try:
+            if v.cfg.get('post_cutover_dhcp_enabled'):
+                v.post_cutover_dhcp()
             v.wait('pre')
         except Exception as exc:
             failures.append(str(exc))

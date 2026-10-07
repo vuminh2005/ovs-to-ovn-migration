@@ -160,30 +160,32 @@ router. Names include the run ID and role. No Floating IP, provider network,
 SSH key or tenant SSH is used. The preservation snapshot includes all four
 pre-migration guests.
 
-Cloud-init installs a Python service in every guest. Each sends 56-byte ICMP
-payloads to its own pair's peer approximately every 0.2 seconds, with up to one
-second per-request timeout; concurrent requests keep the cadence during loss.
-Every completion emits JSON to ttyS0 with run, guest, boot, sequence, launch
-timestamp and result. Health records every five seconds carry DHCP evidence,
-MTU diagnostics and metadata checks requiring the guest's instance UUID.
-Nova console collection archives Pair A throughout the migration. The guests
-require no package downloads.
+Cloud-init installs a Python service in every guest. Pair A uses one persistent
+`ping -n -D -O -s 56 -i <interval>` session per guest. The authoritative direction
+is measure0 -> measure1; reverse traffic remains a recovery diagnostic. Pair B/C
+retain their existing per-attempt small-packet health probes. Compact serial JSON
+still carries boot, DHCP, MTU and metadata diagnostics, requiring the instance UUID
+for metadata success. Guest probes require no package downloads.
 
-After Pair A is ACTIVE, bound and demonstrating fresh routed packet success,
-its immutable start anchor is saved in `validation-window.json` in phase 04,
-before OVN staging, MTU reduction, Pair-B remediation or any freeze/cutover.
-The phase-08 `anchor-start` invocation reuses this anchor. Staging and any real
-Pair-A packet failures during preparation are included. Pair-B reboot packets
-never enter this metric. Pair A is never rebooted, has no guest MTU gate, and
-its networking is never remediated to satisfy validation.
+Phase 04 starts a detached compute-local tcpdump on measure0's exact tap, resolved
+from its checkpointed server UUID and the libvirt interface's full Neutron port UUID;
+no truncated UUID tap guess is used. Capture uses the existing inventory and become
+access, host Python3/tcpdump and Kolla's `nova_libvirt` container. It writes
+packet-buffered Ethernet PCAP under `validation_capture_directory/<run-id>/` (default
+`/var/lib/ovn-migration-validation`), outside the controller backup tree. After launch
+it needs no Nova console or Neutron API. The root supervisor records process identities,
+heartbeat gaps, clean completion and tcpdump kernel-drop counters.
 
-After restore, five consecutive fresh successful attempts from BOTH Pair-A
-guests establish the first recovery end anchor. Metadata and stale guest MTU
-cannot block packet recovery. The measured interval is precisely
-`start.seq < packet.seq <= end.seq` on the original boot, using measure0 records
-only. Both Pair-A boot IDs and server/port/IP identities are checked separately.
-Pair A continues running through Pair-B/Pair-C validation; later checks never
-reset its start or end anchor. PortBinding convergence remains independent.
+After both Pair-A guests are ACTIVE/bound, exact identities/boots are saved and
+capture observes five continuous request/reply pairs, `validation-window.json`
+receives its immutable `pcap_start`. This happens before Pair-B creation, OVN staging,
+MTU changes, remediations or freeze/cutover. Phase 08 reuses it. Capture continues
+through all post-cutover Pair-B/Pair-C validation and final OVN binding checks.
+Only then a request-index recovery fence is saved; five stable recovered requests
+newer than that fence establish `pcap_end`. The measured interval
+is `(pcap_start.index, pcap_end.index]`, indexed by captured measure0 echo requests.
+Metadata and stale guest MTU never gate the packet endpoint. Pair A is never rebooted
+or remediated. Its boot/resource preservation is reported independently.
 
 Each readiness invocation first snapshots per-VM sequence fences in
 `pre-freshness-anchors.json` or `post-freshness-anchors.json`. Only higher packet
@@ -193,15 +195,22 @@ least five consecutive successful new attempts plus new DHCP/metadata health
 are required. Guest/controller epoch offsets do not affect coverage or readiness;
 wall-clock synchronization is no longer a correctness requirement.
 
-Every consecutive failure burst is recorded. `first_failure_timestamp` and the
-compatibility `recovery_timestamp` describe the FIRST burst. The two
-`longest_outage_*_timestamp` fields describe the LONGEST recovered burst, and
-`actual_dataplane_outage_seconds` is exactly its recovery timestamp minus its
-first-failure timestamp, from the same guest. No loss yields zero outage with
-null longest-burst timestamps. Missing sequences, conflicting records, guest
-reboots, internal guest timestamp jumps, or an unrecovered tail yield UNAVAILABLE
-and null actual outage. Guest monotonic launch markers also check internal timing.
-This is sampled ICMP outage at approximately 0.2-second resolution.
+Each measure0 echo request counts as an attempt; its corresponding echo reply
+matches ICMP identifier, sequence and echoed payload. Sequence rollover is supported.
+Every consecutive loss burst is recorded. `first_failure_timestamp` and
+`recovery_timestamp` describe the first burst; the `longest_outage_*` fields describe
+the longest recovered burst. Actual outage is the first following successful echo
+reply's compute timestamp minus the first failed request's compute timestamp in
+that burst. Zero loss yields zero outage.
+
+Validity requires both endpoints in the raw PCAP, unchanged ICMP session/continuous
+sequence progression, positive request cadence gaps smaller than three configured
+intervals, capture lifetime spanning the window, no supervisor heartbeat gap over
+three seconds, clean stop and zero kernel drops. Missing/truncated evidence, an
+unexplained capture gap or unrecovered final loss produces UNAVAILABLE for both loss
+percentage and outage; raw counts may remain for diagnostics. Guest console
+truncation does not invalidate a complete PCAP. Neither controller/guest clock
+comparisons nor PortBinding state select or synthesize packet observations.
 
 Pair B must initially pass source VXLAN, source guest MTU, ACTIVE/bound identity,
 DHCP, metadata, routed connectivity and short-T1 renewal checks. Phase 06 first
@@ -228,13 +237,14 @@ reuse the complete validation evidence and journal rather than validating delete
 guests. All deletion operations use only IDs in `validation-resources.json`.
 
 Guest probes end when successful resources are deleted, or after the configurable
-four-hour lifetime on retained debugging VMs. Missing records, expiration, or
-reboot prevent a complete metric. Nova console polling merges unique JSON records
-from a bounded tail, default 20,000 lines per guest (`validation_console_tail_lines`).
-At five attempts/second plus health records this is roughly 65 minutes of probe
-records, before other guest console output. Nova may retain less. Increase the
-tail or reduce the poll interval for the lab if needed; missed required sequences
-always yield UNAVAILABLE, never assumed packet success.
+four-hour lifetime on retained debugging VMs. Nova console polling still merges
+compact diagnostic records from a bounded tail (`validation_console_tail_lines`),
+but is never the authoritative packet-loss transport. Guest health still requires
+fresh serial evidence. A failed validation retains the raw PCAP and all owned
+resources. After clean capture stop the PCAP, supervisor state and tcpdump diagnostics
+are fetched into the controller run directory. The original compute copy is deleted
+only after successful final JSON/text report persistence and resource cleanup; the
+controller copy remains. Failed/ambiguous captures are never silently replaced.
 
 Configuration in `group_vars/all.yml`:
 
@@ -249,6 +259,9 @@ Configuration in `group_vars/all.yml`:
 | `validation_console_poll_seconds` | Nova serial evidence collection interval |
 | `validation_console_tail_lines` | Bounded console tail per API call; default 20,000 |
 | `dataplane_probe_interval_seconds` | Guest ICMP interval |
+| `validation_capture_directory` | Persistent compute evidence base; default `/var/lib/ovn-migration-validation` |
+| `validation_allow_post_cutover_guest_reboot` | Independent explicit Pair-B post-cutover opt-in; default false |
+| `validation_post_cutover_dhcp_timeout_seconds` | Automatic OVN DHCP convergence bound; default 180 |
 
 Use an Ubuntu cloud image containing cloud-init, Python3, ping, iproute2,
 systemd, DHCP lease files in `/run/systemd/netif/leases` or `/var/lib/dhcp`,
@@ -370,9 +383,9 @@ explicitly. New top-level results are:
 `recovery_timestamp`, `maximum_consecutive_failed_probes`,
 `longest_outage_start_timestamp`, `longest_outage_recovery_timestamp`, and
 `actual_dataplane_outage_seconds`; available evidence also includes
-`coverage_complete`, `timing_valid`, `start_anchor`, `end_anchor`,
+`coverage_complete`, `evidence_source: compute-tap-pcap`, `start_anchor`, `end_anchor`,
 `failure_bursts`, and `measurement`. An unavailable probe keeps numeric fields
-null when no records exist; incomplete captures retain observed counts but must
+null when no records exist; incomplete captures keep loss/outage null and may retain observed counts, which must
 not be treated as complete packet-loss measurement. `initial_ovs_workload_validation` records the pre-downtime guest gate.
 `workload_checks` contains independent initial and post-migration per-VM checks, `existing_network_semantics` contains the segment audit,
 and `validation_orchestration` retains subprocess failure details.
@@ -506,7 +519,7 @@ Missing Pair-A evidence cannot be reconstructed after takeover.
 The separate evidence checkpoints are:
 
 - `measure-readiness.json`, `measure-baseline.json`, `validation-window.json`
-  (immutable start and first recovery end), `measure-post-checks.json`.
+  (immutable PCAP start and final recovered end), `measure-post-checks.json`.
 - `existing-initial-baseline.json`, `dhcp-initial-preparation.json`.
 - `existing-mtu-automatic.json`, `existing-mtu-remediation.json`
   (per-guest request and completion), `existing-migration-baseline.json`.
@@ -533,3 +546,69 @@ Reports retain existing timing/validation fields and add `dataplane_continuity`,
 `new_ovn_workload_geneve`, plus Pair-A measurement/boot labels in `dataplane_probe`.
 Automatic MTU convergence can be FAIL while overall SUCCESS follows proven,
 controlled remediation, full post-migration validation and successful cleanup.
+
+
+## Pair-A compute capture journal and post-cutover Pair-B convergence
+
+`pair-a-capture.json` has schema version 1 and records `compute_host`, `binding_host`,
+measure0 `server`/`port`, `source_ip`/`peer_ip`, `tap`, `directory`, `path`, `intent_at`,
+`status`, and `remote`. Remote state records the supervisor/tcpdump PID, Linux process
+start ticks and compute boot ID, `started_at`, `stopped_at`, heartbeat/gap state,
+return code and dropped-packet count. Controller and compute start intents precede
+launch; a compute lock prevents duplicate capture. An exact live capture is reused.
+A missing journal, dead/mismatched process or uncertain launch fails safely rather
+than replacing its PCAP. A stopped capture can be fetched again after an interrupted
+finalization; start/end indices are never reset. Historical console measurements
+remain historical diagnostics and cannot become a current authoritative PCAP result.
+A new measurement run is necessary if capture was not started before migration.
+
+After Neutron restoration, Pair B first has a bounded automatic DHCP convergence
+attempt. `existing-post-cutover-anchor.json` is latched after restoration (therefore
+later than takeover), with guest sequence and monotonic fences; pre-cutover renewals
+cannot pass. Identity, baseline boot, ACTIVE/binding, routed traffic, usable DHCP,
+target MTU, fresh matched renewal with the unchanged sane timer/cadence semantics,
+actual distributed metadata next-hop and metadata access must all pass.
+
+Only a validation-owned Pair-B guest with unchanged identity/boot, target MTU,
+healthy routed traffic, usable lease, a running renewal observer and **no** fresh
+renewal may be POST_CUTOVER_REBOOT_REQUIRED. Its route must be demonstrably stale.
+A read-only query must prove an exact LSP with a unique referenced IPv4 DHCP_Options
+row for that subnet, target MTU, configured T1/T2, gateway and correct metadata route,
+plus an exact SB Port_Binding with chassis and `up=true`. Missing/ambiguous distributed
+ports, incorrect DHCP options/bindings, changed identity or generic metadata failure
+with an already-correct route cannot authorize reboot.
+
+`validation_allow_post_cutover_guest_reboot: false` is independent of the pre-cutover
+opt-in. To allow both narrowly owned lab remediations on a fresh run:
+
+```bash
+ansible-playbook -i /root/multinode migrate-to-ovn.yml \
+  -e validation_allow_pre_cutover_guest_reboot=true \
+  -e validation_allow_post_cutover_guest_reboot=true
+```
+
+Each SOFT reboot is sequential and journaled before Nova is called. New boot,
+unchanged server/port/IP, genuine OVN renewal, target MTU, correct metadata route,
+metadata access and routed traffic must pass. Pair A/C are explicitly excluded.
+An ambiguous request is never resent; resume either proves completion on the new
+boot or fails safely. Completed boots cannot be rebased to an unexpected third boot.
+`existing-migration-baseline.json` remains immutable; a separate
+`existing-post-cutover-baseline.json` records the expected intentional new boots.
+
+Post-cutover evidence is stored in `existing-post-cutover-automatic.json`,
+`existing-post-cutover-remediation.json` (per-guest request/completion and identity),
+`existing-post-cutover-readiness.json`, the anchor/baseline, and each exact LSP's
+`existing0/1-ovn-dhcp.json`. Automatic FAIL is retained after successful remediation.
+Reports add `automatic_guest_mtu_convergence`, `pre_cutover_remediation_required`,
+`pre_cutover_remediation_action`, `automatic_post_cutover_dhcp_convergence`,
+`post_cutover_remediation_required`, `post_cutover_remediation_action`,
+`post_cutover_dhcp_ready`, `post_cutover_metadata_route_ready`,
+`post_cutover_metadata_ready`, `server_uuid_preserved`, `port_uuid_preserved`,
+`fixed_ip_preserved`, and `pair_a_capture`, plus grouped remediation evidence.
+Existing field aliases remain compatible. With all final validations and cleanup
+complete, seamless runs report SUCCESS; a required post-cutover reboot reports
+SUCCESS_WITH_REMEDIATION and Pair-B `PASS AFTER REMEDIATION`. Pre-cutover-only
+remediation retains SUCCESS with its explicit fields. Any unresolved validation
+failure reports MIGRATED_VALIDATION_INCOMPLETE, preserves evidence/resources and
+never rolls back. Pair-A capture counts every actual Pair-A loss during either
+remediation; Pair-B packets never enter that metric.

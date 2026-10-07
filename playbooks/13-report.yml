@@ -43,6 +43,15 @@
       register: migration_report_output
       changed_when: false
 
+    - name: Remove compute copy only after successful final reports are persisted
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} capture-cleanup {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
     - name: Show final report locations
       ansible.builtin.debug:
         msg:
@@ -56,7 +65,7 @@
         python3 - {{ migration_run_dir | quote }} <<'PYCODE'
         import json, pathlib, sys
         report=json.loads((pathlib.Path(sys.argv[1])/'migration-report.json').read_text())
-        sys.exit(report['result'] != 'SUCCESS')
+        sys.exit(report['result'] not in ('SUCCESS','SUCCESS_WITH_REMEDIATION'))
         PYCODE
       args:
         executable: /bin/bash

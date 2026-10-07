@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 ROOT = pathlib.Path(__file__).parents[1]
+sys.path.insert(0,str(ROOT/'scripts'))
 spec = importlib.util.spec_from_file_location('validation', ROOT/'scripts/workload_validation.py')
 v = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(v)
@@ -34,7 +35,7 @@ def ready_evidence(root):
         v.save(root/name, {'0':row,'1':row})
     for name in ('existing-network-semantics.json','post-ovn-bindings.json','tenant-dataplane-probe.json'):
         v.save(root/name, {'status':'PASS'})
-    v.save(root/'tenant-dataplane-probe.json',{'status':'PASS','measurement_workload':'Pair A',
+    v.save(root/'tenant-dataplane-probe.json',{'status':'PASS','measurement_workload':'Pair A','evidence_source':'compute-tap-pcap',
            'pair_a_boot_continuity':'PASS','packet_loss_percent':0,'actual_dataplane_outage_seconds':0})
     v.save(root/'resource-consistency.json', {'networks':{'unchanged':True}})
     v.save(root/'validation-orchestration.json', {'semantics_rc':0, 'workload_rc':0})
