@@ -135,6 +135,82 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(v.records(log,'other','pre0'),[])
 
 
+class HealthFreshnessTests(unittest.TestCase):
+    def setUp(self):
+        self.current_mono=622.91421688
+        self.packets=[dict(packet(seq),mono=self.current_mono+(seq-2320)*.2)
+                      for seq in range(2316,2321)]
+        self.health=dict(kind='health',seq=2236,boot='one',mono=617.225840846,
+                         dhcp=True,metadata=False,mtu=1442,metadata_gateway='10.231.1.2')
+        self.anchor=anchor(2200)
+
+    def assert_rejected(self, rows, fence=None):
+        fence=self.anchor if fence is None else fence
+        self.assertIsNone(v.latest_health(rows,fence,.2))
+        checks=v.guest_checks(rows,fence,.2)
+        self.assertEqual(checks['dhcp'],'UNAVAILABLE')
+        self.assertEqual(checks['metadata'],'UNAVAILABLE')
+
+    def test_lab_health_age_5_seconds_is_fresh_despite_sequence_gap_84(self):
+        rows=self.packets+[self.health]
+        self.assertEqual(2320-self.health['seq'],84)
+        self.assertAlmostEqual(self.current_mono-self.health['mono'],5.688376034)
+        self.assertIs(v.latest_health(rows,self.anchor,.2),self.health)
+        self.assertEqual(v.guest_checks(rows,self.anchor,.2),
+                         dict(connectivity='PASS',dhcp='PASS',metadata='FAIL'))
+
+    def test_age_over_ten_seconds_rejected_even_with_small_sequence_gap(self):
+        health=dict(self.health,seq=2319,mono=self.current_mono-10.000001)
+        self.assert_rejected(self.packets+[health])
+
+    def test_zero_and_exact_ten_second_age_are_accepted(self):
+        for age in (0,10):
+            with self.subTest(age=age):
+                health=dict(self.health,mono=self.current_mono-age)
+                rows=self.packets+[health]
+                self.assertIs(v.latest_health(rows,self.anchor,.2),health)
+                self.assertEqual(v.guest_checks(rows,self.anchor,.2)['dhcp'],'PASS')
+
+    def test_pre_anchor_and_at_anchor_health_are_rejected(self):
+        for seq in (self.anchor['seq']-1,self.anchor['seq']):
+            with self.subTest(seq=seq):
+                self.assert_rejected(self.packets+[dict(self.health,seq=seq)])
+
+    def test_health_sequence_ahead_of_current_packet_is_rejected(self):
+        self.assert_rejected(self.packets+[dict(self.health,seq=2321)])
+
+    def test_health_or_anchor_from_different_boot_is_rejected(self):
+        self.assert_rejected(self.packets+[dict(self.health,boot='other')])
+        self.assert_rejected(self.packets+[self.health],anchor(2200,'other'))
+
+    def test_missing_or_invalid_health_monotonic_is_rejected(self):
+        missing=dict(self.health); missing.pop('mono')
+        self.assert_rejected(self.packets+[missing])
+        for mono in (None,True,'617.225840846',float('nan'),float('inf'),float('-inf')):
+            with self.subTest(mono=mono):
+                self.assert_rejected(self.packets+[dict(self.health,mono=mono)])
+
+    def test_missing_or_invalid_current_packet_monotonic_is_rejected_without_epoch_fallback(self):
+        missing=dict(self.packets[-1]); missing.pop('mono')
+        self.assert_rejected(self.packets[:-1]+[missing,self.health])
+        for mono in (None,True,'622.91421688',float('nan'),float('inf'),float('-inf')):
+            with self.subTest(mono=mono):
+                self.assert_rejected(self.packets[:-1]+[dict(self.packets[-1],mono=mono),self.health])
+
+    def test_future_health_monotonic_is_rejected(self):
+        self.assert_rejected(self.packets+[dict(self.health,mono=self.current_mono+.000001)])
+
+    def test_both_functions_select_same_latest_fresh_health(self):
+        older=dict(self.health,seq=2235,dhcp=False,metadata=True)
+        invalid=dict(self.health,seq=2319,mono=self.current_mono-11,dhcp=False,metadata=True)
+        rows=self.packets+[invalid,self.health,older]
+        self.assertIs(v.latest_health(rows,self.anchor,.2),self.health)
+        with unittest.mock.patch.object(v,'latest_health',wraps=v.latest_health) as shared:
+            self.assertEqual(v.guest_checks(rows,self.anchor,.2),
+                             dict(connectivity='PASS',dhcp='PASS',metadata='FAIL'))
+            shared.assert_called_once_with(rows,self.anchor,.2)
+
+
 class AnchorTests(unittest.TestCase):
     def test_stale_packets_and_health_cannot_pass(self):
         rows=[packet(i) for i in range(1,11)]
@@ -146,7 +222,7 @@ class AnchorTests(unittest.TestCase):
         newer=rows+[packet(i) for i in range(11,16)]
         self.assertEqual(v.guest_checks(newer,a,.2)['connectivity'],'PASS')
         self.assertEqual(v.guest_checks(newer,a,.2)['metadata'],'UNAVAILABLE')
-        newer.append(dict(kind='health',seq=15,boot='one',dhcp=True,metadata=True))
+        newer.append(dict(kind='health',seq=15,boot='one',mono=3.0,dhcp=True,metadata=True))
         self.assertTrue(all(x=='PASS' for x in v.guest_checks(newer,a,.2).values()))
 
     def test_health_inflight_marker_is_fenced(self):
@@ -155,7 +231,7 @@ class AnchorTests(unittest.TestCase):
 
     def test_new_evidence_ignores_controller_clock_offset(self):
         rows=[packet(i,epoch=-123456789) for i in range(11,17)]
-        rows.append(dict(kind='health',seq=16,boot='one',ts=-99999,dhcp=True,metadata=True))
+        rows.append(dict(kind='health',seq=16,boot='one',mono=3.2,ts=-99999,dhcp=True,metadata=True))
         self.assertTrue(all(x=='PASS' for x in v.guest_checks(rows,anchor(10),.2).values()))
 
     def test_new_boot_does_not_pass_readiness(self):

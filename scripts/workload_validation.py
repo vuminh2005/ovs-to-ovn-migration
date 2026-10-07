@@ -68,12 +68,19 @@ def freshness_anchor(rows):
 
 
 def latest_health(rows, anchor, interval):
+    """Fence by boot/sequence; require health age within ten guest monotonic seconds."""
     current = sequence_anchor(rows)
     if not anchor or not current or current['boot'] != anchor['boot']:
         return None
+    packet = max((r for r in reversed(rows) if valid_marker(r) and r.get('kind') == 'packet' and
+                  r['boot'] == current['boot']), key=lambda r:r['seq'])
+    mono = packet.get('mono')
+    if not valid_packet(packet) or type(mono) not in (int, float) or not math.isfinite(mono):
+        return None
     candidates = [r for r in rows if r.get('kind') == 'health' and valid_marker(r) and
                   r['boot'] == anchor['boot'] and anchor['seq'] < r['seq'] <= current['seq'] and
-                  current['seq']-r['seq'] <= int(10/interval)+1]
+                  type(r.get('mono')) in (int, float) and math.isfinite(r['mono']) and
+                  0 <= mono-r['mono'] <= 10.0]
     return max(candidates, key=lambda r:r['seq']) if candidates else None
 
 
@@ -130,7 +137,7 @@ def ovn_dhcp_health(raw, vm, subnet, metadata_ip, cfg):
 
 
 def guest_checks(rows, anchor, interval):
-    """Only sequence growth on the anchored boot can establish fresh evidence."""
+    """Check packet recovery and shared monotonic health freshness on the anchored boot."""
     result = {'connectivity': 'UNAVAILABLE', 'dhcp': 'UNAVAILABLE', 'metadata': 'UNAVAILABLE'}
     if not anchor or sequence_anchor(rows) is None:
         return result
@@ -147,11 +154,8 @@ def guest_checks(rows, anchor, interval):
     if len(tail) >= 5:
         result['connectivity'] = 'PASS' if (all(r['success'] for r in tail) and
             [r['seq'] for r in tail] == list(range(newest-4, newest+1))) else 'FAIL'
-    health = [r for r in rows if r.get('kind') == 'health' and valid_marker(r)
-              and r['boot'] == anchor['boot'] and anchor['seq'] < r['seq'] <= newest
-              and newest-r['seq'] <= int(10/interval)+1]
-    if health:
-        latest = max(health, key=lambda r: r['seq'])
+    latest = latest_health(rows, anchor, interval)
+    if latest:
         for key in ('dhcp', 'metadata'):
             result[key] = 'PASS' if latest.get(key) is True else 'FAIL'
     return result

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace as NS
 from unittest.mock import patch
-from test_validation import v, ready_evidence, ROOT
+from test_validation import v, ready_evidence, ROOT, packet, anchor
 from test_three_pairs import Scenario
 
 
@@ -71,6 +71,27 @@ class PostCutoverTests(unittest.TestCase):
         journal=v.read_evidence(self.root,'existing-post-cutover-remediation.json')
         self.assertEqual(journal['guests']['0']['classification'],'POST_CUTOVER_REBOOT_REQUIRED')
         self.assertEqual(journal['guests']['1']['classification'],'PASS')
+        s.obj.cloud.compute.reboot_server.assert_not_called()
+
+    def test_lab_sequence_gap_with_fresh_health_preserves_safe_reboot_classification(self):
+        s=self.scenario()
+        rows=s.collect('pre')
+        boot=s.boots['existing']['1']
+        health=dict(s.health['existing']['1'],kind='health',seq=2236,boot=boot,
+                    mono=617.225840846,metadata=False,metadata_gateway='10.0.1.2',
+                    dhcp_last_ack_monotonic=590)
+        rows['1']=[dict(packet(seq,boot=boot),mono=622.91421688+(seq-2320)*.2)
+                   for seq in range(2316,2321)]+[health]
+        anchors={'0':anchor(1,s.boots['existing']['0']),'1':anchor(2200,boot)}
+        expected=v.read_evidence(self.root,'existing-migration-baseline.json')
+        ovn=s.obj.post_ovn_health('1')
+        result=s.obj.post_guest_evidence('1',rows,anchors,{'0':.2,'1':600},expected,ovn)
+        self.assertEqual(ovn['status'],'PASS')
+        self.assertEqual(result['classification'],'POST_CUTOVER_REBOOT_REQUIRED')
+        self.assertIs(result['health'],health)
+        self.assertEqual(result['checks']['dhcp_availability'],'PASS')
+        self.assertEqual(result['checks']['metadata'],'FAIL')
+        self.assertFalse(result['fresh_renewal'])
         s.obj.cloud.compute.reboot_server.assert_not_called()
 
     def test_explicit_opt_in_owned_uuid_one_soft_reboot_then_full_readiness(self):

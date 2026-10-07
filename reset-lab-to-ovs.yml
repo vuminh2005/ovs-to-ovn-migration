@@ -163,6 +163,25 @@
           - "{{ reset_volumes.stdout }}"
 
 
+    - name: Check for residual RabbitMQ Docker volumes
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker volume ls -q | grep -i 'rabbitmq' || true
+      args:
+        executable: /bin/bash
+      register: reset_rabbitmq_residual_volumes
+      changed_when: false
+
+    - name: Fail if RabbitMQ persistent volume survived destroy
+      ansible.builtin.assert:
+        that:
+          - reset_rabbitmq_residual_volumes.stdout | trim == ''
+        fail_msg: >-
+          RabbitMQ persistent Docker volume(s) remain after kolla-ansible destroy:
+          {{ reset_rabbitmq_residual_volumes.stdout_lines }}.
+          A clean lab reset must not reuse old RabbitMQ Mnesia/Raft state.
+
+
 - name: Verify Neutron namespaces are gone after destroy
   hosts: network:compute
   gather_facts: false
@@ -463,6 +482,20 @@
         executable: /bin/bash
       changed_when: false
 
+    - name: Record RabbitMQ log offset before deploy
+      ansible.builtin.shell: |
+        set -euo pipefail
+        log="/var/log/kolla/rabbitmq/rabbit@$(hostname -s).log"
+        if [ -f "$log" ]; then
+          wc -l < "$log"
+        else
+          echo 0
+        fi
+      args:
+        executable: /bin/bash
+      register: reset_rabbitmq_log_offset
+      changed_when: false
+
     - name: Deploy OpenStack
       ansible.builtin.shell: |
         set -euo pipefail
@@ -470,7 +503,126 @@
         kolla-ansible -i {{ reset_kolla_inventory | quote }} deploy
       args:
         executable: /bin/bash
+      register: reset_deploy
       changed_when: true
+      failed_when: false
+
+    - name: Verify RabbitMQ container is running after deploy attempt
+      ansible.builtin.shell: |
+        set -euo pipefail
+        test -n "$(docker ps -q --filter name=^/rabbitmq$)"
+      args:
+        executable: /bin/bash
+      register: reset_rabbitmq_container
+      changed_when: false
+      failed_when: false
+
+    - name: Wait for RabbitMQ application startup
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - rabbitmq
+          - rabbitmqctl
+          - await_startup
+      register: reset_rabbitmq_await
+      changed_when: false
+      failed_when: false
+      when: reset_rabbitmq_container.rc == 0
+
+    - name: Read RabbitMQ cluster status
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - rabbitmq
+          - rabbitmqctl
+          - cluster_status
+      register: reset_rabbitmq_cluster
+      changed_when: false
+      failed_when: false
+      when:
+        - reset_rabbitmq_container.rc == 0
+        - reset_rabbitmq_await.rc | default(1) == 0
+
+    - name: Read RabbitMQ queue state
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - rabbitmq
+          - rabbitmqctl
+          - list_queues
+          - name
+          - type
+          - state
+      register: reset_rabbitmq_queues
+      changed_when: false
+      failed_when: false
+      when:
+        - reset_rabbitmq_container.rc == 0
+        - reset_rabbitmq_await.rc | default(1) == 0
+
+    - name: Verify Nova conductor quorum queue is running
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker exec rabbitmq rabbitmqctl -q list_queues name type state           | awk '
+              $1 == "conductor" && $2 == "quorum" && $3 == "running" { ok=1 }
+              END { exit(ok ? 0 : 1) }
+            '
+      args:
+        executable: /bin/bash
+      register: reset_rabbitmq_conductor_queue
+      changed_when: false
+      failed_when: false
+      when:
+        - reset_rabbitmq_container.rc == 0
+        - reset_rabbitmq_await.rc | default(1) == 0
+
+    - name: Check new RabbitMQ log lines for quorum Raft failures
+      ansible.builtin.shell: |
+        set -euo pipefail
+        log="/var/log/kolla/rabbitmq/rabbit@$(hostname -s).log"
+        start=$(( {{ reset_rabbitmq_log_offset.stdout | int }} + 1 ))
+
+        if [ ! -f "$log" ]; then
+          exit 0
+        fi
+
+        tail -n +"$start" "$log"           | grep -Ei "cluster_not_formed|already_started|failed to form a new cluster"           || true
+      args:
+        executable: /bin/bash
+      register: reset_rabbitmq_raft_errors
+      changed_when: false
+      failed_when: false
+
+    - name: Show RabbitMQ diagnostics after deploy attempt
+      ansible.builtin.debug:
+        msg:
+          - "kolla-ansible deploy rc={{ reset_deploy.rc }}"
+          - "RabbitMQ container running rc={{ reset_rabbitmq_container.rc }}"
+          - "RabbitMQ await_startup rc={{ reset_rabbitmq_await.rc | default('not-run') }}"
+          - "RabbitMQ cluster status:"
+          - "{{ reset_rabbitmq_cluster.stdout_lines | default([]) }}"
+          - "RabbitMQ queues:"
+          - "{{ reset_rabbitmq_queues.stdout_lines | default([]) }}"
+          - "New RabbitMQ quorum/Raft errors:"
+          - "{{ reset_rabbitmq_raft_errors.stdout_lines | default([]) }}"
+
+    - name: Fail when deploy or RabbitMQ validation failed
+      ansible.builtin.assert:
+        that:
+          - reset_deploy.rc == 0
+          - reset_rabbitmq_container.rc == 0
+          - reset_rabbitmq_await.rc | default(1) == 0
+          - reset_rabbitmq_cluster.rc | default(1) == 0
+          - reset_rabbitmq_queues.rc | default(1) == 0
+          - reset_rabbitmq_conductor_queue.rc | default(1) == 0
+          - reset_rabbitmq_raft_errors.stdout | default('') | trim == ''
+        fail_msg: >-
+          Deployment or RabbitMQ validation failed. Inspect the diagnostics above.
+          In particular, cluster_not_formed / already_started / failed-to-form
+          errors indicate stale or broken RabbitMQ quorum/Raft state.
 
     - name: Run post-deploy
       ansible.builtin.shell: |

@@ -32,7 +32,7 @@ class DhcpTests(unittest.TestCase):
 
     def test_availability_independent_of_wrong_route_and_mtu(self):
         for mtu,gateway in ((1450,'10.231.0.3'),(1442,'10.231.0.2')):
-            health=dict(kind='health',seq=11,boot='one',dhcp=True,metadata=False,mtu=mtu,metadata_gateway=gateway)
+            health=dict(kind='health',seq=11,boot='one',mono=2.2,dhcp=True,metadata=False,mtu=mtu,metadata_gateway=gateway)
             rows=[packet(i) for i in range(2,12)]+[health]
             self.assertEqual(v.guest_checks(rows,anchor(1),.2)['dhcp'],'PASS')
             self.assertEqual(v.dhcp_convergence(health,1442,'10.231.0.3'),'FAIL')
@@ -200,7 +200,7 @@ class DhcpTests(unittest.TestCase):
                 obj.cloud.network.get_port.side_effect=lambda port: SimpleNamespace(device_id='vm'+port[1],fixed_ips=obj.state['pre'][port[1]]['fixed_ips'],status='ACTIVE',binding_host_id='host',binding_vif_type='ovs')
                 obj.cloud.network.get_network.return_value=SimpleNamespace(mtu=1442,provider_network_type='geneve')
                 obj.cloud.network.ports.side_effect=lambda **kw:[SimpleNamespace(device_owner='network:distributed',fixed_ips=[{'subnet_id':'s'+kw['network_id'],'ip_address':actual_ip}])]
-                rows={key:[packet(i) for i in range(2,12)]+[dict(kind='health',seq=11,boot='one',**self.healthy(mtu=1442,metadata_gateway=actual_ip))] for key in ('0','1')}
+                rows={key:[packet(i) for i in range(2,12)]+[dict(kind='health',seq=11,boot='one',mono=2.2,**self.healthy(mtu=1442,metadata_gateway=actual_ip))] for key in ('0','1')}
                 checks=obj.check('pre',{'0':anchor(1),'1':anchor(1)},rows)
                 self.assertEqual(checks['0']['dhcp_convergence'],'PASS')
                 self.assertEqual(checks['0']['dhcp_expected']['metadata_ip'],actual_ip)
