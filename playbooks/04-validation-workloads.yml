@@ -1,11 +1,23 @@
 ---
-- name: Prepare routed guest validation before migration downtime
+- name: Phase 04 - Prepare routed guest validation before migration downtime
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Mark phase 04 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '04'
+          - start
+      run_once: true
+      changed_when: false
+
     - name: Verify resolved prerequisites and validation topology settings
       ansible.builtin.assert:
         that:
@@ -69,3 +81,15 @@
         python3 {{ (playbook_dir + '/../scripts/network_semantics.py') | quote }} before {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
+
+    - name: Mark phase 04 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '04'
+          - end
+      run_once: true
+      changed_when: false

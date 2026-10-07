@@ -84,10 +84,9 @@ The deployment host no longer has to be the same machine as the OpenStack contro
 14. `13-report.yml`
 
 All live under `playbooks/`. `resume-bootstrap.yml` loads late-phase checkpoints;
-`validation-snapshot-tasks.yml` remains an unnumbered included helper. Filenames
-express import order, while historical phase labels and metric/checkpoint IDs
-(`phase06.start`, `phase07.start`, etc.) retain their existing meanings.
-The migration operations and their order are unchanged.
+`validation-snapshot-tasks.yml` remains an unnumbered included helper. Play labels
+and new-run phase metrics use these canonical numbers. The migration operations
+and their order are unchanged. Historical runs retain the schema described below.
 
 ## Automatic validation prerequisites
 
@@ -133,14 +132,71 @@ Every run creates a unique directory such as:
 
 It contains `migration-report.json` and `migration-report.txt` with:
 
-- overall migration duration
+- overall migration duration, with an explicit schema-specific timing scope
 - control-plane downtime: from neutron-server freeze until the first successful Neutron API request after restore
-- `neutron-ovn-db-sync-util` migration duration
+- DB migration duration: db-sync plus provider-association compatibility conversion,
+  AFTER snapshot/persistence and verification; excludes freeze and the BEFORE snapshot
 - dataplane convergence window: from stopping legacy agents until all pre-existing VM `Port_Binding` rows have a chassis and `up=true`
 - duration of each migration phase
 - resource counts before migration
 - resource identity preservation for networks, subnets, routers, servers and compute ports
 - result of a temporary post-migration Geneve network smoke test
+
+### Versioned phase timing and checkpoints
+
+New runs declare `phase_marker_schema_version: 2` in `runtime.json` before writing
+phase markers. `scripts/phase_schema.py` owns marker mapping, report interpretation,
+resume eligibility and the pre-cutover reboot checkpoint guard. Missing metadata
+means legacy schema 1; numeric filenames never determine a run's schema. Unknown
+or malformed schema metadata fails closed.
+
+| Legacy marker number | Canonical phase/file prefix |
+| --- | --- |
+| 00–02 | 00–02 |
+| 03 | 05: stage OVN DB |
+| 04 | 06: target configuration/MTU preparation |
+| 05 | 07: DB migration |
+| 06 | 08: cutover |
+| 07 | 09: legacy cleanup |
+| 08 | 10: restore Neutron |
+| 09 | 11: infrastructure validation |
+| 10 | 13: report/finalization, historically start-only |
+
+Legacy runs have no measured equivalent for phases 03, 04 and 12; these are
+reported as **NOT MEASURED**. Legacy phase 13 remains **INCOMPLETE** when only its
+historical start exists; no end or duration is fabricated. Resuming an old run
+writes only that run's historical marker paths for stages actually executed,
+without upgrading runtime metadata or renaming historical artifacts.
+
+Both reports display all canonical phases 00–13 with their names, filenames,
+duration and availability. JSON retains `phase_durations_seconds` with canonical
+keys and nullable durations, and adds `phase_timings`, `phase_marker_schema_version`,
+`phase_marker_schema_source`, `phase_timing_scope`, and `total_duration_scope`.
+**MEASURED** describes elapsed time, not validation success. Missing ends are
+**INCOMPLETE**; malformed, reversed or orphaned endpoints are **UNAVAILABLE**.
+These statuses never become a fabricated zero-duration measurement.
+
+New phase timers cover the file's work across all its plays, including prerequisites,
+initial workloads and post-migration workload validation. Phase 05 ends after its
+remote northd check. Phase 07's recorded timestamp includes the pre-freeze readiness
+gate; this file-entry timer is not proof of freeze. Schema 1 still writes its phase
+05 start only after that gate succeeds. The dedicated control-plane timer remains
+at the original freeze boundary in both schemas.
+On a canonical resume, a restarted phase replaces its start and removes its stale
+end until that execution finishes; reports describe the latest phase execution.
+Legacy timers retain their historical boundaries and filenames.
+
+For schema 2, `total.start` uses the timestamp taken by the first bootstrap task.
+`total.end` and phase 13's end share the timestamp after owned-resource finalization,
+cleanup evidence/report persistence and compute capture cleanup. This extends the
+new total scope beyond the old report-entry endpoint. A final timing-only report
+refresh then publishes those endpoints without repeating cleanup. That refresh,
+terminal output and the final result exit gate are excluded to avoid measuring
+report generation recursively. Final reports must already exist before capture
+cleanup, and existing validation/cleanup gates remain in force.
+Legacy totals continue to end at report entry and exclude finalization. Total wall
+time includes operator/resume waits in either schema. Dedicated DB, control-plane,
+PortBinding and Pair-A packet measurement boundaries are otherwise unchanged.
 
 ### Guest packet loss and outage
 
@@ -306,7 +362,8 @@ The run directory contains `provider-associations.before.json`,
 (changed row count), `provider-associations-verification.json`, and
 `db-sync-migrate.log` (stdout, stderr, and return code). A nonzero sync return code
 or any remaining legacy association stops Phase 07 before cutover. The historical
-`db_migration.start` marker remains unchanged; `db_migration.end` is recorded
+`db_migration.start` is recorded after BEFORE persistence, immediately before db-sync;
+`db_migration.end` is recorded
 after compatibility verification, before the existing OVN topology check.
 Cleanup does not repair the database.
 
@@ -349,7 +406,7 @@ MariaDB backup capability is validated by executing `kolla-ansible mariadb_backu
 ## Resume after a late-phase failure
 
 If a run has already completed OVN takeover/cleanup and fails only in a validation guard,
-do **not** restart the migration from Phase 0. Resume from the existing run directory:
+do **not** restart the migration from Phase 00. Resume from the existing run directory:
 
 ```bash
 ansible-playbook \
@@ -365,7 +422,20 @@ containers separately.
 
 ## Resume compatibility fix (v2.4)
 
-`resume-after-cleanup.yml` accepts either `metrics/phase06.end` or `metrics/phase07.start` as checkpoint evidence. This supports interrupted older runs that already entered Phase 7 but do not contain the newer Phase 6 marker. Before resuming it verifies live `ovn-controller` containers and confirms legacy Neutron agents remain stopped.
+`resume-after-cleanup.yml` requires completed takeover or entered legacy cleanup:
+schema 1 uses `metrics/phase06.end` or `metrics/phase07.start`; schema 2 uses
+`metrics/phase08.end` or `metrics/phase09.start`. Canonical `phase07.start` means DB
+migration and cannot authorize late resume. The shared schema reader chooses these
+meanings from runtime metadata only. Before cleanup, resume still verifies live
+`ovn-controller` containers and stopped legacy Neutron agents. A failed eligibility
+or live-state check aborts before other host groups can enter cleanup.
+
+Pair-B pre-cutover reboot remains blocked by freeze/cutover evidence:
+legacy `phase05.start`/`phase06.start`, canonical `phase08.start` or the dedicated
+`db_migration.start`, and `control_plane_downtime.start` in either schema.
+Canonical phase 07's file timer alone cannot prohibit remediation before freeze;
+its initial readiness check has not yet stopped Neutron. Canonical staging/target
+preparation markers 05/06 cannot falsely prohibit a planned pre-cutover remediation.
 
 ## First workload integration test
 
@@ -490,7 +560,7 @@ Full health failure still preserves validation resources and reports
 MIGRATED_VALIDATION_INCOMPLETE, even when tenant packet recovery and outage
 measurement are valid. Reports print `Packet loss: ... %` and
 `Actual dataplane outage: ... s`, or UNAVAILABLE when packet evidence is invalid.
-Historical phase checkpoint names and late-resume resource IDs are unchanged.
+Historical phase checkpoint names remain schema 1; late-resume resource IDs are unchanged.
 Older run guests without the new DHCP evidence cannot claim DHCP convergence;
 resume does not fabricate preparation or silently reboot them.
 

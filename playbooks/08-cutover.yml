@@ -1,15 +1,23 @@
 ---
-- name: Phase 6 - Start dataplane convergence and tenant packet measurement
+- name: Phase 08 - Start dataplane convergence and tenant packet measurement
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark cutover/convergence start
-      ansible.builtin.shell: |
-        date +%s.%N > {{ migration_run_dir }}/metrics/phase06.start
-        cp {{ migration_run_dir }}/metrics/phase06.start {{ migration_run_dir }}/metrics/dataplane_convergence.start
+    - name: Mark phase 08 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '08'
+          - start
+          - --also
+          - dataplane_convergence.start
+      run_once: true
       changed_when: false
 
     - name: Preserve the existing Pair A measurement start anchor
@@ -21,7 +29,7 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-- name: Phase 6 - Stop legacy Neutron agents on network nodes
+- name: Phase 08 - Stop legacy Neutron agents on network nodes
   hosts: network
   gather_facts: false
   become: true
@@ -39,7 +47,7 @@
         executable: /bin/bash
       loop: "{{ legacy_network_units }}"
 
-- name: Phase 6 - Stop legacy OVS agent on compute nodes
+- name: Phase 08 - Stop legacy OVS agent on compute nodes
   hosts: compute
   gather_facts: false
   become: true
@@ -57,7 +65,7 @@
         executable: /bin/bash
       loop: "{{ legacy_compute_units }}"
 
-- name: Phase 6 - Normalize br-int for OVN takeover
+- name: Phase 08 - Normalize br-int for OVN takeover
   hosts: network:compute
   gather_facts: false
   become: true
@@ -72,7 +80,7 @@
       args:
         executable: /bin/bash
 
-- name: Phase 6 - Deploy OVN controller and metadata through Kolla
+- name: Phase 08 - Deploy OVN controller and metadata through Kolla
   hosts: localhost
   gather_facts: false
   become: true
@@ -102,7 +110,7 @@
       register: binding_timeout
       changed_when: false
 
-- name: Phase 6 - Wait for OVN workload takeover using SB Port_Binding
+- name: Phase 08 - Wait for OVN workload takeover using SB Port_Binding
   hosts: localhost
   gather_facts: false
   become: true
@@ -154,7 +162,7 @@
       run_once: true
       changed_when: false
 
-- name: Phase 6 - Verify chassis-side services and finish cutover
+- name: Phase 08 - Verify chassis-side services and finish cutover
   hosts: network:compute
   gather_facts: false
   become: true
@@ -166,12 +174,15 @@
         docker inspect ovn_controller | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
       changed_when: false
 
-    - name: Finish cutover phase on deployment host
-      ansible.builtin.shell: |
-        set -euo pipefail
-        date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase06.end
-      args:
-        executable: /bin/bash
+    - name: Mark phase 08 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '08'
+          - end
       delegate_to: localhost
       run_once: true
       changed_when: false

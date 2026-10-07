@@ -1,6 +1,7 @@
 ---
 - name: Recover an explicit late-phase checkpoint without repeating migration
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -26,10 +27,10 @@
     - name: Verify takeover checkpoint and recover generated endpoints
       ansible.builtin.shell: |
         set -euo pipefail
+        python3 {{ (playbook_dir + '/../scripts/phase_schema.py') | quote }} resume-check {{ migration_run_dir | quote }}
         python3 - {{ migration_run_dir | quote }} {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} <<'PYCODE'
         import configparser,json,pathlib,sys
         root=pathlib.Path(sys.argv[1])
-        assert (root/'metrics/phase06.end').exists() or (root/'metrics/phase07.start').exists(), 'No late-phase takeover checkpoint'
         state=root/'validation-resources.json'
         if state.exists():
             checkpoint=json.loads(state.read_text())
@@ -57,6 +58,7 @@
 
 - name: Verify live late-phase takeover before cleanup resume
   hosts: network:compute
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:

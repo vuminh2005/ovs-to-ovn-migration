@@ -1,16 +1,24 @@
 ---
-- name: Phase 8 - Mark Neutron restore start
+- name: Phase 10 - Mark Neutron restore start
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark restore phase start
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase08.start
+    - name: Mark phase 10 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '10'
+          - start
+      run_once: true
       changed_when: false
 
-- name: Phase 8 - Restore all neutron-server API workers with ML2/OVN target config
+- name: Phase 10 - Restore all neutron-server API workers with ML2/OVN target config
   hosts: control
   gather_facts: false
   become: true
@@ -50,7 +58,7 @@
         executable: /bin/bash
       changed_when: false
 
-- name: Phase 8 - Measure first usable Neutron API response
+- name: Phase 10 - Measure first usable Neutron API response
   hosts: localhost
   gather_facts: false
   become: true
@@ -70,8 +78,21 @@
       until: neutron_api_ready.rc == 0
       changed_when: false
 
-    - name: Mark control-plane downtime and restore end
+    - name: Mark control-plane downtime end
       ansible.builtin.shell: |
         date +%s.%N > {{ migration_run_dir }}/metrics/control_plane_downtime.end
-        cp {{ migration_run_dir }}/metrics/control_plane_downtime.end {{ migration_run_dir }}/metrics/phase08.end
+      changed_when: false
+
+    - name: Mark phase 10 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '10'
+          - end
+          - --timestamp-file
+          - "{{ hostvars['localhost']['migration_run_dir'] }}/metrics/control_plane_downtime.end"
+      run_once: true
       changed_when: false

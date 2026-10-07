@@ -1,11 +1,23 @@
 ---
-- name: Phase 5 - Start control-plane downtime metric
+- name: Phase 07 - Start control-plane downtime metric
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Mark phase 07 entry before the pre-freeze readiness gate
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - phase-entry
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '07'
+      run_once: true
+      changed_when: false
+
     - name: Require authoritative Pair B MTU and workload readiness before any Neutron freeze
       ansible.builtin.shell: |
         set -euo pipefail
@@ -15,16 +27,20 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: Mark phase and control-plane downtime start
-      ansible.builtin.shell: |
-        set -euo pipefail
-        date +%s.%N > {{ (migration_run_dir + '/metrics/phase05.start') | quote }}
-        cp {{ (migration_run_dir + '/metrics/phase05.start') | quote }} {{ (migration_run_dir + '/metrics/control_plane_downtime.start') | quote }}
-      args:
-        executable: /bin/bash
+    - name: Mark phase 07 and control-plane downtime start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '07'
+          - start
+          - --freeze-start
+      run_once: true
       changed_when: false
 
-- name: Phase 5 - Freeze all Neutron API workers
+- name: Phase 07 - Freeze all Neutron API workers
   hosts: control
   gather_facts: false
   become: true
@@ -48,7 +64,7 @@
         executable: /bin/bash
       changed_when: false
 
-- name: Phase 5 - Run Neutron to OVN DB migration exactly once
+- name: Phase 07 - Run Neutron to OVN DB migration exactly once
   hosts: control
   any_errors_fatal: true  # a failed DB sync/compatibility gate must block later plays on every host
   gather_facts: false
@@ -221,7 +237,7 @@
       run_once: true
       changed_when: false
 
-- name: Phase 5 - Verify migrated OVN topology exists
+- name: Phase 07 - Verify migrated OVN topology exists
   hosts: localhost
   gather_facts: false
   become: true
@@ -238,7 +254,14 @@
       run_once: true
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: Mark DB migration phase end
-      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase05.end
+    - name: Mark phase 07 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '07'
+          - end
       run_once: true
       changed_when: false

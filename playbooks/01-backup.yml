@@ -1,13 +1,21 @@
 ---
-- name: Phase 1 - Backup source configuration and resource identity
+- name: Phase 01 - Backup source configuration and resource identity
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark backup phase start
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase01.start
+    - name: Mark phase 01 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '01'
+          - start
+      run_once: true
       changed_when: false
 
     - name: Backup Kolla globals and actual inventory source
@@ -69,6 +77,14 @@
         executable: /bin/bash
       when: run_mariadb_backup | bool
 
-    - name: Mark backup phase end
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase01.end
+    - name: Mark phase 01 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '01'
+          - end
+      run_once: true
       changed_when: false

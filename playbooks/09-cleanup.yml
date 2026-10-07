@@ -1,16 +1,24 @@
 ---
-- name: Phase 7 - Mark legacy cleanup start
+- name: Phase 09 - Mark legacy cleanup start
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark cleanup phase start
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase07.start
+    - name: Mark phase 09 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '09'
+          - start
+      run_once: true
       changed_when: false
 
-- name: Phase 7 - Remove legacy ML2/OVS tunnel dataplane
+- name: Phase 09 - Remove legacy ML2/OVS tunnel dataplane
   hosts: network:compute
   gather_facts: false
   become: true
@@ -25,7 +33,7 @@
       args:
         executable: /bin/bash
 
-- name: Phase 7 - Remove legacy network namespaces and namespace-owned OVS ports
+- name: Phase 09 - Remove legacy network namespaces and namespace-owned OVS ports
   hosts: network
   gather_facts: false
   become: true
@@ -70,8 +78,15 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Mark cleanup phase end
-      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase07.end
+    - name: Mark phase 09 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '09'
+          - end
       delegate_to: localhost
       run_once: true
       changed_when: false

@@ -1,13 +1,21 @@
 ---
-- name: Phase 2 - Precheck deployment host and supported source scope
+- name: Phase 02 - Precheck deployment host and supported source scope
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark precheck phase start
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase02.start
+    - name: Mark phase 02 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '02'
+          - start
+      run_once: true
       changed_when: false
 
     - name: Verify required standard Kolla inventory groups exist
@@ -85,7 +93,7 @@
       ansible.builtin.debug:
         msg: "Source cloud matches the currently validated migration scope."
 
-- name: Phase 2 - Precheck Kolla hosts and OVS source dataplane
+- name: Phase 02 - Precheck Kolla hosts and OVS source dataplane
   hosts: control:network:compute
   gather_facts: true
   become: true
@@ -123,7 +131,7 @@
       when: inventory_hostname in (groups['network'] + groups['compute'])
       changed_when: false
 
-- name: Phase 2 - Verify DB sync utility on first control host
+- name: Phase 02 - Verify DB sync utility on first control host
   hosts: control
   gather_facts: false
   become: true
@@ -140,8 +148,15 @@
       run_once: true
       changed_when: false
 
-    - name: Mark precheck phase end on deployment host
-      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase02.end
+    - name: Mark phase 02 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '02'
+          - end
       delegate_to: localhost
       run_once: true
       changed_when: false

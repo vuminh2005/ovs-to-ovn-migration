@@ -1,13 +1,21 @@
 ---
-- name: Phase 4 - Prepare target ML2/OVN configuration and MTU
+- name: Phase 06 - Prepare target ML2/OVN configuration and MTU
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark target-config phase start
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase04.start
+    - name: Mark phase 06 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '06'
+          - start
+      run_once: true
       changed_when: false
 
     - name: Write target ML2/OVN globals
@@ -75,7 +83,7 @@
       args:
         executable: /bin/bash
 
-- name: Phase 4 - Discover generated OVN DB endpoints from authoritative target config
+- name: Phase 06 - Discover generated OVN DB endpoints from authoritative target config
   hosts: control
   gather_facts: false
   become: true
@@ -118,8 +126,15 @@
         - { src: /etc/kolla/neutron-server/neutron.conf, dest: neutron.conf.target }
       run_once: true
 
-    - name: Mark target-config phase end
-      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase04.end
+    - name: Mark phase 06 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '06'
+          - end
       delegate_to: localhost
       run_once: true
       changed_when: false

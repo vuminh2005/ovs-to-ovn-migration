@@ -1,11 +1,23 @@
 ---
-- name: Collect OVN logical-switch and chassis encapsulation evidence
+- name: Phase 12 - Collect OVN logical-switch and chassis encapsulation evidence
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Mark phase 12 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '12'
+          - start
+      run_once: true
+      changed_when: false
+
     - name: Read OVN logical switch names
       ansible.builtin.shell: |
         set -euo pipefail
@@ -33,7 +45,7 @@
         - {name: ovn-logical-switches.json, content: "{{ validation_switches.stdout }}"}
         - {name: ovn-encaps.json, content: "{{ validation_encaps.stdout }}"}
 
-- name: Validate surviving and fresh workloads without automatic rollback
+- name: Phase 12 - Validate surviving and fresh workloads without automatic rollback
   hosts: localhost
   gather_facts: false
   become: true
@@ -83,7 +95,7 @@
         mode: '0600'
         content: "{{ {'semantics_rc': semantics_result.rc, 'semantics_error': semantics_result.stderr, 'workload_rc': workload_result.rc | default(none), 'workload_error': workload_result.stderr | default('disabled')} | to_nice_json }}"
 
-- name: Verify fresh VM OVN Southbound bindings before cleanup
+- name: Phase 12 - Verify fresh VM OVN Southbound bindings before cleanup
   hosts: localhost
   gather_facts: false
   become: true
@@ -114,7 +126,7 @@
         content: "{{ {'status': ('PASS' if (fresh_bindings.results | default([]) | length == 2 and fresh_bindings.results | map(attribute='rc') | select('equalto', 0) | list | length == 2) else 'UNAVAILABLE'), 'results': fresh_bindings.results | default([])} | to_nice_json }}"
 
 
-- name: Stop owned console collector after validation
+- name: Phase 12 - Stop owned console collector after validation
   hosts: localhost
   gather_facts: false
   become: true
@@ -141,7 +153,7 @@
       when: validation_workloads_enabled | bool
 
 
-- name: Finalize authoritative Pair A capture after all validation
+- name: Phase 12 - Finalize authoritative Pair A capture after all validation
   hosts: localhost
   gather_facts: false
   become: true
@@ -176,3 +188,15 @@
       when:
         - validation_workloads_enabled | bool
         - capture_finish_result.rc | default(0) != 0
+
+    - name: Mark phase 12 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '12'
+          - end
+      run_once: true
+      changed_when: false

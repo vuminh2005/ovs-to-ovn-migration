@@ -512,9 +512,11 @@ class ThreePairsTests(unittest.TestCase):
     def test_freeze_guard_precedes_downtime_and_neutron_stop(self):
         import yaml
         plays=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
-        first=plays[0]['tasks'][0]
+        first=plays[0]['tasks'][1]
         self.assertIn('precutover-ready',first['ansible.builtin.shell'])
         self.assertNotIn('failed_when',first)
+        self.assertTrue(plays[0]['any_errors_fatal'])
+        self.assertIn('--freeze-start',plays[0]['tasks'][2]['ansible.builtin.command']['argv'])
         self.assertEqual(plays[1]['hosts'],'control')
 
 

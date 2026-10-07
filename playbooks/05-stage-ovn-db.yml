@@ -1,13 +1,21 @@
 ---
-- name: Phase 3 - Stage OVN central while Neutron remains ML2/OVS
+- name: Phase 05 - Stage OVN central while Neutron remains ML2/OVS
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark OVN central staging start
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase03.start
+    - name: Mark phase 05 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '05'
+          - start
+      run_once: true
       changed_when: false
 
     - name: Enable OVN infrastructure but keep Neutron on OVS
@@ -34,11 +42,7 @@
       args:
         executable: /bin/bash
 
-    - name: Mark OVN central staging end
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase03.end
-      changed_when: false
-
-- name: Phase 3 - Verify OVN central process is present
+- name: Phase 05 - Verify OVN central process is present
   hosts: localhost
   gather_facts: false
   become: true
@@ -51,3 +55,15 @@
       run_once: true
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
+
+    - name: Mark phase 05 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '05'
+          - end
+      run_once: true
+      changed_when: false

@@ -1,13 +1,21 @@
 ---
-- name: Phase 9 - Validate state consistency and ML2/OVN control plane
+- name: Phase 11 - Validate state consistency and ML2/OVN control plane
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark validation phase start
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase09.start
+    - name: Mark phase 11 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '11'
+          - start
+      run_once: true
       changed_when: false
 
     - name: Snapshot post-migration resources before creating any smoke-test resource
@@ -91,7 +99,7 @@
         executable: /bin/bash
       when: validation_ephemeral_network | bool
 
-- name: Phase 9 - Validate legacy dataplane is gone and OVN dataplane exists
+- name: Phase 11 - Validate legacy dataplane is gone and OVN dataplane exists
   hosts: network:compute
   gather_facts: false
   become: true
@@ -110,7 +118,7 @@
       changed_when: false
 
 
-- name: Phase 9 - Validate gateway role and legacy-agent shutdown
+- name: Phase 11 - Validate gateway role and legacy-agent shutdown
   hosts: network
   gather_facts: false
   become: true
@@ -126,7 +134,7 @@
         executable: /bin/bash
       changed_when: false
 
-- name: Phase 9 - Validate OVN metadata agents
+- name: Phase 11 - Validate OVN metadata agents
   hosts: neutron-ovn-metadata-agent
   gather_facts: false
   become: true
@@ -138,8 +146,15 @@
         docker inspect neutron_ovn_metadata_agent | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
       changed_when: false
 
-    - name: Mark validation phase end on deployment host
-      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/phase09.end
+    - name: Mark phase 11 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '11'
+          - end
       delegate_to: localhost
       run_once: true
       changed_when: false

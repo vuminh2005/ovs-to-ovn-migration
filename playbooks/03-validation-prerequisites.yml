@@ -1,11 +1,23 @@
 ---
-- name: Prepare reusable Ubuntu validation image and flavor before migration
+- name: Phase 03 - Prepare reusable Ubuntu validation image and flavor before migration
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Mark phase 03 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '03'
+          - start
+      run_once: true
+      changed_when: false
+
     - name: Retain reusable prerequisites during normal workload cleanup
       ansible.builtin.assert:
         that:
@@ -33,3 +45,15 @@
       ansible.builtin.set_fact:
         validation_prerequisites_runtime: "{{ lookup('file', migration_run_dir + '/validation-prerequisites.json') | from_json }}"
       when: validation_workloads_enabled | bool
+
+    - name: Mark phase 03 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '03'
+          - end
+      run_once: true
+      changed_when: false

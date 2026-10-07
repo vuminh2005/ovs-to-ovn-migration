@@ -1,11 +1,15 @@
 ---
-- name: Phase 0 - Auto-discover migration runtime
+- name: Phase 00 - Auto-discover migration runtime
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Timestamp the first bootstrap task
+      ansible.builtin.set_fact:
+        bootstrap_started_at_runtime: "{{ lookup('pipe', 'date +%s.%N') }}"
+
     - name: Discover kolla-ansible binary from current execution environment
       ansible.builtin.shell: command -v kolla-ansible
       args:
@@ -38,27 +42,13 @@
         - "{{ migration_run_dir }}"
         - "{{ migration_run_dir }}/metrics"
 
-    - name: Mark total and bootstrap start
-      ansible.builtin.shell: |
-        date +%s.%N > {{ migration_run_dir }}/metrics/total.start
-        cp {{ migration_run_dir }}/metrics/total.start {{ migration_run_dir }}/metrics/phase00.start
-      changed_when: false
-
-    - name: Read source Kolla globals
-      ansible.builtin.slurp:
-        src: "{{ kolla_globals_path }}"
-      register: globals_raw
-
-    - name: Parse source Kolla globals
-      ansible.builtin.set_fact:
-        source_kolla_globals: "{{ globals_raw.content | b64decode | from_yaml }}"
-
     - name: Save discovered runtime metadata
       ansible.builtin.copy:
         dest: "{{ migration_run_dir }}/runtime.json"
         mode: "0600"
         content: >-
           {{ {
+              'phase_marker_schema_version': 2,
               'run_id': migration_run_id,
               'inventory': kolla_inventory_runtime,
               'kolla_ansible': kolla_ansible_bin_runtime,
@@ -71,6 +61,39 @@
               'db_sync_host': db_sync_host_runtime
             } | to_nice_json }}
 
-    - name: Mark bootstrap end
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase00.end
+    - name: Mark phase 00 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '00'
+          - start
+          - --timestamp
+          - "{{ bootstrap_started_at_runtime }}"
+          - --also
+          - total.start
+      run_once: true
+      changed_when: false
+
+    - name: Read source Kolla globals
+      ansible.builtin.slurp:
+        src: "{{ kolla_globals_path }}"
+      register: globals_raw
+
+    - name: Parse source Kolla globals
+      ansible.builtin.set_fact:
+        source_kolla_globals: "{{ globals_raw.content | b64decode | from_yaml }}"
+
+    - name: Mark phase 00 end
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - mark
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+          - '00'
+          - end
+      run_once: true
       changed_when: false

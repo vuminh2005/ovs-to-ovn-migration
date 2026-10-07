@@ -108,7 +108,8 @@ class PrerequisiteTests(unittest.TestCase):
         self.assertTrue(all((ROOT/i).exists() for i in imports))
         self.assertTrue((ROOT/'playbooks/resume-bootstrap.yml').exists())
         self.assertTrue((ROOT/'playbooks/validation-snapshot-tasks.yml').exists())
-        self.assertIn('phase06.start',(ROOT/'playbooks/08-cutover.yml').read_text())
+        cutover=yaml.safe_load((ROOT/'playbooks/08-cutover.yml').read_text())
+        self.assertEqual(cutover[0]['tasks'][0]['ansible.builtin.command']['argv'][4:6], ['08','start'])
 
 
 if __name__=='__main__': unittest.main()

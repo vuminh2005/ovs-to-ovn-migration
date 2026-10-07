@@ -158,7 +158,7 @@ class Phase07Tests(unittest.TestCase):
     def test_required_sequence_keeps_compatibility_verification_inside_db_metric(self):
         names = [task['name'] for task in self.tasks]
         ordered = [
-            'Mark phase and control-plane downtime start',
+            'Mark phase 07 and control-plane downtime start',
             'Stop and disable neutron-server through Kolla systemd',
             'Snapshot ProviderResourceAssociation before authoritative migrate mode',
             'Persist provider associations BEFORE on the deployment host',
@@ -177,10 +177,10 @@ class Phase07Tests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         start = self.named('Mark DB migration start')['ansible.builtin.shell']
         self.assertIn('/metrics/db_migration.start', start)
-        early = self.named(ordered[0])['ansible.builtin.shell']
-        self.assertIn('/metrics/control_plane_downtime.start', early)
-        self.assertIn('/metrics/phase05.start', early)
-        self.assertNotIn('db_migration.start', early)
+        early = self.named(ordered[0])['ansible.builtin.command']['argv']
+        self.assertIn('--freeze-start', early)
+        self.assertEqual(early[4:6], ['07', 'start'])
+        self.assertFalse(any('db_migration.start' in arg for arg in early))
         self.assertIn('/metrics/db_migration.end', self.named('Mark DB migration end')['ansible.builtin.shell'])
 
     def test_db_start_is_unique_local_and_immediately_after_before_persistence(self):

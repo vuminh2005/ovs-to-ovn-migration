@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 import json, pathlib, sys
 from workload_validation import validation_ready
+from phase_schema import phase_measurements, schema_version, timestamp, TOTAL_SCOPES, PHASE_SCOPE
 root = pathlib.Path(sys.argv[1])
 m = root/'metrics'
 def n(name):
-    p=m/name
-    return float(p.read_text().strip()) if p.exists() else None
+    return timestamp(m/name)
 def dur(a,b):
     x,y=n(a),n(b)
-    return round(y-x,3) if x is not None and y is not None else None
-phases={}
-for i in range(0,10):
-    d=dur(f'phase{i:02d}.start',f'phase{i:02d}.end')
-    if d is not None: phases[f'phase_{i:02d}']=d
+    return round(y-x,3) if x is not None and y is not None and y>=x else None
+phase_rows=phase_measurements(root)
+phase_version=schema_version(root)
+phases={f"phase_{row['number']}":row['duration_seconds'] for row in phase_rows}
 consistency=json.loads((root/'resource-consistency.json').read_text()) if (root/'resource-consistency.json').exists() else {}
 before=json.loads((root/'resource-counts.before.json').read_text()) if (root/'resource-counts.before.json').exists() else {}
 smoke=json.loads((root/'new-network-smoke.json').read_text()) if (root/'new-network-smoke.json').exists() else None
@@ -25,6 +24,11 @@ report={
   'db_migration_seconds':dur('db_migration.start','db_migration.end'),
   'dataplane_convergence_seconds':dur('dataplane_convergence.start','dataplane_convergence.end'),
   'phase_durations_seconds':phases,
+  'phase_marker_schema_version':phase_version,
+  'phase_marker_schema_source':'runtime.json' if (root/'runtime.json').exists() and 'phase_marker_schema_version' in json.loads((root/'runtime.json').read_text()) else 'legacy default (metadata absent)',
+  'phase_timings':phase_rows,
+  'phase_timing_scope':PHASE_SCOPE,
+  'total_duration_scope':TOTAL_SCOPES[phase_version],
   'resources_before':before,
   'resource_consistency':consistency,
   'new_network_smoke':smoke,
@@ -162,7 +166,8 @@ report['limitations'][0]='Pair-A metrics require a continuous drop-free compute-
 lines=[
   f"RESULT: {report['result']}",
   f"Run: {report['run_id']}",
-  f"Total duration: {report['total_duration_seconds']} s",
+  'Total duration: ' + (str(report['total_duration_seconds']) + ' s' if report['total_duration_seconds'] is not None else 'UNAVAILABLE'),
+  f"Total timing scope: {report['total_duration_scope']}",
   f"Control-plane downtime: {report['control_plane_downtime_seconds']} s",
   f"DB migration: {report['db_migration_seconds']} s",
   f"Dataplane Port_Binding convergence: {report['dataplane_convergence_seconds']} s",
@@ -205,5 +210,9 @@ lines += ['Existing workload migration (Pair B):',
           'Individual check fields:']
 lines += [k + ': ' + v for k,v in report.items() if k.startswith(('existing_', 'new_ovn_')) and isinstance(v,str)]
 lines += ['Tenant dataplane probe: ' + json.dumps(report['dataplane_probe'], sort_keys=True)]
+lines += [f'Phase marker schema: {phase_version}', f'Phase timing scope: {PHASE_SCOPE}', 'Canonical phase timings:']
+lines += [f"Phase {row['number']} {row['name']} ({row['filename']}): " +
+          (f"{row['duration_seconds']} s" if row['availability']=='MEASURED' else row['availability'])
+          for row in phase_rows]
 (root/'migration-report.txt').write_text('\n'.join(lines)+'\n')
 print('\n'.join(lines))

@@ -1,17 +1,19 @@
 ---
-- name: Phase 10 - Build migration metrics report
+- name: Phase 13 - Build migration metrics report
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark report phase start
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/phase10.start
-      changed_when: false
-
-    - name: Mark total end
-      ansible.builtin.shell: date +%s.%N > {{ migration_run_dir }}/metrics/total.end
+    - name: Mark phase 13 start
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - report-start
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+      run_once: true
       changed_when: false
 
     - name: Build JSON and human-readable migration report
@@ -51,6 +53,25 @@
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
+
+    - name: Mark phase 13 and total end after finalization and capture cleanup
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - finish
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+      run_once: true
+      changed_when: false
+
+    - name: Publish final timing metadata without repeating finalization or cleanup
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 {{ (playbook_dir + '/../scripts/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }}
+      args:
+        executable: /bin/bash
+      register: migration_report_output
+      changed_when: false
 
     - name: Show final report locations
       ansible.builtin.debug:

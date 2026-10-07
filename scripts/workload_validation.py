@@ -12,6 +12,7 @@ import re
 import ipaddress
 import subprocess
 from dataplane_capture import Capture
+from phase_schema import pre_cutover_reboot_prohibited
 import sys
 import time
 
@@ -747,7 +748,7 @@ class Validation:
     def assert_reboot_owner(self, key, entry, require_ready=True):
         if self.state.get('schema_version')!=2 or (require_ready and self.cfg.get('allow_pre_cutover_guest_reboot') is not True):
             raise RuntimeError('Pair-B reboot remediation disabled; pre-cutover MTU readiness failed; resources preserved')
-        if any((self.root/'metrics'/name).exists() for name in ('phase05.start','phase06.start','control_plane_downtime.start')):
+        if pre_cutover_reboot_prohibited(self.root):
             raise RuntimeError('Pair-B reboot prohibited after DB freeze/cutover checkpoint')
         vm = self.pair('pre')[key]
         if vm.get('owned') is not True or any(vm['server']==v['server'] or vm['port']==v['port'] for v in self.pair('measure').values()):
