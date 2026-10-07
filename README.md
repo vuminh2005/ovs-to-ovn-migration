@@ -290,6 +290,29 @@ Southbound encapsulation types. PASS requires VXLAN -> Geneve, the same VNI,
 `neutron-<network UUID>` in NB and registered Geneve encapsulation. Existing
 chassis-side tunnel checks remain in place.
 
+### Caracal L3 provider associations
+
+Neutron 24.2.x migrate mode does not update legacy L3
+`ProviderResourceAssociation` rows. Phase 07 now snapshots these associations,
+runs the authoritative `neutron-ovn-db-sync-util --ovn-neutron_sync_mode migrate`,
+and applies the [newer upstream in-place conversion](https://github.com/openstack/neutron/blob/master/neutron/plugins/ml2/drivers/ovn/db_migration.py)
+of `single_node`, `ha`, `dvr`, and `dvrha` to `ovn`. The helper uses Neutron's
+model and writer session in the existing neutron-server image with its generated
+Kolla configuration while API workers remain stopped. This is idempotent; it
+does not add DVR or HA support to the POC.
+
+The run directory contains `provider-associations.before.json`,
+`provider-associations.after.json`, `provider-associations-compatibility.json`
+(changed row count), `provider-associations-verification.json`, and
+`db-sync-migrate.log` (stdout, stderr, and return code). A nonzero sync return code
+or any remaining legacy association stops Phase 07 before cutover. The historical
+`db_migration.start` marker remains unchanged; `db_migration.end` is recorded
+after compatibility verification, before the existing OVN topology check.
+Cleanup does not repair the database.
+
+Local compatibility tests use SQLite and require pytest, PyYAML, and SQLAlchemy;
+run the full suite with `python -m pytest -q` in a test virtual environment.
+
 ## Scale
 
 VM/network/router/port UUIDs and counts are not hard-coded. The automation snapshots and loops over the real cloud state. Scale therefore changes **duration**, not migration logic. Port_Binding convergence timeout grows with the number of existing compute ports up to a safety cap.

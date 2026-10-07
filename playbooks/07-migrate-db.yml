@@ -17,9 +17,12 @@
 
     - name: Mark DB migration and control-plane downtime start
       ansible.builtin.shell: |
-        date +%s.%N > {{ migration_run_dir }}/metrics/phase05.start
-        cp {{ migration_run_dir }}/metrics/phase05.start {{ migration_run_dir }}/metrics/control_plane_downtime.start
-        cp {{ migration_run_dir }}/metrics/phase05.start {{ migration_run_dir }}/metrics/db_migration.start
+        set -euo pipefail
+        date +%s.%N > {{ (migration_run_dir + '/metrics/phase05.start') | quote }}
+        cp {{ (migration_run_dir + '/metrics/phase05.start') | quote }} {{ (migration_run_dir + '/metrics/control_plane_downtime.start') | quote }}
+        cp {{ (migration_run_dir + '/metrics/phase05.start') | quote }} {{ (migration_run_dir + '/metrics/db_migration.start') | quote }}
+      args:
+        executable: /bin/bash
       changed_when: false
 
 - name: Phase 5 - Freeze all Neutron API workers
@@ -48,16 +51,63 @@
 
 - name: Phase 5 - Run Neutron to OVN DB migration exactly once
   hosts: control
+  any_errors_fatal: true  # a failed DB sync/compatibility gate must block later plays on every host
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
+  vars:
+    provider_association_entrypoint: |
+      set -euo pipefail
+      kolla_set_configs
+      exec /var/lib/kolla/venv/bin/python /opt/provider_associations.py "$@"
+    provider_association_container_command: >-
+      docker run --rm --network host --user root
+      -e KOLLA_CONFIG_STRATEGY=COPY_ALWAYS
+      -e KOLLA_SERVICE_NAME=neutron-server
+      -v /etc/kolla/neutron-server:/var/lib/kolla/config_files:ro
+      -v kolla_logs:/var/log/kolla
+      -v {{ (provider_compat_workspace.path + '/provider_associations.py:/opt/provider_associations.py:ro') | quote }}
+      --entrypoint /bin/bash {{ neutron_server_image.stdout | quote }}
+      -lc {{ provider_association_entrypoint | quote }} provider-associations
   tasks:
     - name: Discover neutron-server image on DB sync host
       ansible.builtin.shell: docker inspect neutron_server -f '{% raw %}{{.Config.Image}}{% endraw %}'
       register: neutron_server_image
       run_once: true
       changed_when: false
+
+    - name: Create private staging directory for Neutron provider compatibility helper
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: -ovn-provider-associations
+      register: provider_compat_workspace
+      run_once: true
+
+    - name: Stage provider association helper on the DB sync host
+      ansible.builtin.copy:
+        dest: "{{ provider_compat_workspace.path }}/provider_associations.py"
+        content: "{{ lookup('file', playbook_dir + '/../scripts/provider_associations.py') }}"
+        mode: '0600'
+      run_once: true
+
+    - name: Snapshot ProviderResourceAssociation before authoritative migrate mode
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ provider_association_container_command }} snapshot
+      args:
+        executable: /bin/bash
+      register: provider_associations_before
+      run_once: true
+      changed_when: false
+
+    - name: Persist provider associations BEFORE on the deployment host
+      ansible.builtin.copy:
+        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/provider-associations.before.json"
+        content: "{{ provider_associations_before.stdout }}\n"
+        mode: '0600'
+      delegate_to: localhost
+      run_once: true
 
     - name: Run neutron-ovn-db-sync-util migrate
       ansible.builtin.shell: |
@@ -70,7 +120,7 @@
           -v /etc/kolla/neutron-server:/var/lib/kolla/config_files:ro \
           -v kolla_logs:/var/log/kolla \
           --entrypoint /bin/bash \
-          {{ neutron_server_image.stdout }} \
+          {{ neutron_server_image.stdout | quote }} \
           -lc '
             kolla_set_configs &&
             neutron-ovn-db-sync-util \
@@ -80,10 +130,84 @@
           '
       args:
         executable: /bin/bash
+      register: db_sync_migrate
+      failed_when: false  # persist both streams and return code, then fail before any compatibility update
+      run_once: true
+
+    - name: Persist authoritative migrate stdout stderr and return code
+      ansible.builtin.copy:
+        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/db-sync-migrate.log"
+        content: |
+          returncode: {{ db_sync_migrate.rc }}
+          --- stdout ---
+          {{ db_sync_migrate.stdout }}
+          --- stderr ---
+          {{ db_sync_migrate.stderr }}
+        mode: '0600'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Stop Phase 07 immediately after a failed authoritative migration
+      ansible.builtin.assert:
+        that: db_sync_migrate.rc == 0
+        fail_msg: "neutron-ovn-db-sync-util migrate failed (rc={{ db_sync_migrate.rc }}); see db-sync-migrate.log. Cutover is prohibited."
+      run_once: true
+
+    # Neutron 24.2.x migrate mode does not convert legacy L3 service provider
+    # associations. Use the same in-place model UPDATE as newer upstream Neutron.
+    - name: Apply Caracal L3 provider-association compatibility migration
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ provider_association_container_command }} migrate
+      args:
+        executable: /bin/bash
+      register: provider_associations_migration
+      changed_when: provider_associations_migration.rc == 0 and (provider_associations_migration.stdout | from_json).changed_count | int > 0
+      run_once: true
+
+    - name: Persist provider compatibility changed count on the deployment host
+      ansible.builtin.copy:
+        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/provider-associations-compatibility.json"
+        content: "{{ provider_associations_migration.stdout }}\n"
+        mode: '0600'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Snapshot ProviderResourceAssociation after compatibility conversion commits
+      ansible.builtin.shell: |
+        set -euo pipefail
+        {{ provider_association_container_command }} snapshot
+      args:
+        executable: /bin/bash
+      register: provider_associations_after
+      run_once: true
+      changed_when: false
+
+    - name: Persist provider associations AFTER on the deployment host
+      ansible.builtin.copy:
+        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/provider-associations.after.json"
+        content: "{{ provider_associations_after.stdout }}\n"
+        mode: '0600'
+      delegate_to: localhost
+      run_once: true
+
+    - name: Persist and enforce fail-closed verification of legacy provider associations
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/provider_associations.py"
+          - verify
+          - --run-dir
+          - "{{ hostvars['localhost']['migration_run_dir'] }}"
+      delegate_to: localhost
       run_once: true
 
     - name: Mark DB migration end
-      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/db_migration.end
+      ansible.builtin.shell: |
+        set -euo pipefail
+        date +%s.%N > {{ (hostvars['localhost']['migration_run_dir'] + '/metrics/db_migration.end') | quote }}
+      args:
+        executable: /bin/bash
       delegate_to: localhost
       run_once: true
       changed_when: false
