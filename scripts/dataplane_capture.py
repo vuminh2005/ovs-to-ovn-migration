@@ -39,17 +39,69 @@ def alive(saved):
     return bool(saved and identity(saved.get('pid')) == saved)
 
 
-def tap_from_xml(text, server, port):
-    """Never guess tap names from truncated port UUIDs."""
+def safe_interface_name(name):
+    return isinstance(name, str) and name not in ('.', '..') and bool(re.fullmatch(r'[A-Za-z0-9_.-]{1,15}', name))
+
+
+def tap_from_xml(text, server, port, require_port=True):
+    """Cross-check positive full-UUID XML evidence; absence can be optional."""
     domain = ET.fromstring(text)
     if domain.findtext('uuid') != server:
         raise RuntimeError('Libvirt domain UUID does not match checkpointed measure0')
-    taps = [nic.find('target').get('dev') for nic in domain.findall('./devices/interface')
-            if nic.find('virtualport/parameters') is not None and
-            nic.find('virtualport/parameters').get('interfaceid') == port and nic.find('target') is not None]
-    if len(taps) != 1 or not re.fullmatch(r'[A-Za-z0-9_.-]{1,15}', taps[0]):
+    nics = [nic for nic in domain.findall('./devices/interface')
+            if any(p.get('interfaceid') == port for p in nic.findall('.//virtualport/parameters'))]
+    if not nics and not require_port:
+        return None
+    targets = [nic.find('target') for nic in nics]
+    if not require_port and len(targets) == 1 and (targets[0] is None or not targets[0].get('dev')):
+        return None  # no positive tap target to cross-check
+    if len(targets) != 1 or targets[0] is None or not safe_interface_name(targets[0].get('dev')):
         raise RuntimeError('Exact checkpointed Neutron port must identify one libvirt tap')
-    return taps[0]
+    return targets[0].get('dev')
+
+
+def tap_from_ovsdb(port, server, saved_tap=None, integration_bridge='br-int'):
+    """Select one full iface-id, then verify ownership, presence and bridge."""
+    raw = json.loads(subprocess.check_output([
+        'ovs-vsctl', '--timeout=10', '--format=json', '--columns=name,external_ids',
+        'find', 'Interface', 'external_ids:iface-id='+json.dumps(port)], text=True))
+    try:
+        if len(raw['data']) != 1:
+            raise RuntimeError('Exact checkpointed Neutron port must match exactly one OVS Interface')
+        row = dict(zip(raw['headings'], raw['data'][0]))
+        encoded = row['external_ids']
+        if (len(encoded) != 2 or encoded[0] != 'map' or
+                any(not isinstance(k,str) or not isinstance(v,str) for k,v in encoded[1])):
+            raise ValueError('Invalid OVS external_ids map')
+        external = dict(encoded[1])
+        if len(external) != len(encoded[1]):
+            raise ValueError('Duplicate OVS external_ids keys')
+        tap = row['name']
+        if not safe_interface_name(tap):
+            raise RuntimeError('OVS Interface has an unsafe/empty Linux interface name')
+        if external.get('iface-id') != port or external.get('vm-uuid') != server:
+            raise RuntimeError('OVS Interface full port/server UUID identity conflicts with checkpoint')
+        if 'iface-status' in external and external['iface-status'] != 'active':
+            raise RuntimeError('Checkpointed OVS Interface is not active')
+        if saved_tap is not None and tap != saved_tap:
+            raise RuntimeError('Saved capture tap conflicts with current exact OVS Interface; replacement prohibited')
+    except (KeyError, ValueError, TypeError) as exc:
+        raise RuntimeError('Invalid structured OVS Interface identity evidence') from exc
+    if not pathlib.Path('/sys/class/net', tap).exists():
+        raise RuntimeError('Checkpointed measure0 tap does not exist on selected compute')
+    # iface-to-br verifies current membership, including the Port->Interface
+    # relation. A missing/detached Interface is an error, never a name guess.
+    bridge = subprocess.check_output(['ovs-vsctl', '--timeout=10', 'iface-to-br', tap], text=True).strip()
+    if not safe_interface_name(integration_bridge) or bridge != integration_bridge:
+        raise RuntimeError('Checkpointed tap is not on the expected integration bridge '+str(integration_bridge))
+    return tap
+
+
+def verify_saved_tap(cfg, tap):
+    if not safe_interface_name(tap):
+        raise RuntimeError('Missing/unsafe saved capture tap; replacement prohibited')
+    return tap_from_ovsdb(cfg['port'], cfg['server'], saved_tap=tap,
+                          integration_bridge=cfg.get('integration_bridge', 'br-int'))
 
 
 def frames(path, live=False):
@@ -189,11 +241,13 @@ def pcap_metrics(path, checkpoint, window, interval):
 
 
 def resolve_tap(cfg):
-    # Kolla libvirt runs in nova_libvirt; use its own supported virsh socket.
-    xml=subprocess.check_output(['docker','exec','nova_libvirt','virsh','dumpxml',cfg['server']],text=True)
-    tap=tap_from_xml(xml,cfg['server'],cfg['port'])
-    if not pathlib.Path('/sys/class/net',tap).exists():
-        raise RuntimeError('Checkpointed measure0 tap does not exist on selected compute')
+    tap = tap_from_ovsdb(cfg['port'], cfg['server'], saved_tap=cfg.get('tap'),
+                         integration_bridge=cfg.get('integration_bridge', 'br-int'))
+    # Kolla exposes virsh inside nova_libvirt, not on the compute host.
+    xml = subprocess.check_output(['docker','exec','nova_libvirt','virsh','dumpxml',cfg['server']], text=True)
+    xml_tap = tap_from_xml(xml, cfg['server'], cfg['port'], require_port=False)
+    if xml_tap is not None and xml_tap != tap:
+        raise RuntimeError('Exact port libvirt tap conflicts with OVSDB tap identity')
     return tap
 
 
@@ -205,6 +259,9 @@ def _agent_start(root, cfg):
         if any(state['config'].get(k)!=cfg.get(k) for k in ('server','port','source_ip','peer_ip','run')):
             raise RuntimeError('Capture ownership/configuration changed')
         if state.get('status')=='RUNNING' and alive(state.get('supervisor')) and alive(state.get('tcpdump')):
+            if cfg.get('tap') is not None and cfg['tap'] != state.get('tap'):
+                raise RuntimeError('Controller and compute saved tap conflict; replacement prohibited')
+            verify_saved_tap(state['config'], state.get('tap'))
             return state
         raise RuntimeError('Capture intent already exists but process state is ambiguous/stopped; refusing duplicate capture')
     if cfg.get('allow_create') is False:
@@ -239,6 +296,7 @@ def supervise(root):
     path=root/'capture-state.json'; state=json.loads(path.read_text()); cfg=state['config']
     state['supervisor']=identity(os.getpid()); state['supervisor_gap']=False
     try:
+        verify_saved_tap(cfg, state['tap'])
         with (root/'tcpdump.log').open('wb') as log:
             child=subprocess.Popen(['tcpdump','-Z','root','-U','-n','-s','0','-i',state['tap'],'-w',state['path'],
                                     f"icmp and host {cfg['source_ip']} and host {cfg['peer_ip']}"],
@@ -267,6 +325,7 @@ def agent_snapshot(root, stop=False):
     if state['status']=='RUNNING':
         if not alive(state.get('supervisor')) or not alive(state.get('tcpdump')):
             raise RuntimeError('Exact capture process lost; evidence preserved, replacement prohibited')
+        verify_saved_tap(state['config'], state.get('tap'))
         if stop:
             (root/'stop-request').touch(mode=0o600)
             deadline=time.monotonic()+15
@@ -349,7 +408,15 @@ class Capture:
                 server=vm['server'],port=vm['port'],source_ip=vm['ip'],peer_ip=pair['1']['ip'],run=run,
                 interval=self.v.cfg['interval'],directory=directory,path=directory+'/measure0.pcap',intent_at=time.time())
             save(self.path,checkpoint)
+        if first_launch:
+            resolved=self.transport('resolve',checkpoint)
+            if not safe_interface_name(resolved.get('tap')):
+                raise RuntimeError('Compute tap resolution did not return a safe exact interface')
+            checkpoint.update(tap=resolved['tap'],integration_bridge=resolved['integration_bridge'])
+            save(self.path,checkpoint)  # exact tap persisted on controller BEFORE any launch
         remote=self.transport('start',dict(checkpoint,allow_create=first_launch))
+        if checkpoint.get('tap') is not None and remote.get('tap') != checkpoint['tap']:
+            raise RuntimeError('Compute capture tap conflicts with saved controller tap; replacement prohibited')
         original=checkpoint.get('remote',{})
         if original and any(remote.get(k)!=original.get(k) for k in ('supervisor','tcpdump','started_at','tap','path')):
             raise RuntimeError('Resume capture process identity changed; replacement prohibited')
@@ -411,10 +478,13 @@ class Capture:
 
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('action',choices=['start','supervise','snapshot','stop']); p.add_argument('root',type=pathlib.Path); p.add_argument('config',nargs='?')
+    p=argparse.ArgumentParser(); p.add_argument('action',choices=['resolve','start','supervise','snapshot','stop']); p.add_argument('root',type=pathlib.Path); p.add_argument('config',nargs='?')
     args=p.parse_args()
     if args.action=='supervise': supervise(args.root); return
-    if args.action=='start': out=agent_start(args.root,json.loads(args.config))
+    if args.action=='resolve':
+        cfg=json.loads(args.config)
+        out=dict(status='RESOLVED',tap=resolve_tap(cfg),integration_bridge=cfg.get('integration_bridge','br-int'))
+    elif args.action=='start': out=agent_start(args.root,json.loads(args.config))
     else: out=agent_snapshot(args.root,args.action=='stop')
     print(json.dumps(out))
 

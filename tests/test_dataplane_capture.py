@@ -146,10 +146,11 @@ class CaptureJournalTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): c.tap_from_xml(xml,server,port)
 
     def test_running_capture_reused_without_launch_or_api(self):
-        state=dict(config=self.cfg,status='RUNNING',supervisor={'pid':1},tcpdump={'pid':2})
+        state=dict(config=self.cfg,tap='tapABC',status='RUNNING',supervisor={'pid':1},tcpdump={'pid':2})
         c.save(self.root/'capture-state.json',state)
-        with patch.object(c,'alive',return_value=True),patch.object(c.subprocess,'Popen') as launch,patch.object(c,'resolve_tap') as tap:
+        with patch.object(c,'alive',return_value=True),patch.object(c.subprocess,'Popen') as launch,patch.object(c,'resolve_tap') as tap,patch.object(c,'verify_saved_tap') as verify:
             self.assertEqual(c.agent_start(self.root,self.cfg),state)
+            verify.assert_called_once_with(self.cfg,'tapABC')
             launch.assert_not_called(); tap.assert_not_called()
 
     def test_ambiguous_or_dead_capture_is_never_replaced(self):
@@ -170,7 +171,7 @@ class CaptureJournalTests(unittest.TestCase):
     def test_live_capture_snapshot_does_not_use_neutron_or_console(self):
         state=dict(config=self.cfg,status='RUNNING',supervisor={'pid':1},tcpdump={'pid':2},path=str(self.root/'measure0.pcap'),heartbeat_at=12.6)
         write_pcap(self.root/'measure0.pcap'); c.save(self.root/'capture-state.json',state)
-        with patch.object(c,'alive',return_value=True),patch.object(c.time,'time',return_value=12.6):
+        with patch.object(c,'alive',return_value=True),patch.object(c.time,'time',return_value=12.6),patch.object(c,'verify_saved_tap'):
             snapshot=c.agent_snapshot(self.root)
         self.assertEqual(snapshot['status'],'RUNNING')
         self.assertIsNotNone(snapshot['observed_endpoint'])
@@ -211,8 +212,12 @@ class CaptureJournalTests(unittest.TestCase):
         capture=c.Capture(obj)
         def transport(action, cp):
             intent=json.loads(capture.path.read_text())
+            if action=='resolve':
+                self.assertEqual(intent['status'],'START_INTENT')
+                return dict(status='RESOLVED',tap='tapABC',integration_bridge='br-int')
             if intent['status']=='START_INTENT':
                 self.assertEqual(action,'start'); self.assertEqual(cp['port'],'port'); self.assertTrue(cp['allow_create'])
+                self.assertEqual(intent['tap'],'tapABC')
             return dict(status='RUNNING',tap='tapABC',path=cp['path'],started_at=1,config=cp,
                         supervisor={'pid':1},tcpdump={'pid':2})
         capture.transport=Mock(side_effect=transport)

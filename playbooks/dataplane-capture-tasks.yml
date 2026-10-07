@@ -11,15 +11,15 @@
         state: directory
         mode: '0700'
       delegate_to: "{{ capture_checkpoint.compute_host }}"
-      when: capture_action == 'start'
-    - name: Install standalone capture supervisor before launch
+      when: capture_action in ['resolve', 'start']
+    - name: Refresh capture agent identity checks without restarting the supervisor
       ansible.builtin.copy:
         src: ../scripts/dataplane_capture.py
         dest: "{{ capture_checkpoint.directory }}/dataplane_capture.py"
         mode: '0700'
-        force: false
+        force: true
       delegate_to: "{{ capture_checkpoint.compute_host }}"
-      when: capture_action == 'start'
+      when: capture_action != 'remove'
     - name: Start reuse inspect or stop the exact capture process
       ansible.builtin.command:
         argv:

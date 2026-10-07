@@ -168,8 +168,12 @@ still carries boot, DHCP, MTU and metadata diagnostics, requiring the instance U
 for metadata success. Guest probes require no package downloads.
 
 Phase 04 starts a detached compute-local tcpdump on measure0's exact tap, resolved
-from its checkpointed server UUID and the libvirt interface's full Neutron port UUID;
-no truncated UUID tap guess is used. Capture uses the existing inventory and become
+from exactly one local OVSDB Interface with the full checkpointed `iface-id` and
+`vm-uuid`, existing Linux interface and expected integration bridge (`br-int` in
+this POC). Libvirt XML cross-checks positive UUID/tap evidence; absent XML port
+annotations are acceptable, conflicting identities fail. No truncated UUID tap
+guess is used. The exact tap is checkpointed before launch and reverified on resume.
+Capture uses the existing inventory and become
 access, host Python3/tcpdump and Kolla's `nova_libvirt` container. It writes
 packet-buffered Ethernet PCAP under `validation_capture_directory/<run-id>/` (default
 `/var/lib/ovn-migration-validation`), outside the controller backup tree. After launch
