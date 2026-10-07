@@ -15,12 +15,11 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: Mark DB migration and control-plane downtime start
+    - name: Mark phase and control-plane downtime start
       ansible.builtin.shell: |
         set -euo pipefail
         date +%s.%N > {{ (migration_run_dir + '/metrics/phase05.start') | quote }}
         cp {{ (migration_run_dir + '/metrics/phase05.start') | quote }} {{ (migration_run_dir + '/metrics/control_plane_downtime.start') | quote }}
-        cp {{ (migration_run_dir + '/metrics/phase05.start') | quote }} {{ (migration_run_dir + '/metrics/db_migration.start') | quote }}
       args:
         executable: /bin/bash
       changed_when: false
@@ -108,6 +107,16 @@
         mode: '0600'
       delegate_to: localhost
       run_once: true
+
+    - name: Mark DB migration start
+      ansible.builtin.shell: |
+        set -euo pipefail
+        date +%s.%N > {{ (hostvars['localhost']['migration_run_dir'] + '/metrics/db_migration.start') | quote }}
+      args:
+        executable: /bin/bash
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
 
     - name: Run neutron-ovn-db-sync-util migrate
       ansible.builtin.shell: |

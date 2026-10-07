@@ -158,9 +158,11 @@ class Phase07Tests(unittest.TestCase):
     def test_required_sequence_keeps_compatibility_verification_inside_db_metric(self):
         names = [task['name'] for task in self.tasks]
         ordered = [
-            'Mark DB migration and control-plane downtime start',
+            'Mark phase and control-plane downtime start',
+            'Stop and disable neutron-server through Kolla systemd',
             'Snapshot ProviderResourceAssociation before authoritative migrate mode',
             'Persist provider associations BEFORE on the deployment host',
+            'Mark DB migration start',
             'Run neutron-ovn-db-sync-util migrate',
             'Persist authoritative migrate stdout stderr and return code',
             'Stop Phase 07 immediately after a failed authoritative migration',
@@ -173,11 +175,33 @@ class Phase07Tests(unittest.TestCase):
         ]
         positions = [names.index(name) for name in ordered]
         self.assertEqual(positions, sorted(positions))
-        start = self.named(ordered[0])['ansible.builtin.shell']
+        start = self.named('Mark DB migration start')['ansible.builtin.shell']
         self.assertIn('/metrics/db_migration.start', start)
-        self.assertIn('/metrics/control_plane_downtime.start', start)
-        self.assertIn('/metrics/phase05.start', start)
+        early = self.named(ordered[0])['ansible.builtin.shell']
+        self.assertIn('/metrics/control_plane_downtime.start', early)
+        self.assertIn('/metrics/phase05.start', early)
+        self.assertNotIn('db_migration.start', early)
         self.assertIn('/metrics/db_migration.end', self.named('Mark DB migration end')['ansible.builtin.shell'])
+
+    def test_db_start_is_unique_local_and_immediately_after_before_persistence(self):
+        names = [task['name'] for task in self.tasks]
+        start_index = names.index('Mark DB migration start')
+        self.assertEqual(names[start_index-1], 'Persist provider associations BEFORE on the deployment host')
+        self.assertEqual(names[start_index+1], 'Run neutron-ovn-db-sync-util migrate')
+        writes = [task for task in self.tasks if 'db_migration.start' in task.get('ansible.builtin.shell', '')]
+        self.assertEqual(writes, [self.named('Mark DB migration start')])
+        start = writes[0]
+        end = self.named('Mark DB migration end')
+        self.assertEqual(start['ansible.builtin.shell'], end['ansible.builtin.shell'].replace('db_migration.end', 'db_migration.start'))
+        self.assertIn('set -euo pipefail', start['ansible.builtin.shell'])
+        self.assertIn('date +%s.%N >', start['ansible.builtin.shell'])
+        self.assertEqual(start['delegate_to'], 'localhost')
+        self.assertTrue(start['run_once'])
+        self.assertFalse(start['changed_when'])
+        self.assertEqual(start['args']['executable'], '/bin/bash')
+        end_index = names.index('Mark DB migration end')
+        self.assertEqual(names[end_index-1], 'Persist and enforce fail-closed verification of legacy provider associations')
+        self.assertEqual(names[end_index+1], 'Verify NB logical topology and SB datapaths')
 
     def test_authoritative_migrate_mode_and_fail_closed_guards_are_preserved(self):
         self.assertTrue(self.plays[2]['any_errors_fatal'])
