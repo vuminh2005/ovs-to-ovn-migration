@@ -241,6 +241,39 @@ Never resume an old migration/capture run after maintenance or reuse old anchors
 
 ## Evidence, space, and failures
 
+Snapshots store plain JSON references, never live SDK objects: server image ID;
+resolved flavor ID/name/vCPU/RAM/root-disk sizing; and JSON metadata. Image catalog
+IDs/checksums/byte sizes and flavor catalog sizing remain recorded and compared.
+Only explicit reference wire fields are read from SDK component storage; generic
+resource iteration can visit unrelated Image owner aliases and sparse Flavor
+descriptors can supply misleading defaults. ID-less modern flavor references
+must resolve uniquely by original name against the collected catalog. Missing
+identity, inconsistent sizing or non-JSON evidence refuses maintenance. Creation
+validates serialization of the complete manifest before making its directory or
+entering any node/guest maintenance operation. Recovery uses the same normalized
+references for scope and final health comparisons.
+
+If a failed pre-shutdown attempt left only `restore-inputs.json`, preserve that
+entire private directory in place. It is unsealed and cannot authorize restore;
+do not delete, overwrite, reuse its ID or fabricate a manifest/journal/seal. First
+confirm from read-only evidence that no controller/node operation entered and all
+original containers and six EW guests remain running. Then review a fresh plan
+and retry creation with a **new, unused ID**, for example:
+
+```bash
+ansible-playbook -i /root/multinode lab-checkpoint.yml \
+  -e @/root/ew-access.yml -e lab_checkpoint_id=pre-step5-serialization-retry1 \
+  -e lab_checkpoint_action=plan
+ansible-playbook -i /root/multinode lab-checkpoint.yml \
+  -e @/root/ew-access.yml -e lab_checkpoint_id=pre-step5-serialization-retry1 \
+  -e lab_checkpoint_action=create -e lab_checkpoint_confirm=pre-step5-serialization-retry1
+```
+
+If any operation journal/intent exists or service/guest state is uncertain, this
+pre-shutdown retry advice does not apply: retain everything and inspect the
+existing maintenance/recovery guards first. The tool never removes the abandoned
+directory automatically.
+
 Every node keeps `/root/ovs-to-ovn-checkpoints/<ID>/data.tar`, private full Docker
 restore inputs, a compact plan and node `operations.json`. The controller also
 keeps copies under `nodes/<inventory-host>/`, `manifest.json`, `seal.json`,

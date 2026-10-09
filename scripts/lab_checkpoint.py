@@ -68,6 +68,55 @@ def inventory_roles(cfg):
     return {h:role for role,hosts in groups.items() for h in hosts}
 
 
+def json_native(value, context):
+    """Copy only JSON-native values; never iterate SDK dict subclasses."""
+    if value is None or type(value) in (str,bool,int): return value
+    if type(value) is float and value not in (float('inf'),float('-inf')) and value==value: return value
+    if type(value) is list: return [json_native(v,context) for v in value]
+    if type(value) is dict and all(type(k) is str for k in value):
+        return {k:json_native(v,context) for k,v in value.items()}
+    raise Refused(context+' contains a non-JSON value; no maintenance is permitted')
+
+
+def required_id(value, context):
+    if not isinstance(value,str) or not value.strip(): raise Refused('Missing/invalid '+context+' identity')
+    return value
+
+
+def collected_id(value, context):
+    body=getattr(value,'_body',None)
+    return required_id(body.get('id') if body is not None else value.id,context)
+
+
+def server_reference(value, kind, catalog):
+    # Resource.items()/to_dict() visit unrelated descriptors (Image.owner_id).
+    # Read only explicit wire fields from the SDK component store, avoiding
+    # Flavor.id aliases and defaults that invent sizing on sparse references.
+    body=getattr(value,'_body',value)
+    if not hasattr(body,'get'): raise Refused('Missing/invalid server '+kind+' reference')
+    fields={k:body.get(k) for k in ('id','name','original_name','vcpus','ram','disk')}
+    identifier=fields['id']
+    if kind=='flavor' and not identifier:
+        name=fields['original_name'] or fields['name']
+        matches=[r['id'] for r in catalog.values() if name and r['name']==name]
+        if len(matches)!=1: raise Refused('Missing/ambiguous server flavor identity in catalog')
+        identifier=matches[0]
+    identifier=required_id(identifier,'server '+kind)
+    if identifier not in catalog: raise Refused('Server '+kind+' identity absent from collected catalog')
+    result=dict(id=identifier)
+    if kind=='flavor':
+        known=catalog[identifier]
+        for key in ('name','original_name'):
+            if fields[key] is not None and fields[key]!=known['name']: raise Refused('Server flavor name/identity conflicts with catalog')
+        for key in ('vcpus','ram','disk'):
+            size=known[key]
+            if type(size) is not int or size<(0 if key=='disk' else 1): raise Refused('Missing/invalid flavor '+key+' sizing')
+            if fields[key] is not None and (type(fields[key]) is not int or fields[key]!=size): raise Refused('Server flavor '+key+' sizing conflicts with catalog')
+            result[key]=size
+        result['name']=known['name']
+    return json_native(result,'Server '+kind+' reference')
+
+
 def cloud_snapshot(cloud):
     resources={}
     definitions=(('networks',cloud.network.networks,('id','name','mtu','provider_network_type','is_router_external')),
@@ -76,8 +125,8 @@ def cloud_snapshot(cloud):
                  ('ports',cloud.network.ports,('id','network_id','device_id','device_owner','fixed_ips','mac_address')))
     for key,method,fields in definitions:
         resources[key]={r.id:{f:(sorted(getattr(r,f),key=lambda x:(x['subnet_id'],x['ip_address'])) if f=='fixed_ips' else getattr(r,f,None)) for f in fields} for r in method()}
-    resources['images']={r.id:dict(id=r.id,name=r.name,checksum=r.checksum,size=r.size) for r in cloud.image.images()}
-    resources['flavors']={r.id:dict(id=r.id,name=r.name,vcpus=r.vcpus,ram=r.ram,disk=r.disk) for r in cloud.compute.flavors(details=True)}
+    resources['images']={collected_id(r,'image'):dict(id=r.id,name=r.name,checksum=r.checksum,size=r.size) for r in cloud.image.images()}
+    resources['flavors']={collected_id(r,'flavor'):dict(id=r.id,name=r.name,vcpus=r.vcpus,ram=r.ram,disk=r.disk) for r in cloud.compute.flavors(details=True)}
     resources['security_groups']={r.id:dict(id=r.id,name=r.name) for r in cloud.network.security_groups()}
     resources['security_group_rules']={r.id:dict(id=r.id,security_group_id=r.security_group_id) for r in cloud.network.security_group_rules()}
     for key,method in (('users',cloud.identity.users),('projects',cloud.identity.projects),('roles',cloud.identity.roles),('domains',cloud.identity.domains)):
@@ -85,12 +134,14 @@ def cloud_snapshot(cloud):
     resources['servers']={}
     for item in cloud.compute.servers(all_projects=True):
         r=cloud.compute.get_server(item.id)
-        resources['servers'][r.id]=dict(id=r.id,name=r.name,status=r.status,host=r.compute_host,
-            image=r.image,flavor=r.flavor,metadata=r.metadata)
+        resources['servers'][collected_id(r,'server')]=dict(id=r.id,name=r.name,status=r.status,host=required_id(r.compute_host,'server host'),
+            image=server_reference(r.image,'image',resources['images']),
+            flavor=server_reference(r.flavor,'flavor',resources['flavors']),
+            metadata=json_native(r.metadata if r.metadata is not None else {},'Server metadata'))
     if list(cloud.network.ips()): raise Refused('Floating IPs are outside checkpoint scope')
     if any(n['is_router_external'] for n in resources['networks'].values()) or any(r['external_gateway_info'] or r['is_distributed'] or r['is_ha'] for r in resources['routers'].values()):
         raise Refused('Provider/external routing is outside checkpoint scope')
-    return resources
+    return json_native(resources,'Cloud snapshot')
 
 
 def ew_catalog(snapshot, cfg):
@@ -140,7 +191,8 @@ def restore_scope(current, original, run_dirs):
     for sid,old in original['servers'].items():
         if sid not in current['servers'] or current['servers'][sid]['host']!=old['host']: raise Refused('Original EW UUID/placement changed')
         for field in ('image','flavor'):
-            if field in old and current['servers'][sid].get(field)!=old[field]: raise Refused('Original EW image/flavor changed')
+            if field in old and server_reference(current['servers'][sid].get(field),field,current[field+'s'])!=server_reference(old[field],field,original[field+'s']):
+                raise Refused('Original EW image/flavor changed')
     for pid,old in original.get('ports',{}).items():
         if old.get('device_id') in original['servers']:
             now=current.get('ports',{}).get(pid,{})
@@ -390,6 +442,9 @@ with opener.open('http://169.254.169.254/openstack/latest/meta_data.json',timeou
                 if set(snapshot['servers'])!=set(m['resources']['servers']): raise Refused('Restored server UUID set differs')
                 for sid,old in m['resources']['servers'].items():
                     if snapshot['servers'][sid]['host']!=old['host']: raise Refused('Guest placement changed')
+                    for field in ('image','flavor'):
+                        if field in old and server_reference(snapshot['servers'][sid].get(field),field,snapshot[field+'s'])!=server_reference(old[field],field,m['resources'][field+'s']):
+                            raise Refused('Restored server image/flavor changed')
                 result=self.guest_health(m)
                 save(self.root/(prefix+'-health.json'),dict(status='PASS',guests=result,
                     changed_boots=[n for n,r in result.items() if r['boot']!=m['original_guest_health'][n]['boot']],fresh_baseline_required=True))
@@ -398,7 +453,10 @@ with opener.open('http://169.254.169.254/openstack/latest/meta_data.json',timeou
                 if time.monotonic()>=deadline: raise Refused('Bounded service/OVS/EW health recovery failed; resources and journals retained') from None
                 time.sleep(3)
     def create(self):
-        m=self.plan(); self.root.mkdir(parents=True,exist_ok=False,mode=0o700)
+        m=self.plan(); json_native(m,'Complete checkpoint manifest')
+        try: json.dumps(m,allow_nan=False)
+        except (TypeError,ValueError,OverflowError): raise Refused('Complete checkpoint manifest cannot be serialized; no maintenance entered') from None
+        self.root.mkdir(parents=True,exist_ok=False,mode=0o700)
         save(self.root/'restore-inputs.json',self.cfg); self.save_manifest(m)
         for host,plan in m['nodes'].items():
             m['artifacts'][host]=self.event('init-'+host,lambda h=host,p=plan:self.hosts.call(h,'init',plan=p)); self.save_manifest(m)

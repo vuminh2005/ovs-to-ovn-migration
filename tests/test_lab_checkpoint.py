@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import subprocess
 import sys
 import tarfile
@@ -843,6 +844,103 @@ class ProductIdentityTests(unittest.TestCase):
         self.assertEqual(h.digest(root/'manifest.json'),before)
         nodes['compute1']['identity']['product_uuid']=nodes['controller']['identity']['product_uuid']; write()
         with self.assertRaisesRegex(h.Refused,'distinct'): c.sealed(root)
+
+
+class SnapshotSerializationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup); self.root=Path(self.tmp.name)
+        self.cfg=config(self.root/'checkpoints')
+        self.server=SimpleNamespace(id='server-1',name='ew-app',status='ACTIVE',compute_host='compute1',
+            image={'id':'image-1','links':[{'href':'ignored-transport-link'}]},flavor={'id':'flavor-1'},metadata={'purpose':'ew'})
+        self.cloud=Mock()
+        for method in ('networks','subnets','routers','ports','security_groups','security_group_rules','ips','agents'):
+            getattr(self.cloud.network,method).return_value=[]
+        for method in ('users','projects','roles','domains'): getattr(self.cloud.identity,method).return_value=[]
+        self.cloud.image.images.return_value=[SimpleNamespace(id='image-1',name='ubuntu',checksum='hash-1',size=1024),SimpleNamespace(id='image-2',name='other',checksum='hash-2',size=2048)]
+        self.cloud.compute.flavors.return_value=[SimpleNamespace(id='flavor-1',name='small',vcpus=1,ram=1024,disk=8),SimpleNamespace(id='flavor-2',name='large',vcpus=2,ram=2048,disk=16)]
+        self.cloud.compute.servers.return_value=[self.server]; self.cloud.compute.get_server.return_value=self.server
+    def sdk_types(self):
+        try:
+            from openstack.image.v2.image import Image
+            from openstack.compute.v2.flavor import Flavor
+        except ImportError: self.skipTest('OpenStackSDK not installed; mapping/strict serialization regressions still run')
+        return Image,Flavor
+    def health_manifest(self,snapshot):
+        return dict(resources=snapshot,nodes={},original_guest_health={'ew-app':dict(boot='before')})
+    def test_mapping_references_snapshot_round_trip_and_unchanged_comparison(self):
+        before=c.cloud_snapshot(self.cloud); restored=json.loads(json.dumps(before,allow_nan=False))
+        self.assertEqual(before,restored); self.assertEqual(c.restore_scope(c.cloud_snapshot(self.cloud),restored,[]),{})
+        self.assertEqual(before['servers']['server-1']['image'],{'id':'image-1'})
+        self.assertEqual(before['servers']['server-1']['flavor'],dict(id='flavor-1',name='small',vcpus=1,ram=1024,disk=8))
+        self.assertEqual(before['images']['image-1']['size'],1024)
+        self.assertEqual(before['servers']['server-1']['metadata'],{'purpose':'ew'})
+    def test_real_sparse_sdk_image_owner_items_failure_and_full_manifest_round_trip(self):
+        Image,Flavor=self.sdk_types()
+        class SparseImage(Image):
+            # Reproduce the observed descriptor failure on SDK versions where
+            # the alias bug has been fixed; retain real Resource.items().
+            def __getattribute__(self,name):
+                if name=='owner_id': raise AttributeError('missing owner_id',name='owner_id',obj=self)
+                return super().__getattribute__(name)
+        image=SparseImage(id='image-1'); self.server.image=image; self.server.flavor=Flavor(id='flavor-1')
+        with self.assertRaises(AttributeError) as error: image.items()
+        self.assertEqual(error.exception.name,'owner_id')
+        snapshot=c.cloud_snapshot(self.cloud)
+        manifest=dict(schema_version=1,id=self.cfg['id'],state='PLANNED',resources=snapshot,nodes={},artifacts={},ew={'configuration':{'servers':[]}})
+        obj=c.Checkpoint(self.cfg,self.cloud,hosts=Mock()); obj.root.mkdir(parents=True)
+        obj.save_manifest(manifest)
+        self.assertEqual(json.loads((obj.root/'manifest.json').read_text()),manifest)
+        self.assertEqual(c.restore_scope(c.cloud_snapshot(self.cloud),json.loads(json.dumps(snapshot)),[]),{})
+    def test_mapping_and_sdk_flavor_forms_normalize_identically(self):
+        Image,Flavor=self.sdk_types(); before=c.cloud_snapshot(self.cloud)
+        for flavor in (Flavor(id='flavor-1'),Flavor(original_name='small',vcpus=1,ram=1024,disk=8),{'original_name':'small','vcpus':1,'ram':1024,'disk':8}):
+            self.server.image=Image(id='image-1'); self.server.flavor=flavor
+            with self.subTest(form=type(flavor).__name__): self.assertEqual(c.cloud_snapshot(self.cloud),before)
+        self.server.flavor=Flavor(id='flavor-2')
+        with self.assertRaisesRegex(h.Refused,'image/flavor changed'): c.restore_scope(c.cloud_snapshot(self.cloud),before,[])
+    def test_changed_image_or_flavor_reference_rejects_restore_scope(self):
+        before=json.loads(json.dumps(c.cloud_snapshot(self.cloud)))
+        for field in ('image','flavor'):
+            old=getattr(self.server,field); setattr(self.server,field,{'id':field+'-2'})
+            with self.subTest(field=field),self.assertRaisesRegex(h.Refused,'image/flavor changed'):
+                c.restore_scope(c.cloud_snapshot(self.cloud),before,[])
+            setattr(self.server,field,old)
+    def test_missing_identity_or_inconsistent_sizing_refuses_before_directory_and_shutdown(self):
+        for field,value in (('image',{}),('image',None),('flavor',{}),('flavor',{'id':'unknown'}),('flavor',{'id':'flavor-1','ram':2048}),('compute_host',None)):
+            old=getattr(self.server,field); setattr(self.server,field,value)
+            obj=c.Checkpoint(self.cfg,self.cloud,hosts=Mock()); obj.shutdown=Mock()
+            with self.subTest(field=field,value=value),self.assertRaisesRegex(h.Refused,'identity|reference|sizing'): obj.create()
+            obj.hosts.call.assert_not_called(); obj.shutdown.assert_not_called(); self.assertFalse(obj.root.exists())
+            setattr(self.server,field,old)
+    def test_ambiguous_flavor_name_without_id_refuses(self):
+        self.cloud.compute.flavors.return_value[1].name='small'; self.server.flavor={'original_name':'small'}
+        with self.assertRaisesRegex(h.Refused,'ambiguous server flavor'): c.cloud_snapshot(self.cloud)
+    def test_sdk_flavor_name_alias_cannot_replace_missing_catalog_id(self):
+        _,Flavor=self.sdk_types()
+        self.cloud.compute.flavors.return_value=[Flavor(name='small',vcpus=1,ram=1024,disk=8)]
+        with self.assertRaisesRegex(h.Refused,'flavor identity'): c.cloud_snapshot(self.cloud)
+    def test_complete_manifest_serialization_is_checked_before_directory_or_node_operations(self):
+        for value in (object(),float('nan'),{'not-json':object()}):
+            obj=c.Checkpoint(self.cfg,self.cloud,hosts=Mock()); obj.plan=Mock(return_value=dict(resources=c.cloud_snapshot(self.cloud),guest_health=value)); obj.shutdown=Mock()
+            with self.subTest(value_type=type(value).__name__),self.assertRaisesRegex(h.Refused,'Complete checkpoint manifest'): obj.create()
+            self.assertFalse(obj.root.exists()); obj.hosts.call.assert_not_called(); obj.shutdown.assert_not_called()
+    def test_existing_abandoned_directory_is_preserved(self):
+        obj=c.Checkpoint(self.cfg,self.cloud,hosts=Mock()); obj.root.mkdir(parents=True)
+        h.save(obj.root/'restore-inputs.json',{'keep':'private abandoned evidence'})
+        before=(obj.root/'restore-inputs.json').read_bytes(); obj.plan=Mock(return_value={'resources':c.cloud_snapshot(self.cloud)})
+        with self.assertRaises(FileExistsError): obj.create()
+        self.assertEqual((obj.root/'restore-inputs.json').read_bytes(),before); obj.hosts.call.assert_not_called()
+    def test_post_recovery_health_uses_same_snapshot_normalization(self):
+        Image,Flavor=self.sdk_types(); before=json.loads(json.dumps(c.cloud_snapshot(self.cloud)))
+        self.server.image=Image(id='image-1'); self.server.flavor=Flavor(original_name='small',vcpus=1,ram=1024,disk=8)
+        obj=c.Checkpoint(self.cfg,self.cloud,hosts=Mock()); obj.root.mkdir(parents=True)
+        obj.guest_health=Mock(return_value={'ew-app':dict(boot='after',status='PASS')})
+        self.assertEqual(obj.healthy(self.health_manifest(before),'fixture')['ew-app']['status'],'PASS')
+        self.server.image=Image(id='image-2')
+        with patch.object(c.time,'monotonic',side_effect=[0,0,2]),patch.object(c.time,'sleep') as sleep:
+            with self.assertRaisesRegex(h.Refused,'health recovery failed'): obj.healthy(self.health_manifest(before),'changed-image')
+            sleep.assert_not_called()
+        self.assertFalse((obj.root/'changed-image-health.json').exists())
 
 
 if __name__=='__main__': unittest.main()
