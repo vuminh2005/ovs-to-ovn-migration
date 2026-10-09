@@ -79,6 +79,42 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(h.classify(dict(Type='volume',Name='mariadb')),'durable')
         self.assertEqual(h.classify(dict(Type='volume',Name='neutron_metadata_socket')),'ephemeral')
         self.assertEqual(h.classify(dict(Type='bind',Source='/run',RW=True)),'ephemeral')
+    def test_journal_host_input_requires_exact_read_only_bind(self):
+        mount=dict(Type='bind',Source='/var/log/journal',Destination='/var/log/journal',RW=False)
+        self.assertEqual(h.classify(mount),'host-input')
+        variants=[dict(mount,RW=value) for value in (True,None,0,'false')]
+        variants.append({k:v for k,v in mount.items() if k!='RW'})
+        variants.extend(dict(mount,Source=source) for source in ('/var/log','/var/log/journal/subdir','/var/log/journal-other','/var/log/journal/'))
+        variants.extend(dict(mount,Destination=destination) for destination in ('/var/log','/journal','/var/log/journal/subdir','/var/log/journal/',''))
+        for variant in variants:
+            with self.subTest(mount=variant),self.assertRaises(h.Refused): h.classify(variant)
+    def test_journal_discovery_retains_host_input_but_excludes_durable_roots(self):
+        journal=self.root/'journal'; journal.mkdir(); (journal/'host.log').write_text('host history')
+        kolla=self.root/'kolla'; kolla.mkdir()
+        ovs=self.root/'ovsdb'; ovs.mkdir()
+        unit=self.root/'fluentd.service'; unit.write_text('fixture')
+        boot=self.root/'boot'; boot.write_text('fixture-boot')
+        unit_path='/etc/systemd/system/kolla-fluentd-container.service'
+        paths={'/etc/kolla':kolla,'/var/log/journal':journal,unit_path:unit,'/proc/sys/kernel/random/boot_id':boot}
+        mount=dict(Type='bind',Source='/var/log/journal',Destination='/var/log/journal',RW=False)
+        rows=[dict(Name='/fluentd',Id='fluentd-id',Image='source-image',State=dict(Running=True),
+                   HostConfig=dict(RestartPolicy=dict(Name='always')),Mounts=[mount])]
+        cfg=dict(self.cfg,role='network')
+        def command(argv,timeout=120):
+            if argv[:3]==['docker','image','inspect']: return '[]'
+            if argv==['docker','volume','ls','-q']: return 'openvswitch_db'
+            if argv[:3]==['docker','volume','inspect']:
+                return json.dumps([dict(Name='openvswitch_db',Driver='local',Options=None,Mountpoint=str(ovs))])
+            if argv[:2]==['systemctl','show']:
+                return 'LoadState=loaded\nFragmentPath='+unit_path+'\nDropInPaths=\nActiveState=active\nUnitFileState=enabled\n'
+            self.fail('Unexpected discovery command: '+repr(argv))
+        with patch.object(h,'Path',side_effect=lambda p:paths.get(str(p),Path(p))),patch.object(h,'containers',return_value=rows),patch.object(h,'command',side_effect=command),patch.object(h.shutil,'which',return_value='/usr/bin/lsof'),patch.object(h,'identity',return_value=dict(machine_id='fixture')),patch.object(h,'sizes',return_value=dict(apparent_bytes=0,allocated_bytes=0)) as sizes:
+            plan=h.discover(cfg)
+        self.assertEqual(plan['host_inputs'],[dict(path='/var/log/journal',realpath=str(journal))])
+        self.assertEqual(set(plan['roots']),{str(kolla),str(ovs),str(unit)})
+        self.assertEqual(set(map(str,sizes.call_args.args[0])),set(plan['roots']))
+        self.assertEqual(plan['mounts'],[dict(mount,classification='host-input')])
+        self.assertEqual(plan['containers'][0]['mounts'],[mount])
     def test_apparent_not_allocated_size_and_central_copy_space(self):
         plan=dict(sizes=dict(apparent_bytes=1000,allocated_bytes=1))
         with self.assertRaises(h.Refused): h.space(plan,2000,100)
@@ -211,12 +247,14 @@ class AdditionalSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(h.Refused,'Partial'): h.restore_data(self.cfg,dict(roots=[]))
             cmd.assert_not_called()
     def test_private_docker_recreation_uses_exact_image_and_no_restart(self):
-        row=dict(Name='/source',Image='sha256:source',Config=dict(Image='mutable:tag',Env=['SECRET=private']),HostConfig=dict(RestartPolicy=dict(Name='always')))
+        bind='/var/log/journal:/var/log/journal:ro'
+        row=dict(Name='/source',Image='sha256:source',Config=dict(Image='mutable:tag',Env=['SECRET=private']),HostConfig=dict(RestartPolicy=dict(Name='always'),Binds=[bind]))
         connection=Mock(); connection.getresponse.return_value.status=201
         with patch.object(h,'UnixHTTP',return_value=connection): h.recreate([row])
         payload=json.loads(connection.request.call_args.kwargs['body'])
         self.assertEqual(payload['Image'],'sha256:source')
         self.assertEqual(payload['HostConfig']['RestartPolicy']['Name'],'no')
+        self.assertEqual(payload['HostConfig']['Binds'],[bind])
         self.assertEqual(payload['Env'],['SECRET=private'])
     def test_controller_interrupt_retains_failed_intent_and_no_replay(self):
         obj=c.Checkpoint(self.cfg,Mock(),hosts=Mock()); obj.root.mkdir(parents=True)

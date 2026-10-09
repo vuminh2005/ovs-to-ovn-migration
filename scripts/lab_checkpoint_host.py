@@ -76,6 +76,8 @@ def classify(mount):
         if mount.get('Name') in VOLUMES|{'ovn_nb_db','ovn_sb_db'}: return 'durable'
         raise Refused('Unclassified Docker volume: '+mount.get('Name','unknown'))
     if mount['Type']!='bind': raise Refused('Unsupported Docker storage driver/type')
+    if source==destination=='/var/log/journal' and mount.get('RW') is False:
+        return 'host-input'
     p=Path(source)
     if any(beneath(p,Path(v)) for v in EPHEMERAL): return 'ephemeral'
     if any(beneath(p,Path(v)) for v in DURABLE_BINDS): return 'durable'

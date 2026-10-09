@@ -18,6 +18,11 @@ libvirt autostart, a different filesystem for durable storage, or unmanaged
 containers stop planning. This deliberately narrow classifier must be reviewed
 against the first plan; do not bypass it to obtain a checkpoint.
 
+Fluentd's exact read-only `/var/log/journal` to `/var/log/journal` bind is a host
+input. Its resolved path is verified and its read-only mount is retained during
+recreation. Host journal history is excluded from archive roots, capacity/writer
+checks, quarantine and replacement because it belongs to the intact host OS.
+
 `lsof`, GNU tar with sparse/ACL/xattr support, Docker, the existing Kolla systemd
 units, and `virsh`/`qemu-img` in `nova_libvirt` are required for source creation. SDK/API access uses the
 existing admin openrc. Management SSH reuses the verified EW key/known-host paths;
