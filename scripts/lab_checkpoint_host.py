@@ -32,11 +32,20 @@ def save(path, value):
     temp=path.with_suffix('.tmp'); temp.write_text(json.dumps(value,indent=2)); temp.chmod(0o600); temp.replace(path)
 
 
+def validate_product_uuid(value):
+    if (not isinstance(value,str) or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}',value) or
+        value.lower().replace('-','') in ('0'*32,'f'*32)):
+        raise Refused('Required DMI product_uuid is missing/invalid; zero and all-FF UUIDs are prohibited')
+    return value.lower()
+
+
 def identity():
     import platform
     os_info=platform.freedesktop_os_release()
     if os_info.get('ID')!='ubuntu' or os_info.get('VERSION_ID')!='24.04': raise Refused('Only intact Ubuntu 24.04 hosts supported')
-    return dict(machine_id=Path('/etc/machine-id').read_text().strip(),hostname=socket.gethostname())
+    try: product=Path('/sys/class/dmi/id/product_uuid').read_text().strip()
+    except OSError: raise Refused('Missing/unreadable DMI product_uuid; checkpoint host identity cannot be verified') from None
+    return dict(machine_id=Path('/etc/machine-id').read_text().strip(),hostname=socket.gethostname(),product_uuid=validate_product_uuid(product))
 
 
 def checkpoint_path(cfg):
@@ -540,6 +549,7 @@ def resume_start(root, plan):
 
 def node_verify(cfg, plan, artifact):
     root=checkpoint_path(cfg)
+    validate_product_uuid(plan['identity'].get('product_uuid'))
     if identity()!=plan['identity']: raise Refused('Wrong host identity')
     for p in plan['roots']:
         if str(Path(p).resolve())!=p or not Path(p).exists(): raise Refused('Required restore destination absent/changed')

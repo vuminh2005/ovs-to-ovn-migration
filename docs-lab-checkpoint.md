@@ -18,6 +18,14 @@ libvirt autostart, a different filesystem for durable storage, or unmanaged
 containers stop planning. This deliberately narrow classifier must be reviewed
 against the first plan; do not bypass it to obtain a checkpoint.
 
+Host uniqueness requires five distinct, canonical DMI `product_uuid` values from
+`/sys/class/dmi/id/product_uuid`; missing, malformed, all-zero and all-FF values
+are refused. Cloned hosts may share `machine_id`. Both `machine_id` and hostname
+remain recorded, and verification/restoration compare the complete identity
+exactly, including product UUID. Older manifests without this identity are
+refused rather than upgraded. Boot IDs remain separate: all five original hosts
+must reboot after data restoration before finalization can start services.
+
 Fluentd's exact read-only `/var/log/journal` to `/var/log/journal` bind is a host
 input. Its resolved path is verified and its read-only mount is retained during
 recreation. Host journal history is excluded from archive roots, capacity/writer

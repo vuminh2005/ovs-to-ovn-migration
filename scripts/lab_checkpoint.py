@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 
-from lab_checkpoint_host import Refused, checkpoint_path, digest, save, space, verify_archive
+from lab_checkpoint_host import Refused, checkpoint_path, digest, save, space, validate_product_uuid, verify_archive
 from ew_transport import Transport, verify_profile
 
 
@@ -264,6 +264,8 @@ def sealed(root):
         raise Refused('Incomplete/unsealed checkpoint is never eligible for restore')
     seal=json.loads((root/'seal.json').read_text())
     if seal.get('manifest_sha256')!=digest(root/'manifest.json'): raise Refused('Manifest seal mismatch')
+    if len({validate_product_uuid(p.get('identity',{}).get('product_uuid')) for p in manifest['nodes'].values()})!=5:
+        raise Refused('Checkpoint requires five distinct recorded DMI product UUIDs')
     return manifest
 
 
@@ -334,7 +336,7 @@ with opener.open('http://169.254.169.254/openstack/latest/meta_data.json',timeou
                 if vm['server'] in expected and plan.get('domain_interfaces',{}).get(vm['server'])!=[dict(port=vm['port'],mac=vm['mac'].lower())]:
                     raise Refused('Current libvirt/OVS port identity conflicts with source API catalog')
             if any(c['name'].startswith('ovn') for c in plan['containers']): raise Refused('Cold checkpoint source must be OVS, not OVN')
-        if len({p['identity']['machine_id'] for p in nodes.values()})!=5: raise Refused('Inventory aliases duplicate a host identity')
+        if len({validate_product_uuid(p['identity'].get('product_uuid')) for p in nodes.values()})!=5: raise Refused('Inventory aliases duplicate a DMI product_uuid')
         total=sum(n['sizes']['apparent_bytes'] for n in nodes.values())
         for host,plan in nodes.items(): space(plan,plan['free_bytes'],self.cfg['headroom_bytes'],total if self.cfg['roles'][host]=='control' else 0)
         manifest=dict(schema_version=1,id=self.cfg['id'],state='PLANNED',nodes=nodes,resources=snapshot,ew=catalog,artifacts={},

@@ -9,11 +9,16 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import uuid
 from unittest.mock import Mock,patch
 
 sys.path.insert(0,str(Path(__file__).parents[1]/'scripts'))
 import lab_checkpoint as c
 import lab_checkpoint_host as h
+
+
+def host_identity(host, machine_id='8879639716ca4bc5b019ff94b3b968df'):
+    return dict(hostname=host,machine_id=machine_id,product_uuid=str(uuid.uuid5(uuid.NAMESPACE_DNS,'checkpoint-fixture-'+host)))
 
 
 def config(root):
@@ -128,8 +133,8 @@ class SafetyTests(unittest.TestCase):
         h.save(self.root/'manifest.json',m); h.save(self.root/'seal.json',dict(manifest_sha256='wrong'))
         with self.assertRaises(h.Refused): c.sealed(self.root)
     def test_wrong_host_missing_images_and_corrupt_inputs_stop_preflight(self):
-        plan=dict(identity=dict(machine_id='old'),containers=[dict(image='source-image')],roots=[str(self.root)],host_inputs=[],volumes=[])
-        with patch.object(h,'identity',return_value=dict(machine_id='wrong')),patch.object(h,'command') as cmd:
+        plan=dict(identity=host_identity('old'),containers=[dict(image='source-image')],roots=[str(self.root)],host_inputs=[],volumes=[])
+        with patch.object(h,'identity',return_value=host_identity('wrong')),patch.object(h,'command') as cmd:
             with self.assertRaises(h.Refused): h.node_verify(self.cfg,plan,{})
             cmd.assert_not_called()
         with patch.object(h,'identity',return_value=plan['identity']),patch.object(h,'command',side_effect=h.Refused('image missing')):
@@ -379,7 +384,7 @@ class RecoveryTests(unittest.TestCase):
         self.base=Path(self.tmp.name); self.cfg=config(self.base/'checkpoints'); Path(self.cfg['root']).mkdir(mode=0o700)
         self.hosts=Mock(); self.factory=Mock(side_effect=AssertionError('API used before source startup'))
         self.obj=c.Checkpoint(self.cfg,None,hosts=self.hosts,cloud_factory=self.factory); self.obj.root.mkdir()
-        self.nodes={host:dict(identity=dict(hostname=host,machine_id=host),role=role,boot='before',domains=[],domain_states={},
+        self.nodes={host:dict(identity=host_identity(host),role=role,boot='before',domains=[],domain_states={},
                             domain_interfaces={},free_bytes=10000,sizes=dict(apparent_bytes=10)) for host,role in self.cfg['roles'].items()}
         self.nodes['compute1'].update(domains=['ew'],domain_states={'ew':'running'},domain_interfaces={'ew':[dict(port='port',mac='mac')]})
         self.resources=dict(servers={'ew':dict(id='ew',host='compute1',status='ACTIVE')},
@@ -477,6 +482,18 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(plan['resources']['servers']['ew']['status'],'SHUTOFF')
         self.obj.restore_apply()
         self.assertFalse(any(a=='shutdown' for _,a in self.events))
+    def test_changed_product_uuid_blocks_restore_before_any_mutation(self):
+        self.nodes['controller']['identity']['product_uuid']=host_identity('replacement')['product_uuid']
+        with self.assertRaisesRegex(h.Refused,'Wrong host'): self.obj.restore_apply()
+        self.assertFalse((self.obj.root/'restore-state.json').exists())
+        self.assertTrue(all(a=='discover-recovery' for _,a in self.events)); self.factory.assert_not_called()
+    def test_changed_product_uuid_blocks_finalization_despite_new_boot(self):
+        self.restored()
+        self.nodes['controller']['identity']['product_uuid']=host_identity('replacement')['product_uuid']
+        self.obj.healthy=Mock()
+        with self.assertRaisesRegex(h.Refused,'same host'): self.obj.restore_finish()
+        self.obj.healthy.assert_not_called(); self.factory.assert_not_called()
+        self.assertFalse(any(a=='resume-start' for _,a in self.events))
     def test_exact_owned_validation_journals_authorize_extra_domain_only(self):
         run=self.base/'run'; run.mkdir(); self.cfg['validation_runs']=[str(run)]
         h.save(run/'validation-config.json',dict(run='run-id'))
@@ -674,7 +691,7 @@ class NativePortTests(unittest.TestCase):
             if argv[3:5]==['qemu-img','info']: return json.dumps([dict(filename=f'/var/lib/nova/instances/{self.domain}/disk',format='raw')])
         self.fail('Unexpected command/service startup: '+repr(argv))
     def discover(self,missing_tool=False):
-        with patch.object(h,'Path',side_effect=lambda p:self.paths.get(str(p),Path(p))),patch.object(h,'containers',return_value=self.rows),patch.object(h,'command',side_effect=self.command) as cmd,patch.object(h.shutil,'which',side_effect=lambda name:None if missing_tool and name=='ovsdb-tool' else '/usr/bin/'+name),patch.object(h,'identity',return_value=dict(machine_id='fixture',hostname='compute1')),patch.object(h,'qemu_domains',return_value={self.domain} if self.running else set()),patch.object(c,'cloud_snapshot',side_effect=AssertionError('Offline discovery used an API')) as api:
+        with patch.object(h,'Path',side_effect=lambda p:self.paths.get(str(p),Path(p))),patch.object(h,'containers',return_value=self.rows),patch.object(h,'command',side_effect=self.command) as cmd,patch.object(h.shutil,'which',side_effect=lambda name:None if missing_tool and name=='ovsdb-tool' else '/usr/bin/'+name),patch.object(h,'identity',return_value=host_identity('compute1')),patch.object(h,'qemu_domains',return_value={self.domain} if self.running else set()),patch.object(c,'cloud_snapshot',side_effect=AssertionError('Offline discovery used an API')) as api:
             plan=h.discover(self.cfg,recovery=True)
         api.assert_not_called()
         self.calls=cmd.call_args_list
@@ -759,8 +776,8 @@ class NativePortTests(unittest.TestCase):
         self.assertEqual(h.digest(self.database),before)
     def test_source_creation_cross_checks_full_port_and_mac_against_api_catalog(self):
         cfg=config(self.root/'checkpoints'); node=self.discover()
-        nodes={host:dict(identity=dict(machine_id=host,hostname=host),domains=[],domain_states={},domain_interfaces={},containers=[],sizes=dict(apparent_bytes=1),free_bytes=10000) for host in cfg['roles']}
-        nodes['compute1'].update(node); nodes['compute1']['identity']=dict(machine_id='compute1',hostname='compute1')
+        nodes={host:dict(identity=host_identity(host),domains=[],domain_states={},domain_interfaces={},containers=[],sizes=dict(apparent_bytes=1),free_bytes=10000) for host in cfg['roles']}
+        nodes['compute1'].update(node); nodes['compute1']['identity']=host_identity('compute1')
         catalog=dict(servers={'ew':dict(server=self.domain,port=self.port,mac=self.mac,actual_host='compute1')})
         obj=c.Checkpoint(cfg,Mock(),hosts=Mock()); obj.hosts.call.side_effect=lambda host,*a,**kw:nodes[host]; obj.guest_health=Mock(return_value={})
         nodes['compute1']['domain_states'][self.domain]='running'
@@ -770,6 +787,62 @@ class NativePortTests(unittest.TestCase):
                 old=catalog['servers']['ew'][field]; catalog['servers']['ew'][field]=value
                 with self.subTest(field=field),self.assertRaisesRegex(h.Refused,'API catalog'): obj.plan()
                 catalog['servers']['ew'][field]=old
+
+
+class ProductIdentityTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup); self.root=Path(self.tmp.name)
+        self.cfg=config(self.root/'checkpoints')
+    def identity(self, product):
+        def read(path):
+            if str(path)=='/etc/machine-id': return '8879639716ca4bc5b019ff94b3b968df\n'
+            self.assertEqual(str(path),'/sys/class/dmi/id/product_uuid')
+            if product is None: raise FileNotFoundError('fixture missing DMI')
+            return product
+        with patch('platform.freedesktop_os_release',return_value=dict(ID='ubuntu',VERSION_ID='24.04')),patch.object(h.Path,'read_text',autospec=True,side_effect=read),patch.object(h.socket,'gethostname',return_value='controller'):
+            return h.identity()
+    def test_identity_canonicalizes_product_uuid_and_keeps_machine_id_hostname(self):
+        expected=host_identity('controller')
+        self.assertEqual(self.identity(expected['product_uuid'].upper()+'\n'),expected)
+        self.assertEqual(set(expected),{'product_uuid','machine_id','hostname'})  # Boot ID remains separate.
+    def test_missing_malformed_zero_and_ff_product_uuids_refuse(self):
+        for product in (None,'','not-a-uuid','a'*32,'00000000-0000-0000-0000-000000000000','ffffffff-ffff-ffff-ffff-ffffffffffff','FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF'):
+            with self.subTest(product=product),self.assertRaisesRegex(h.Refused,'product_uuid'): self.identity(product)
+    def test_five_clones_require_distinct_valid_product_uuids_in_planning(self):
+        nodes={host:dict(identity=host_identity(host),domains=[],domain_states={},containers=[],sizes=dict(apparent_bytes=1),free_bytes=10000) for host in self.cfg['roles']}
+        obj=c.Checkpoint(self.cfg,Mock(),hosts=Mock()); obj.hosts.call.side_effect=lambda host,*a,**kw:nodes[host]; obj.guest_health=Mock(return_value={})
+        with patch.object(c,'cloud_snapshot',return_value={}),patch.object(c,'ew_catalog',return_value=dict(servers={})):
+            self.assertEqual(len({p['identity']['machine_id'] for p in obj.plan()['nodes'].values()}),1)
+            self.assertEqual(len({p['identity']['product_uuid'] for p in nodes.values()}),5)
+            original=nodes['compute1']['identity']['product_uuid']
+            for value in (nodes['controller']['identity']['product_uuid'],None,'bad-uuid'):
+                nodes['compute1']['identity']['product_uuid']=value
+                with self.subTest(product=value),self.assertRaisesRegex(h.Refused,'product_uuid'): obj.plan()
+            nodes['compute1']['identity']['product_uuid']=original
+    def test_changed_product_uuid_blocks_node_and_controller_verify(self):
+        original=host_identity('controller'); changed=dict(original,product_uuid=host_identity('replacement')['product_uuid'])
+        plan=dict(identity=original,roots=[])
+        with patch.object(h,'identity',return_value=changed),patch.object(h,'command') as command:
+            with self.assertRaisesRegex(h.Refused,'Wrong host identity'): h.node_verify(self.cfg,plan,{})
+            obj=c.Checkpoint(self.cfg,Mock(),hosts=Mock())
+            manifest=dict(nodes={'controller':plan},artifacts={'controller':dict(sha256='sha',private_sha256='sha')})
+            obj.cfg=dict(self.cfg,roles={'controller':'control'})
+            obj.hosts.call.side_effect=lambda host,action,**kw:h.node_verify(self.cfg,kw['plan'],kw['artifact'])
+            with patch.object(c,'sealed',return_value=manifest),patch.object(c,'digest',return_value='sha'),patch.object(c,'verify_archive'):
+                with self.assertRaisesRegex(h.Refused,'Wrong host identity'): obj.verify()
+            command.assert_not_called()
+    def test_old_or_duplicate_identity_manifest_is_not_upgraded(self):
+        root=h.checkpoint_path(self.cfg); root.mkdir(parents=True)
+        nodes={host:dict(identity=host_identity(host)) for host in self.cfg['roles']}
+        manifest=dict(schema_version=1,state='SEALED',nodes=nodes,artifacts={host:{} for host in nodes})
+        def write():
+            h.save(root/'manifest.json',manifest); h.save(root/'seal.json',dict(manifest_sha256=h.digest(root/'manifest.json')))
+        write(); self.assertEqual(c.sealed(root),manifest)
+        nodes['compute1']['identity'].pop('product_uuid'); write(); before=h.digest(root/'manifest.json')
+        with self.assertRaisesRegex(h.Refused,'product_uuid'): c.sealed(root)
+        self.assertEqual(h.digest(root/'manifest.json'),before)
+        nodes['compute1']['identity']['product_uuid']=nodes['controller']['identity']['product_uuid']; write()
+        with self.assertRaisesRegex(h.Refused,'distinct'): c.sealed(root)
 
 
 if __name__=='__main__': unittest.main()
