@@ -487,6 +487,9 @@ class RecoveryTests(unittest.TestCase):
         self.nodes['compute2'].update(domains=['validation'],domain_states={'validation':'running'},
                                       domain_interfaces={'validation':[dict(port='validation-port',mac='v-mac')]})
         self.assertEqual(self.obj.restore_plan()['validation_owned'],['validation'])
+        vm['mac']='conflicting-journal-mac'; h.save(run/'validation-resources.json',dict(schema_version=2,pre=dict(existing={'0':vm})))
+        self.declare({str(run/n):h.digest(run/n) for n in ('validation-config.json','validation-resources.json')})
+        with self.assertRaisesRegex(h.Refused,'MAC differs'): self.obj.restore_plan()
         vm['owned']=False; h.save(run/'validation-resources.json',dict(schema_version=2,pre=dict(existing={'0':vm})))
         self.declare({str(run/n):h.digest(run/n) for n in ('validation-config.json','validation-resources.json')})
         with self.assertRaisesRegex(h.Refused,'ownership'): self.obj.restore_apply()
@@ -605,11 +608,12 @@ class RecoveryHostTests(unittest.TestCase):
         with self.assertRaises(h.Refused): h.primary_storage(rows,'control',recovery=True)
     def test_stopped_libvirt_xml_and_port_identity_are_read_without_commands(self):
         root=self.root/'qemu'; root.mkdir()
-        xml='<domain><uuid>ew</uuid><devices><interface><mac address="MAC"/><virtualport><parameters interfaceid="port"/></virtualport></interface></devices></domain>'
+        port='f2cbbef0-6af0-445a-b727-193702eaa0bf'; mac='fa:16:3e:ba:39:0b'
+        xml=f'<domain><uuid>ew</uuid><devices><interface><mac address="{mac}"/><virtualport><parameters interfaceid="{port}"/></virtualport></interface></devices></domain>'
         (root/'instance.xml').write_text(xml)
         mounts=[dict(classification='durable',Source=str(self.root),Destination='/etc/libvirt')]
         with patch.object(h,'command') as cmd:
-            domains=h.offline_domains(mounts); self.assertEqual(h.domain_ports(domains['ew'],'ew'),[dict(port='port',mac='mac')]); cmd.assert_not_called()
+            domains=h.offline_domains(mounts); self.assertEqual(h.domain_ports(domains['ew'],'ew'),[dict(port=port,mac=mac)]); cmd.assert_not_called()
         (root/'instance.xml').unlink(); (root/'instance.xml').symlink_to(self.root/'missing')
         with self.assertRaises(h.Refused): h.offline_domains(mounts)
     def test_xml_missing_port_or_duplicate_uuid_is_ambiguous(self):
@@ -624,6 +628,148 @@ class RecoveryHostTests(unittest.TestCase):
             self.assertEqual(h.qemu_domains(),{'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'})
             (pid/'cmdline').write_bytes(b'/usr/bin/qemu-system-x86_64\0')
             with self.assertRaisesRegex(h.Refused,'Unidentified'): h.qemu_domains()
+
+
+class NativePortTests(unittest.TestCase):
+    domain='b162d212-73bc-4427-81ae-702f70cf7d30'
+    port='f2cbbef0-6af0-445a-b727-193702eaa0bf'
+    mac='fa:16:3e:ba:39:0b'
+    tap='tapf2cbbef0-6a'
+    def setUp(self):
+        import xml.etree.ElementTree as ET
+        self.tmp=tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup); self.root=Path(self.tmp.name)
+        self.xml_text=f'<domain><uuid>{self.domain}</uuid><devices><interface type="ethernet"><mac address="{self.mac}"/><target dev="{self.tap}"/></interface><disk><source file="/var/lib/nova/instances/{self.domain}/disk"/></disk></devices></domain>'
+        self.xml=ET.fromstring(self.xml_text)
+        self.ovs=[dict(name=self.tap,external_ids={'iface-id':self.port,'attached-mac':self.mac})]
+        self.cfg=dict(config(self.root/'checkpoints'),role='compute')
+        self.volumes=[]; self.paths={}; self.rows=[]; self.running=False; self.inactive=self.xml_text
+        for name in ('nova_compute','libvirtd','nova_libvirt_qemu','openvswitch_db'):
+            path=self.root/name; path.mkdir()
+            self.volumes.append(dict(Name=name,Driver='local',Options=None,Mountpoint=str(path)))
+        qemu=self.root/'nova_libvirt_qemu'; (qemu/'instance.xml').write_text(self.xml_text)
+        disk=self.root/'nova_compute/instances'/self.domain/'disk'; disk.parent.mkdir(parents=True); disk.write_bytes(b'fixture')
+        self.database=self.root/'openvswitch_db/current-database'; self.database.write_bytes(b'OVSDB JSON fixture')
+        for name,mounts in (('nova_libvirt',[('nova_compute','/var/lib/nova'),('libvirtd','/var/lib/libvirt'),('nova_libvirt_qemu','/etc/libvirt/qemu')]),('openvswitch_db',[('openvswitch_db','/var/lib/openvswitch')])):
+            unit=f'/etc/systemd/system/kolla-{name}-container.service'; path=self.root/(name+'.service'); path.write_text('fixture'); self.paths[unit]=path
+            self.rows.append(dict(Name='/'+name,Id=name,Image='source-image',State=dict(Running=False),HostConfig=dict(RestartPolicy=dict(Name='always')),
+                                  Mounts=[dict(Type='volume',Name=v,Source=str(self.root/v),Destination=d) for v,d in mounts]))
+        kolla=self.root/'kolla'; kolla.mkdir(); self.paths['/etc/kolla']=kolla
+        boot=self.root/'boot'; boot.write_text('boot'); self.paths['/proc/sys/kernel/random/boot_id']=boot
+    def command(self,argv,timeout=120):
+        if argv[:3]==['docker','image','inspect']: return '[]'
+        if argv==['docker','volume','ls','-q']: return '\n'.join(v['Name'] for v in self.volumes)
+        if argv[:3]==['docker','volume','inspect']: return json.dumps(self.volumes)
+        if argv[:2]==['systemctl','show']:
+            return 'LoadState=loaded\nFragmentPath=/etc/systemd/system/'+argv[2]+'\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n'
+        if argv[:2]==['/usr/bin/ovsdb-tool','db-name']: return 'Open_vSwitch'
+        if argv[:2]==['/usr/bin/ovsdb-tool','query']:
+            self.assertEqual(argv[2],str(self.database))
+            self.assertEqual(json.loads(argv[3]),['Open_vSwitch',dict(op='select',table='Interface',where=[],columns=['name','external_ids'])])
+            return json.dumps([dict(rows=[dict(name=r['name'],external_ids=['map',list(map(list,r['external_ids'].items()))]) for r in self.ovs])])
+        if self.running and argv[:3]==['docker','exec','nova_libvirt']:
+            if argv[3:5]==['virsh','list']: return self.domain
+            if argv[3:5]==['virsh','dumpxml']: return self.inactive if '--inactive' in argv else self.xml_text
+            if argv[3:5]==['virsh','domstate']: return 'running'
+            if argv[3:5]==['virsh','dominfo']: return 'Autostart: disable'
+            if argv[3:5]==['qemu-img','info']: return json.dumps([dict(filename=f'/var/lib/nova/instances/{self.domain}/disk',format='raw')])
+        self.fail('Unexpected command/service startup: '+repr(argv))
+    def discover(self,missing_tool=False):
+        with patch.object(h,'Path',side_effect=lambda p:self.paths.get(str(p),Path(p))),patch.object(h,'containers',return_value=self.rows),patch.object(h,'command',side_effect=self.command) as cmd,patch.object(h.shutil,'which',side_effect=lambda name:None if missing_tool and name=='ovsdb-tool' else '/usr/bin/'+name),patch.object(h,'identity',return_value=dict(machine_id='fixture',hostname='compute1')),patch.object(h,'qemu_domains',return_value={self.domain} if self.running else set()),patch.object(c,'cloud_snapshot',side_effect=AssertionError('Offline discovery used an API')) as api:
+            plan=h.discover(self.cfg,recovery=True)
+        api.assert_not_called()
+        self.calls=cmd.call_args_list
+        return plan
+    def test_observed_native_layout_uses_full_current_ovs_uuid_without_vm_id(self):
+        self.assertEqual(h.domain_ports(self.xml,self.domain,self.ovs),[dict(port=self.port,mac=self.mac)])
+        self.assertNotIn('vm-id',self.ovs[0]['external_ids'])
+        # A full UUID comes only from OVS, even when its TAP prefix differs.
+        self.ovs[0]['external_ids']['iface-id']='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        self.assertEqual(h.domain_ports(self.xml,self.domain,self.ovs)[0]['port'],'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')
+    def test_explicit_xml_id_is_supported_and_current_ovs_conflicts_refuse(self):
+        import xml.etree.ElementTree as ET
+        xml=ET.fromstring(self.xml_text.replace('<target',f'<virtualport><parameters interfaceid="{self.port}"/></virtualport><target'))
+        self.assertEqual(h.domain_ports(xml,self.domain),[dict(port=self.port,mac=self.mac)])
+        self.assertEqual(h.domain_ports(xml,self.domain,self.ovs),[dict(port=self.port,mac=self.mac)])
+        wrong=copy.deepcopy(self.ovs); wrong[0]['external_ids']['iface-id']='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
+        with self.assertRaisesRegex(h.Refused,'conflicts'): h.domain_ports(xml,self.domain,wrong)
+    def test_native_wrong_mac_uuid_duplicate_or_missing_evidence_refuses(self):
+        for change in ('mac','missing-mac','short-uuid','invalid-uuid','missing-uuid','duplicate-target','duplicate-port','missing-target','missing-evidence'):
+            ovs=copy.deepcopy(self.ovs)
+            if change=='mac': ovs[0]['external_ids']['attached-mac']='fa:16:3e:00:00:00'
+            if change=='missing-mac': ovs[0]['external_ids'].pop('attached-mac')
+            if change=='short-uuid': ovs[0]['external_ids']['iface-id']='f2cbbef0-6a'
+            if change=='invalid-uuid': ovs[0]['external_ids']['iface-id']='z'*36
+            if change=='missing-uuid': ovs[0]['external_ids'].pop('iface-id')
+            if change=='duplicate-target': ovs.append(copy.deepcopy(ovs[0]))
+            if change=='duplicate-port': ovs.append(dict(ovs[0],name='another-tap'))
+            if change=='missing-target': ovs[0]['name']='another-tap'
+            if change=='missing-evidence': ovs=None
+            with self.subTest(change=change),self.assertRaises(h.Refused): h.domain_ports(self.xml,self.domain,ovs)
+    def test_stopped_services_discovery_reads_current_persistent_ovsdb_without_startup(self):
+        plan=self.discover()
+        self.assertEqual(plan['domain_interfaces'],{self.domain:[dict(port=self.port,mac=self.mac)]})
+        self.assertEqual(plan['domain_states'],{self.domain:'shut off'})
+        self.assertEqual(plan['ovs_interface_evidence']['database'],str(self.database))
+        self.assertFalse(any('exec' in c.args[0] or 'start' in c.args[0] or 'run' in c.args[0] or 'transact' in c.args[0] for c in self.calls))
+        self.assertEqual(self.database.read_bytes(),b'OVSDB JSON fixture')
+    def test_stopped_service_missing_tools_or_current_evidence_blocks_replacement(self):
+        for change in ('tool','database','mapping'):
+            with self.subTest(change=change):
+                if change=='database': self.database.unlink()
+                if change=='mapping': self.database.write_bytes(b'OVSDB JSON fixture'); self.ovs=[]
+                obj=c.Checkpoint(self.cfg,Mock(),hosts=Mock()); obj.verify=Mock(return_value={})
+                obj.hosts.call.side_effect=lambda *a,**kw:self.discover(missing_tool=change=='tool')
+                with self.assertRaises(h.Refused): obj.restore_apply()
+                self.assertFalse((obj.root/'restore-state.json').exists())
+                self.assertTrue(all(c.args[1]=='discover-recovery' for c in obj.hosts.call.call_args_list))
+    def test_running_active_and_inactive_xml_must_resolve_same_current_ports(self):
+        self.running=True; self.rows[0]['State']['Running']=True
+        self.assertEqual(self.discover()['domain_interfaces'][self.domain],[dict(port=self.port,mac=self.mac)])
+        self.inactive=self.xml_text.replace(self.mac,'fa:16:3e:00:00:00')
+        with self.assertRaisesRegex(h.Refused,'MAC'): self.discover()
+        self.inactive=self.xml_text.replace(self.tap,'missing-tap')
+        with self.assertRaisesRegex(h.Refused,'OVS Interface'): self.discover()
+    def test_duplicate_current_database_is_ambiguous(self):
+        (self.database.parent/'second-database').write_bytes(b'OVSDB JSON fixture')
+        with self.assertRaisesRegex(h.Refused,'ambiguous'): self.discover()
+    def test_two_domains_cannot_claim_one_current_ovs_port(self):
+        other=self.xml_text.replace('<uuid>'+self.domain+'</uuid>','<uuid>aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa</uuid>')
+        (self.root/'nova_libvirt_qemu/other.xml').write_text(other)
+        with self.assertRaisesRegex(h.Refused,'Duplicate Neutron port'): self.discover()
+    def test_malformed_ovs_json_is_not_port_evidence(self):
+        for output in ('invalid','[]','[{"error":"failed"}]','[{"rows":[{"name":"tap","external_ids":["map",[["iface-id","one"],["iface-id","two"]]]}]}]'):
+            with self.subTest(output=output),patch.object(h.shutil,'which',return_value='/usr/bin/ovsdb-tool'),patch.object(h,'command',side_effect=['Open_vSwitch',output]):
+                with self.assertRaisesRegex(h.Refused,'Malformed'): h.ovs_interfaces([],self.volumes)
+    def test_real_read_only_query_of_synthetic_standalone_database(self):
+        import hashlib
+        if not h.shutil.which('ovsdb-tool'): self.skipTest('Host ovsdb-tool unavailable for temporary-file query test')
+        # Construct only a private temporary fixture; never create/transact a
+        # database through OVS tooling or contact a running service.
+        schema=dict(name='Open_vSwitch',version='1.0.0',tables={'Interface':dict(isRoot=True,columns={
+            'name':dict(type='string'),'external_ids':dict(type=dict(key='string',value='string',min=0,max='unlimited'))})})
+        transaction={'Interface':{'11111111-1111-1111-1111-111111111111':dict(name=self.tap,external_ids=['map',list(map(list,self.ovs[0]['external_ids'].items()))])}}
+        records=[]
+        for value in (schema,transaction):
+            payload=(json.dumps(value,separators=(',',':'))+'\n').encode()
+            records.append(f'OVSDB JSON {len(payload)} {hashlib.sha1(payload).hexdigest()}\n'.encode()+payload)
+        self.database.write_bytes(b''.join(records)); before=h.digest(self.database)
+        evidence=h.ovs_interfaces([],self.volumes)
+        self.assertEqual(evidence['interfaces'],self.ovs)
+        self.assertEqual(h.domain_ports(self.xml,self.domain,evidence['interfaces']),[dict(port=self.port,mac=self.mac)])
+        self.assertEqual(h.digest(self.database),before)
+    def test_source_creation_cross_checks_full_port_and_mac_against_api_catalog(self):
+        cfg=config(self.root/'checkpoints'); node=self.discover()
+        nodes={host:dict(identity=dict(machine_id=host,hostname=host),domains=[],domain_states={},domain_interfaces={},containers=[],sizes=dict(apparent_bytes=1),free_bytes=10000) for host in cfg['roles']}
+        nodes['compute1'].update(node); nodes['compute1']['identity']=dict(machine_id='compute1',hostname='compute1')
+        catalog=dict(servers={'ew':dict(server=self.domain,port=self.port,mac=self.mac,actual_host='compute1')})
+        obj=c.Checkpoint(cfg,Mock(),hosts=Mock()); obj.hosts.call.side_effect=lambda host,*a,**kw:nodes[host]; obj.guest_health=Mock(return_value={})
+        nodes['compute1']['domain_states'][self.domain]='running'
+        with patch.object(c,'cloud_snapshot',return_value={}),patch.object(c,'ew_catalog',return_value=catalog):
+            self.assertEqual(obj.plan()['ew'],catalog)
+            for field,value in (('port','aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),('mac','fa:16:3e:00:00:00')):
+                old=catalog['servers']['ew'][field]; catalog['servers']['ew'][field]=value
+                with self.subTest(field=field),self.assertRaisesRegex(h.Refused,'API catalog'): obj.plan()
+                catalog['servers']['ew'][field]=old
 
 
 if __name__=='__main__': unittest.main()

@@ -235,6 +235,7 @@ def offline_scope(cfg, root, manifest, current):
                     # Port UUID is proved from libvirt; fixed IP allocation is only
                     # journal evidence, never represented as a live API observation.
                     expected[sid]={}; ports[sid]=[dict(port=vm['port'])]; extra.add(sid)
+                    if vm.get('mac') or vm.get('mac_address'): ports[sid][0]['mac']=(vm.get('mac') or vm['mac_address']).lower()
     if (declaration.get('schema_version')!=1 or declaration.get('checkpoint_manifest_sha256')!=digest(root/'manifest.json') or
         declaration.get('ownership_journals')!=journals or not declaration.get('operator') or
         any(declaration.get(k) is not True for k in ('exclusive_lab_scope','no_unjournaled_resources','no_concurrent_writers'))):
@@ -247,7 +248,7 @@ def offline_scope(cfg, root, manifest, current):
             interfaces=node.get('domain_interfaces',{}).get(sid,[])
             if {p['port'] for p in interfaces}!={p['port'] for p in ports[sid]}: raise Refused('Offline Neutron port/libvirt identity differs')
             for p in ports[sid]:
-                if 'mac' in p and not any(i==p for i in interfaces): raise Refused('Offline EW MAC differs')
+                if 'mac' in p and not any(i==p for i in interfaces): raise Refused('Offline checkpointed MAC differs')
             power=node['domain_states'][sid]
             if power not in ('running','shut off'): raise Refused('Transitional/paused offline libvirt domain; scope ambiguous')
             observed[sid]=dict(id=sid,host=host,status='ACTIVE' if power=='running' else 'SHUTOFF')
@@ -329,6 +330,9 @@ with opener.open('http://169.254.169.254/openstack/latest/meta_data.json',timeou
             expected={v['server'] for v in catalog['servers'].values() if v['actual_host']==plan['identity']['hostname'] or v['actual_host']==host}
             if set(plan['domains'])!=expected: raise Refused('Libvirt UUIDs disagree with scoped EW guests: '+host)
             if any(plan['domain_states'][sid]!='running' for sid in expected): raise Refused('EW Nova/libvirt running state differs')
+            for vm in catalog['servers'].values():
+                if vm['server'] in expected and plan.get('domain_interfaces',{}).get(vm['server'])!=[dict(port=vm['port'],mac=vm['mac'].lower())]:
+                    raise Refused('Current libvirt/OVS port identity conflicts with source API catalog')
             if any(c['name'].startswith('ovn') for c in plan['containers']): raise Refused('Cold checkpoint source must be OVS, not OVN')
         if len({p['identity']['machine_id'] for p in nodes.values()})!=5: raise Refused('Inventory aliases duplicate a host identity')
         total=sum(n['sizes']['apparent_bytes'] for n in nodes.values())
@@ -444,6 +448,9 @@ with opener.open('http://169.254.169.254/openstack/latest/meta_data.json',timeou
             expected={sid for sid,r in snapshot['servers'].items() if r['host'] in (host,plan['identity']['hostname'])}
             if set(plan['domains'])!=expected: raise Refused('Unrelated/missing libvirt domains')
             for sid in expected:
+                if not offline:
+                    api_ports=sorted([dict(port=pid,mac=p['mac_address'].lower()) for pid,p in snapshot['ports'].items() if p.get('device_id')==sid],key=lambda p:p['port'])
+                    if not api_ports or plan.get('domain_interfaces',{}).get(sid)!=api_ports: raise Refused('Current libvirt/OVS port identity conflicts with API scope')
                 desired='running' if snapshot['servers'][sid]['status']=='ACTIVE' else 'shut off'
                 if plan['domain_states'][sid]!=desired: raise Refused('Current Nova/libvirt power states differ; no force stop')
             # Current durable volume trees remain in quarantine/retained volumes.

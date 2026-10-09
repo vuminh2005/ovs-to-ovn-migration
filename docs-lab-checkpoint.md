@@ -23,6 +23,24 @@ input. Its resolved path is verified and its read-only mount is retained during
 recreation. Host journal history is excluded from archive roots, capacity/writer
 checks, quarantine and replacement because it belongs to the intact host OS.
 
+Checkpoint interface identity supports explicit XML `interfaceid` and native OVS
+`type="ethernet"` interfaces. Native TAPs require an exact current OVS Interface
+name, full Neutron `iface-id` UUID and `attached-mac` matching XML. `vm-id` is not
+required; TAP prefixes never prove UUIDs. Source creation cross-checks the API
+catalog; recovery cross-checks current interfaces against API/ownership evidence.
+
+Hosts with guest interfaces require `ovsdb-tool` already available on the host.
+The current standalone `Open_vSwitch` database is resolved uniquely within
+discovered OVS storage, then read using `db-name` and
+[`ovsdb-tool query`](https://www.openvswitch.org/support/dist-docs/ovsdb-tool.1.pdf).
+No database filename/host path or sealed mapping is substituted for current
+evidence. This works with OVS, libvirt and OpenStack services stopped, using
+persistent libvirt XML and read-only OVSDB access. With libvirt running, active
+and inactive XML must both resolve to identical current port/MAC mappings.
+Missing tools, missing/duplicate database or interface evidence, conflicting
+XML/MAC/UUIDs, or differing active/inactive mappings block replacement. No tools
+are installed and no services/helper containers are started during discovery.
+
 `lsof`, GNU tar with sparse/ACL/xattr support, Docker, the existing Kolla systemd
 units, and `virsh`/`qemu-img` in `nova_libvirt` are required for source creation. SDK/API access uses the
 existing admin openrc. Management SSH reuses the verified EW key/known-host paths;

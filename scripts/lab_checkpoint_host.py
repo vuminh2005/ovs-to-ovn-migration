@@ -159,16 +159,76 @@ def primary_storage(rows, role, recovery=False):
             raise Refused('Primary service storage is not in its classified local volume: '+name)
 
 
-def domain_ports(xml, domain):
+def port_uuid(value):
+    if not isinstance(value,str) or not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}',value):
+        raise Refused('Missing/invalid complete Neutron port UUID; TAP prefixes cannot prove identity')
+    return value.lower()
+
+
+def ovs_interfaces(mounts, volumes):
+    """Query only the current discovered standalone DB, with no daemon/API."""
+    tool=shutil.which('ovsdb-tool')
+    if not tool: raise Refused('Host ovsdb-tool is required for read-only current OVS port evidence; no automatic installation/startup')
+    roots={Path(v['Mountpoint']) for v in volumes if v['Name']=='openvswitch_db'}
+    roots.update(Path(m['Source']) for m in mounts if m['classification']=='durable' and
+                 m['Destination'] in ('/etc/openvswitch','/var/lib/openvswitch'))
+    if not roots: raise Refused('Current OVSDB storage cannot be resolved from discovered volumes/mounts')
+    databases=set()
+    for root in roots:
+        if root.resolve()!=root or not root.exists(): raise Refused('Unsafe/missing discovered OVSDB storage')
+        files=[root] if root.is_file() else [p for directory,dirs,names in os.walk(root,followlinks=False) for p in (Path(directory)/n for n in names)]
+        for path in files:
+            if path.is_symlink() or not path.is_file(): continue
+            with path.open('rb') as stream: magic=stream.read(16)
+            if magic.startswith(b'OVSDB JSON '):
+                if command([tool,'db-name',str(path)]).strip()=='Open_vSwitch': databases.add(path)
+    if len(databases)!=1: raise Refused('Missing/ambiguous current standalone Open_vSwitch database in discovered storage')
+    database=databases.pop(); before=database.stat()
+    transaction=['Open_vSwitch',dict(op='select',table='Interface',where=[],columns=['name','external_ids'])]
+    output=command([tool,'query',str(database),json.dumps(transaction)])
+    after=database.stat()
+    if (before.st_dev,before.st_ino)!=(after.st_dev,after.st_ino): raise Refused('Current OVSDB changed identity while collecting evidence; retry read-only preflight')
+    try:
+        result=json.loads(output)
+        if not isinstance(result,list) or len(result)!=1 or 'error' in result[0]: raise ValueError()
+        rows=result[0]['rows']; parsed=[]
+        if not isinstance(rows,list): raise ValueError()
+        for row in rows:
+            name=row['name']; ids=row['external_ids']
+            if not isinstance(name,str) or not name or not isinstance(ids,list) or len(ids)!=2 or ids[0]!='map' or not isinstance(ids[1],list): raise ValueError()
+            if any(not isinstance(pair,list) or len(pair)!=2 or any(not isinstance(v,str) for v in pair) for pair in ids[1]): raise ValueError()
+            values=dict(ids[1])
+            if len(values)!=len(ids[1]): raise ValueError()
+            parsed.append(dict(name=name,external_ids=values))
+    except (ValueError,TypeError,KeyError): raise Refused('Malformed/failed read-only OVS Interface query; no port identity proven') from None
+    return dict(database=str(database),collected_at=time.time(),interfaces=parsed)
+
+
+def domain_ports(xml, domain, ovs=None):
     if xml.findtext('uuid')!=domain: raise Refused('Libvirt XML UUID mismatch')
-    result=[]
+    result=[]; targets=set()
     for interface in xml.findall('./devices/interface'):
-        mac=interface.find('mac'); parameters=interface.find('./virtualport/parameters')
-        if mac is None or parameters is None or not parameters.get('interfaceid'):
-            raise Refused('Libvirt interface lacks exact Neutron port identity')
-        result.append(dict(port=parameters.get('interfaceid'),mac=mac.get('address','').lower()))
+        mac=interface.find('mac'); parameters=interface.find('./virtualport/parameters'); target=interface.find('target')
+        address=mac.get('address','').lower() if mac is not None else ''
+        if not re.fullmatch(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}',address): raise Refused('Missing/invalid libvirt interface MAC')
+        explicit=port_uuid(parameters.get('interfaceid')) if parameters is not None else None
+        name=target.get('dev') if target is not None else None
+        if not explicit and (interface.get('type')!='ethernet' or not name): raise Refused('Native libvirt interface lacks exact ethernet/TAP evidence')
+        if name:
+            if name in targets or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,15}',name): raise Refused('Missing/ambiguous libvirt TAP target')
+            targets.add(name)
+        if ovs is not None:
+            matches=[r for r in ovs if r['name']==name] if name else [r for r in ovs if r['external_ids'].get('iface-id')==explicit]
+            if len(matches)!=1: raise Refused('Missing/ambiguous current OVS Interface for libvirt target')
+            ids=matches[0]['external_ids']; port=port_uuid(ids.get('iface-id'))
+            if ids.get('attached-mac','').lower()!=address: raise Refused('Current OVS attached-mac conflicts with libvirt MAC')
+            if explicit and port!=explicit: raise Refused('XML interfaceid conflicts with current OVS port UUID')
+            if sum(r['external_ids'].get('iface-id','').lower()==port for r in ovs)!=1: raise Refused('Duplicate/ambiguous current OVS port UUID')
+        elif explicit: port=explicit
+        else: raise Refused('Native TAP requires current OVS evidence; sealed source mapping is insufficient')
+        result.append(dict(port=port,mac=address))
     if not result or len({v['port'] for v in result})!=len(result): raise Refused('Missing/ambiguous libvirt interfaces')
-    return result
+    return sorted(result,key=lambda v:v['port'])
 
 
 def qemu_domains():
@@ -243,13 +303,14 @@ def discover(cfg, recovery=False):
     nearest=checkpoint_path(cfg).parent
     while not nearest.exists(): nearest=nearest.parent
     if any(p.stat().st_dev!=nearest.stat().st_dev for p in paths): raise Refused('Separate storage filesystems need a dedicated space plan; unsupported')
-    domains=[]; backing=[]; domain_states={}; domain_interfaces={}
+    domains=[]; backing=[]; domain_states={}; domain_interfaces={}; ovs_evidence=None
     libvirt=next((r for r in rows if r['Name']=='/nova_libvirt'),None)
     if libvirt:
         import xml.etree.ElementTree as ET
         if libvirt['State']['Running']:
             domains=command(['docker','exec','nova_libvirt','virsh','list','--all','--uuid']).split()
             xmls={d:ET.fromstring(command(['docker','exec','nova_libvirt','virsh','dumpxml',d])) for d in domains}
+            inactive={d:ET.fromstring(command(['docker','exec','nova_libvirt','virsh','dumpxml',d,'--inactive'])) for d in domains}
             for domain in domains:
                 domain_states[domain]=command(['docker','exec','nova_libvirt','virsh','domstate',domain]).strip()
                 info=command(['docker','exec','nova_libvirt','virsh','dominfo',domain])
@@ -258,8 +319,13 @@ def discover(cfg, recovery=False):
             xmls=offline_domains(mounts)
             domains=list(xmls); domain_states={d:'shut off' for d in domains}
         else: raise Refused('Source libvirt must be running during checkpoint creation')
+        if xmls: ovs_evidence=ovs_interfaces(mounts,volumes)
         for domain,xml in xmls.items():
-            domain_interfaces[domain]=domain_ports(xml,domain)
+            domain_interfaces[domain]=domain_ports(xml,domain,ovs_evidence['interfaces'])
+            if any({p['port'] for p in interfaces}&{p['port'] for p in domain_interfaces[domain]} for other,interfaces in domain_interfaces.items() if other!=domain):
+                raise Refused('Duplicate Neutron port identity across current libvirt domains')
+            if libvirt['State']['Running'] and domain_ports(inactive[domain],domain,ovs_evidence['interfaces'])!=domain_interfaces[domain]:
+                raise Refused('Active/inactive libvirt port identities differ; current scope ambiguous')
             for disk in xml.findall('./devices/disk/source'):
                 filename=disk.get('file')
                 if not filename: raise Refused('Non-file libvirt storage is unsupported')
@@ -275,7 +341,7 @@ def discover(cfg, recovery=False):
         if qemu_domains()!=running: raise Refused('QEMU process/libvirt scope ambiguous; no service or data mutation permitted')
 
     return dict(identity=identity(),boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),role=cfg['role'],containers=compact(rows),volumes=volumes,services=services,
-                roots=[str(p) for p in paths],mounts=mounts,host_inputs=host_inputs,domains=domains,domain_states=domain_states,domain_interfaces=domain_interfaces,backing=backing,
+                roots=[str(p) for p in paths],mounts=mounts,host_inputs=host_inputs,domains=domains,domain_states=domain_states,domain_interfaces=domain_interfaces,ovs_interface_evidence=ovs_evidence,backing=backing,
                 sizes=sizes(paths),free_bytes=shutil.disk_usage(nearest).free)
 
 
