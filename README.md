@@ -952,3 +952,21 @@ remediation retains SUCCESS with its explicit fields. Any unresolved validation
 failure reports MIGRATED_VALIDATION_INCOMPLETE, preserves evidence/resources and
 never rolls back. Pair-A capture counts every actual Pair-A loss during either
 remediation; Pair-B packets never enter that metric.
+
+## Standalone cold checkpoint and restore
+
+[Cold checkpoint maintenance commands and limitations](docs-lab-checkpoint.md)
+are separate from migration and the destructive reset. `lab-checkpoint.yml`
+provides read-only plan/verify/restore-plan, explicit cold creation, coordinated
+restore-apply, and post-reboot restore-finish. It preserves complete scoped Docker
+storage, Kolla credentials/configuration and EW disks/backing cache on the same
+five hosts. Maintenance changes guest boot IDs and requires a fresh EW baseline;
+never resume an old migration/capture run after restoration. No real checkpoint
+or restore has been integration-tested by this implementation.
+
+Checkpoint recovery also supports an explicit, seal/journal-bound offline scope
+declaration when Neutron is unavailable. Host/libvirt scope is verified; API-only
+scope remains an operator attestation. After all five restores/reboots,
+`restore-finish` reconciles source service starts and retries temporary health
+failures without replaying data replacement. See the
+[recovery commands and trust limits](docs-lab-checkpoint.md#explicit-api-independent-recovery).
