@@ -21,17 +21,68 @@
     - name: Require authoritative Pair B MTU and workload readiness before any Neutron freeze
       ansible.builtin.shell: |
         set -euo pipefail
-        python3 {{ (playbook_dir + '/../scripts/mtu_plan.py') | quote }} ready {{ migration_run_dir | quote }}
         source {{ openrc_path | quote }}
         python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} precutover-ready {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: Require generated target MTU verification even when validation guests are disabled
+    - name: Require fresh existing EW identities target MTUs and real task readiness before freeze
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/ew_workload.py') | quote }} ready {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: ew_workloads_enabled | bool
+
+    - name: Begin a distinct authoritative pre-freeze target configuration collection
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/mtu_plan.py", begin-pre-freeze, "{{ migration_run_dir }}"]
+      register: mtu_pre_freeze_collection_query
+      changed_when: false
+
+    - name: Publish pre-freeze collection intent without upgrading historical runs
+      ansible.builtin.set_fact:
+        mtu_pre_freeze_collection: "{{ mtu_pre_freeze_collection_query.stdout | from_json }}"
+
+- name: Phase 07 - Refresh every controller generated target configuration before freeze
+  hosts: control
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Read host-side generated target files independently of the running source container
+      ansible.builtin.include_tasks: mtu-config-read-tasks.yml
+      vars:
+        mtu_config_mode: target
+        mtu_config_pre_freeze: true
+      when: hostvars['localhost']['mtu_pre_freeze_collection'].required | bool
+
+- name: Phase 07 - Enforce fresh target configuration before control-plane downtime
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Persist fresh pre-freeze target evidence separately from the phase 06 snapshot
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir }}/mtu-pre-freeze-target-configs.json"
+        mode: '0600'
+        content: >-
+          {{ {'schema_version': 1,
+              'collection_id': mtu_pre_freeze_collection.collection_id,
+              'requested_at': mtu_pre_freeze_collection.requested_at,
+              'controllers': dict(groups['control'] | zip(groups['control'] | map('extract', hostvars, 'mtu_pre_freeze_configuration_runtime')))} | to_nice_json }}
+      when: mtu_pre_freeze_collection.required | bool
+
+    - name: Require fresh authoritative target MTU verification with or without validation guests
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/../scripts/mtu_plan.py", ready, "{{ migration_run_dir }}"]
-      when: not (validation_workloads_enabled | bool)
       changed_when: false
 
     - name: Mark phase 07 and control-plane downtime start
@@ -49,6 +100,7 @@
 
 - name: Phase 07 - Freeze all Neutron API workers
   hosts: control
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -69,6 +121,20 @@
         fi
       args:
         executable: /bin/bash
+      changed_when: false
+
+- name: Phase 07 - Activate dedicated TCP listener while verified source transport remains available
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Require actual second-listener bind and fresh echo evidence after freeze without Neutron API calls
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/ew_workload.py", tcp-activate, "{{ migration_run_dir }}"]
+      when: ew_workloads_enabled | bool and ew_tcp_experiment_enabled | bool
       changed_when: false
 
 - name: Phase 07 - Run Neutron to OVN DB migration exactly once

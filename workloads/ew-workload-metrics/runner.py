@@ -31,7 +31,7 @@ def percentile(values, percent):
 
 
 class Recorder:
-    def __init__(self, directory):
+    def __init__(self, directory, probe_names=None):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.stream = (self.directory / "events.jsonl").open("x", encoding="utf-8")
@@ -40,14 +40,18 @@ class Recorder:
         self.counts = Counter()
         self.http_statuses = Counter()
         self.latencies = []
+        self.sequence = 0
         self.probes = {name: {"samples": 0, "failures": 0, "open_failure": None,
                               "last_sample_elapsed_s": None, "last_sample_utc": None,
-                              "failure_windows": []} for name in ("ping", "tcp")}
+                              "failure_windows": [], "last_successes": 0,
+                              "maximum_sample_gap_seconds": 0} for name in (probe_names or ("ping", "tcp"))}
 
     def event(self, kind, **fields):
         with self.lock:
             elapsed = time.monotonic() - self.started
-            record = {"utc": utc(), "elapsed_s": round(elapsed, 6), "kind": kind, **fields}
+            self.sequence += 1
+            record = {"seq": self.sequence, "utc": utc(), "mono": time.monotonic(),
+                      "elapsed_s": round(elapsed, 6), "kind": kind, **fields}
             self.stream.write(json.dumps(record, ensure_ascii=False) + "\n")
             self.stream.flush()
             if kind in ("created", "accepted", "completed", "slo_missed", "integrity_error", "unresolved"):
@@ -62,6 +66,10 @@ class Recorder:
             if kind in self.probes:
                 probe = self.probes[kind]
                 probe["samples"] += 1
+                if probe['last_sample_elapsed_s'] is not None:
+                    probe['maximum_sample_gap_seconds'] = max(probe['maximum_sample_gap_seconds'], elapsed-probe['last_sample_elapsed_s'])
+                probe['last_successes'] = probe['last_successes']+1 if fields['ok'] else 0
+                probe.setdefault('first_sample_elapsed_s', elapsed)
                 probe["last_sample_elapsed_s"] = elapsed
                 probe["last_sample_utc"] = record["utc"]
                 if not fields["ok"]:
@@ -75,6 +83,7 @@ class Recorder:
                                   recovery_observed=True)
                     probe["failure_windows"].append(window)
                     probe["open_failure"] = None
+            return record
 
     def finish(self, metadata, server_stats, reconciliation_error):
         with self.lock:
@@ -108,7 +117,11 @@ class Recorder:
                     "max": round(max(self.latencies), 3) if self.latencies else None},
                 "server_stats": server_stats, "reconciliation_error": reconciliation_error,
                 "baseline_passed": bool(passed),
+                "last_event_seq": self.sequence, "probe_interval_seconds": metadata.get('probe_interval_seconds', 1),
+                "rates_per_second": {k: round(counts[k]/elapsed, 6) if elapsed else None
+                                     for k in ('created', 'accepted', 'completed')},
             }
+            summary['rates_per_second']['attempted']=summary['rates_per_second']['created']
             self.stream.close()
             temporary = self.directory / "summary.json.tmp"
             temporary.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
@@ -117,10 +130,11 @@ class Recorder:
 
 
 class Client:
-    def __init__(self, url, recorder):
+    def __init__(self, url, recorder, timeout=3):
         self.url = url.rstrip("/")
         self.recorder = recorder
         self.opener = build_opener(ProxyHandler({}))
+        self.timeout = timeout
 
     def request(self, path, task=None, phase="poll", log=True):
         started = time.monotonic()
@@ -130,12 +144,12 @@ class Client:
         try:
             request = Request(self.url + path, data=raw, headers=headers)
             try:
-                response = self.opener.open(request, timeout=3)
+                response = self.opener.open(request, timeout=self.timeout)
             except HTTPError as exc:
                 response = exc
             with response:
                 status = response.code
-                result = json.loads(response.read())
+                result = json.loads(response.read(1048576))
         except Exception as exc:
             error = type(exc).__name__
         if log:
@@ -177,11 +191,14 @@ def run_task(client, task, recorder, deadline, slo_seconds):
         if job["status"] == "done":
             check_slo()
             if job.get("result_sha256") != expected or job.get("process_count") != 1:
-                recorder.event("integrity_error", task_id=task["task_id"], reason="result_or_process_count_mismatch")
+                recorder.event("integrity_error", task_id=task["task_id"], reason="result_or_process_count_mismatch",
+                               payload_corruption=job.get('result_sha256')!=expected,
+                               process_count_invalid=job.get('process_count')!=1,
+                               process_count=job.get('process_count'))
                 return False
             recorder.event("completed", task_id=task["task_id"],
                            latency_ms=round((time.monotonic() - started) * 1000, 3),
-                           delivery_count=job.get("delivery_count"))
+                           delivery_count=job.get("delivery_count"),process_count=job.get('process_count'))
             return True
         time.sleep(0.25)
     check_slo()
@@ -189,13 +206,13 @@ def run_task(client, task, recorder, deadline, slo_seconds):
     return False
 
 
-def probe(kind, host, port):
+def probe(kind, host, port, payload=56, df=False):
     started = time.monotonic()
     error = None
     try:
         if kind == "ping":
             completed = subprocess.run(
-                ["ping", "-4", "-n", "-c", "1", "-W", "1", "-M", "do", "-s", "1372", host],
+                ["ping", "-4", "-n", "-c", "1", "-W", "1", "-M", "do" if df else "dont", "-s", str(payload), host],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
             )
             ok = completed.returncode == 0
@@ -215,7 +232,182 @@ def probe_loop(kind, host, port, recorder, stop_event):
         stop_event.wait(max(0, 1 - (time.monotonic() - started)))
 
 
+def atomic_json(path, value, mode=None):
+    path = Path(path); temporary = path.with_suffix('.tmp')
+    with temporary.open('w') as stream:
+        json.dump(value, stream, indent=2); stream.flush(); os.fsync(stream.fileno())
+    if mode is not None: os.chmod(temporary,mode)
+    temporary.replace(path)
+
+
+def process_identity(pid):
+    return Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]
+
+
+def managed_probe(spec, recorder, stop):
+    client = Client(spec.get('url', ''), recorder)
+    while not stop.is_set():
+        started = time.monotonic()
+        if spec['type'] in ('live', 'dependency'):
+            code, result, error = client.request('/live' if spec['type']=='live' else '/health', log=False)
+            ok = not error and code == 200 and isinstance(result, dict)
+            if spec['type']=='dependency':
+                ok = ok and result.get('dependencies') == {'postgresql':'ok', 'rabbitmq':'ok'}
+            elapsed = (time.monotonic()-started)*1000
+        else:
+            ok, elapsed, error = probe('tcp' if spec['type']=='tcp' else 'ping', spec['host'], spec['port'],
+                                       spec.get('payload',56), spec['type']=='df')
+        recorder.event(spec['name'], ok=bool(ok), duration_ms=elapsed, error=error,
+                       endpoint=spec.get('url',spec['host']), probe_type=spec['type'],
+                       expected_boundary_failure=spec.get('source_boundary',False))
+        stop.wait(max(0, spec['interval']-(time.monotonic()-started)))
+
+
+def tcp_listeners(cfg, recorder, stop):
+    """Two listeners owned by this bounded runner; bind is the activation proof."""
+    import selectors
+    directory=Path(cfg['output']); experiment=cfg['tcp_experiment']; listeners={}; activated={}
+    request=directory/'tcp-second.request.json'
+    with selectors.DefaultSelector() as selector:
+        try:
+            while not stop.is_set():
+                wanted=[experiment['ports'][0]]
+                if request.exists():
+                    intent=json.loads(request.read_text())
+                    if intent!=dict(run_id=cfg['run_id'],boot=cfg['boot'],port=experiment['ports'][1]):
+                        raise RuntimeError('TCP activation intent identity mismatch')
+                    wanted.append(experiment['ports'][1])
+                for port in wanted:
+                    if port in listeners: continue
+                    sock=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+                    try:
+                        sock.bind((cfg['ip'],port)); sock.listen(8); sock.setblocking(False)
+                    except Exception as exc:
+                        sock.close(); recorder.event('tcp_listener_failed',port=port,error_type=type(exc).__name__,run_id=cfg['run_id'],boot=cfg['boot'])
+                        raise
+                    listeners[port]=sock; selector.register(sock,selectors.EVENT_READ)
+                    row=recorder.event('tcp_listener_activated',port=port,run_id=cfg['run_id'],boot=cfg['boot'])
+                    activated[str(port)]=dict(port=port,run_id=cfg['run_id'],boot=cfg['boot'],seq=row['seq'])
+                    atomic_json(directory/'tcp-listeners.json',activated)
+                for key,_ in selector.select(.1):
+                    conn,_=key.fileobj.accept()
+                    with conn:
+                        conn.settimeout(1)
+                        try:
+                            value=tcp_receive(conn)
+                            if value.get('run_id')!=cfg['run_id'] or not isinstance(value.get('nonce'),str): continue
+                            conn.sendall(json.dumps(dict(value,boot=cfg['boot'])).encode()+b'\n')
+                        except (OSError,ValueError,AttributeError): pass
+        finally:
+            for sock in listeners.values(): sock.close()
+
+
+def tcp_receive(conn):
+    deadline=time.monotonic()+1; data=b''
+    while not data.endswith(b'\n') and len(data)<=512:
+        remaining=deadline-time.monotonic()
+        if remaining<=0: raise TimeoutError('TCP echo frame deadline')
+        conn.settimeout(remaining); chunk=conn.recv(513-len(data))
+        if not chunk: raise ValueError('Incomplete TCP echo frame')
+        data+=chunk
+    if len(data)>512: raise ValueError('Oversized TCP echo frame')
+    return json.loads(data)
+
+
+def tcp_echo_attempt(host,port,run_id,server_boot):
+    nonce=uuid.uuid4().hex
+    with socket.create_connection((host,port),timeout=1) as conn:
+        conn.settimeout(1); conn.sendall(json.dumps(dict(run_id=run_id,nonce=nonce)).encode()+b'\n')
+        response=tcp_receive(conn)
+        return response==dict(run_id=run_id,nonce=nonce,boot=server_boot)
+
+
+def tcp_echo_loop(cfg, recorder, stop):
+    experiment=cfg['tcp_experiment']
+    while not stop.is_set():
+        started=time.monotonic()
+        for port in experiment['ports']:
+            error=None
+            try:
+                ok=tcp_echo_attempt(experiment['server_ip'],port,cfg['run_id'],experiment['server_boot'])
+                if not ok: error='InvalidEcho'
+            except (OSError,ValueError) as exc: ok=False; error=type(exc).__name__
+            recorder.event('tcp_echo',port=port,ok=ok,error=error,run_id=cfg['run_id'],boot=cfg['boot'],
+                server_boot=experiment['server_boot'],validation='run_id_nonce_server_boot')
+        stop.wait(max(0,cfg['interval']-(time.monotonic()-started)))
+
+
+def managed_main():
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(); parser.add_argument('--config', required=True)
+    cfg = json.loads(Path(parser.parse_args().config).read_text())
+    directory = Path(cfg['output']); state_path = directory/'state.json'
+    state = json.loads(state_path.read_text())
+    if state['status'] != 'START_REQUESTED' or state['config'] != cfg:
+        raise RuntimeError('Runner intent/configuration mismatch; never restart an ambiguous run')
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    if boot != cfg['boot']:
+        raise RuntimeError('Guest rebooted after launch intent')
+    recorder = Recorder(directory, [p['name'] for p in cfg['probes']])
+    start = time.monotonic(); stop_creating = threading.Event(); stop_probes = threading.Event()
+    active_duration = cfg['duration'] or cfg['maximum_lifetime']
+    active_end = start+min(active_duration,cfg['maximum_lifetime'])
+    deadlines = [active_end+cfg['drain']]
+    def stop_requested(*_args):
+        stop_creating.set(); deadlines[0] = min(deadlines[0],time.monotonic()+cfg['drain'])
+    signal.signal(signal.SIGTERM, stop_requested); signal.signal(signal.SIGINT, stop_requested)
+    state.update(status='RUNNING', pid=os.getpid(), process_identity=process_identity(os.getpid()),
+                 started_utc=utc(), started_mono=start, boot=boot)
+    atomic_json(state_path,state)
+    metadata = dict(cfg, started_utc=state['started_utc'], probe_interval_seconds=cfg['interval'],
+                    database_run_id=cfg['database_run_id'], guest_boot=boot)
+    recorder.event('run_start', **metadata)
+    def heartbeat():
+        while not stop_probes.wait(.5):
+            if (directory/'stop.request').exists() or time.monotonic() >= active_end:
+                stop_requested()
+            state.update(status='DRAINING' if stop_creating.is_set() else 'RUNNING', heartbeat_mono=time.monotonic())
+            atomic_json(state_path,state)
+    thread_failures = []
+    def guarded(target, name, *args):
+        try: target(*args)
+        except Exception as exc:
+            thread_failures.append(name)
+            recorder.event('measurement_thread_crash', thread=name, error_type=type(exc).__name__)
+            stop_requested()  # retain evidence; never restart a failed measurement thread
+    threads = [threading.Thread(target=guarded,args=(managed_probe,p['name'],p,recorder,stop_probes),daemon=True) for p in cfg['probes']]
+    threads.append(threading.Thread(target=guarded,args=(heartbeat,'heartbeat'),daemon=True))
+    if cfg.get('tcp_experiment'):
+        target=tcp_listeners if cfg['client_id']=='ew-app' else tcp_echo_loop
+        threads.append(threading.Thread(target=guarded,args=(target,'tcp_experiment',cfg,recorder,stop_probes),daemon=True))
+    for thread in threads: thread.start()
+    client = Client(cfg['url'],recorder)
+    try:
+        while not stop_creating.is_set() and time.monotonic()<active_end:
+            task_start = time.monotonic()
+            if cfg['tasks']:
+                task_id = str(uuid.uuid4())
+                task = dict(task_id=task_id,run_id=cfg['database_run_id'],client_id=cfg['client_id'],payload=('EW:'+task_id+':')*256)
+                run_task(client,task,recorder,lambda: deadlines[0],cfg['slo'])
+            stop_creating.wait(max(0,1/cfg['max_rate']-(time.monotonic()-task_start)))
+    finally:
+        stop_probes.set()
+        for thread in threads: thread.join(timeout=5)
+    code, stats, error = client.request('/stats?'+urlencode({'run_id':cfg['database_run_id']}),log=False) if cfg['tasks'] else (200,{},None)
+    if error or code != 200 or not isinstance(stats,dict): stats,error=None,error or f'HTTP_{code}'
+    recorder.event('run_end', reason='requested_stop' if (directory/'stop.request').exists() else 'bounded_duration',
+                   probe_threads_stopped=not thread_failures and all(not t.is_alive() for t in threads))
+    summary = recorder.finish(metadata,stats,error)
+    state.update(status='COMPLETE', finished_utc=utc(), finished_mono=time.monotonic(), last_event_seq=summary['last_event_seq'])
+    atomic_json(state_path,state)
+    return 0  # completed measurement; acceptance is evaluated separately
+
+
 def main():
+    # The managed lifecycle passes immutable per-run configuration. Old finite
+    # runner CLI remains available for source compatibility.
+    if '--config' in os.sys.argv:
+        return managed_main()
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://192.168.101.11:8080")
     parser.add_argument("--client-id", required=True)

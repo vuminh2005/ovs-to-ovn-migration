@@ -136,6 +136,10 @@
         argv: [python3, "{{ playbook_dir }}/../scripts/mtu_plan.py", verify, "{{ migration_run_dir }}"]
       changed_when: false
 
+    - name: Provide same-run checkpoint for separately authorized EW guest MTU preparation
+      ansible.builtin.include_tasks: ew-mtu-preparation-tasks.yml
+      when: ew_workloads_enabled | bool
+
     - name: Mark phase 06 end
       ansible.builtin.command:
         argv:

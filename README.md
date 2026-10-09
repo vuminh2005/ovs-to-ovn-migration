@@ -400,6 +400,9 @@ MTUs, then subtract the IPv4 header (20) and type-driver header (VXLAN 30, Genev
 the installed value). With global/path/interface MTU 1450 and Geneve header 38,
 validation networks use **1400 → 1392**, and fresh Geneve networks use **1392**.
 These are calculated limits, not new hard-coded defaults.
+New OVN MTU plans require Geneve `max_header_size >= 38`; smaller values are
+rejected during calculation, before network updates, and during target
+verification. Larger valid values remain supported; no value is silently clamped.
 
 Each existing network keeps its own source MTU. Its target is the minimum of its
 original MTU minus the computed header delta and the Geneve limit. For example,
@@ -414,8 +417,19 @@ Artifacts are `mtu-inputs.json`, `mtu-calculation.json`, `network-mtu-plan.json`
 retries use the original/target pair even after a lost API response. Unexpected
 live MTU drift or conflicting journal entries fail rather than subtracting twice.
 Every generated controller target must match global/path MTU, IPv4 overlay, the
-Geneve header and ML2/OVN settings before freeze. Phase 07 requires that proof even
-when validation guests are disabled. `mtu_plan_schema_version: 1` in new runtime
+Geneve header and ML2/OVN settings before freeze. After Pair B readiness, Phase 07
+starts a distinct collection attempt and rereads the host-side generated
+`/etc/kolla/neutron-server/neutron.conf` and `ml2_conf.ini` on every controller.
+It does not inspect the running source OVS container for target settings.
+`mtu-pre-freeze-collection.json` records the attempt token, expected controller
+identities and request timestamp; `mtu-pre-freeze-target-configs.json` records
+each controller's settings and UTC collection timestamp. Verification is saved
+separately in `mtu-pre-freeze-target-config-verification.json`; Phase 06 evidence
+is retained. Missing/unreadable controllers, stale attempt tokens or mismatches
+block the freeze marker and all Neutron stop tasks, even when validation guests
+are disabled. These reads are sequential preparation, not an atomic lock against
+external configuration edits after collection.
+`mtu_plan_schema_version: 1` in new runtime
 metadata enables this contract; historical runs retain their saved configuration,
 TSV values and old evidence requirements without schema upgrades.
 
@@ -424,7 +438,7 @@ can enter its existing opt-in remediation paths. EW guests are never automatical
 rebooted, rebuilt or deleted by validation. DHCP client/static MTU behavior in
 those external workloads remains a separate readiness concern.
 
-## East-West topology and validation placement (Step 5, first batch)
+## East-West topology and validation placement (Step 5)
 
 `group_vars/all.yml` defines `ew_workload_config` with the six existing VM names,
 IPs, networks, compute hosts, gateway-free router, netfix image/flavor names and
@@ -461,15 +475,151 @@ Override these explicit host lists for another inventory.
 MTU inputs must cover the requested placement hosts, so configured validation
 compute hosts must also appear in the migration inventory's compute group.
 
-The original 14 EW app/metrics source files were imported from the supplied patch
-without replacement implementations. Their tests are offline; their setup and
-baseline scripts are not called by migration automation. This batch does not
-implement migration runner lifecycle, post-OVN SSH or application result reporting.
-The supplied baseline SSH helper still embeds an OVS qrouter namespace and lab
-addresses; it cannot be assumed usable after cleanup. The baseline DF probe is
-1400 bytes including IPv4/ICMP headers, larger than the target 1392 MTU. Adapting
-that intentional MTU probe and preserving separate application/Pair-A metrics is
-work for the next batch, not evidence of a valid post-OVN migration runner today.
+The original EW application source is retained unchanged: PostgreSQL outbox,
+task-ID retries, commit-before-ACK, hash and `process_count=1` checks. Migration
+does not execute its setup script or restart its API/worker services. The imported
+metrics implementation now provides bounded baseline/migration lifecycle and
+independent measurements; see [EW measurement details](workloads/ew-workload-metrics/README.md).
+
+Prepare an operator-local variables file containing **paths to existing** trusted
+SSH keys and known-hosts files, not key contents. The inventory supplies host
+addresses/users/keys; `ew_host_access` can override them explicitly. Guests require
+existing SSH access, noninteractive sudo, Python 3, ping and systemd. Namespace
+hosts require existing sudo/root access, `ip`, `nc` and verified SSH host keys.
+No package installation, new port, network/security rule, guest agent or FIP is
+used to create access. Example variable names (replace paths with existing files):
+
+```yaml
+ew_workloads_enabled: true
+ew_guest_ssh_key: /path/to/existing/guest-key
+ew_guest_known_hosts: /path/to/verified/guest-known-hosts
+ew_host_known_hosts: /path/to/verified/host-known-hosts
+# ew_host_ssh_key: /path/to/existing/host-key  # if inventory does not supply it
+```
+
+Finite source baseline, using read-only discovery plus guest measurement services:
+
+```bash
+ansible-playbook -i /root/multinode ew-baseline.yml -e @/path/to/ew-access.yml
+```
+
+Migration measurement is integrated into the existing entrypoint:
+
+```bash
+ansible-playbook -i /root/multinode migrate-to-ovn.yml -e @/path/to/ew-access.yml
+```
+
+These commands are documented for later lab testing; neither was executed against
+the lab during implementation. Baseline discovery imports bootstrap/precheck only;
+it does not run backup/genconfig/migration/cutover or create new tenant resources.
+Measurement services run on three existing clients and ew-app (dependency probes).
+
+Phase 04 checks six guest/cloud identities, boots, exact ports/IPs/placement and
+source MTUs, performs real task readiness, starts guest runners and establishes
+probe/API-observer coverage before phase 05. Phase 07 requires **fresh** EW identity,
+target network/guest MTU and E2E readiness, then performs the final fresh target
+configuration gate before freeze. If existing EW guests have not applied 1392,
+the operator must arrange separate guest DHCP/MTU preparation; migration never
+changes their networking, reboots them or opts them into Pair-B remediation.
+Runners span cutover/restoration and Pair-B/C validation. Phase 12 observes a
+bounded recovered period with fresh success sequences before ending the existing
+Pair-A capture. Phase 13 stops/drains/collects EW evidence before final reporting.
+
+Source SSH resolves the exact catalog router namespace on inventory hosts. Post-OVN
+SSH discovers the exact network's existing ovnmeta namespace, verifies its MAC/IP
+against a unique `network:distributed` port for the subnet, tests namespace access,
+and verifies the actual guest UUID/IP/MAC/boot. This is consistent with the
+[Caracal metadata agent's namespace provisioning](https://github.com/openstack/neutron/blob/24.0.0/neutron/agent/ovn/metadata/agent.py).
+No namespace is assumed present on every host. An explicitly configured existing
+direct address can be keyed by server UUID in `ew_guest_direct_access`. Failed
+SSH/collection means missing evidence, not inferred application downtime.
+
+`migration-report.json` adds `east_west_workload` with separate baseline/migration
+acceptance, per-actor raw coverage, each probe's sampled failure windows, task
+counts/rates/latency/integrity/reconciliation/recovery, collection state and the
+Neutron API observer. Disabled EW is `NOT TESTED`; required missing evidence is
+`UNAVAILABLE` and prevents migration validation success. Actual observed failures
+are separate from missing samples/crashes/unresolved tasks. A migration may pass
+with recovered transient outages or SLO misses, all reported; baseline acceptance
+requires no required probe/HTTP/SLO failures. Pair-A PCAP exclusively supplies the
+existing packet loss/outage fields. The old control-plane duration remains the
+**orchestration freeze interval**, separate from sampled Neutron API availability.
+
+This batch is locally tested only. Verify source and post-OVN transport, guest DMI
+UUID visibility, sudo/systemd behavior, real application processing, journal access,
+EW MTU preparation, API observer coverage and recovery budgets in the lab before
+judging migration readiness. Step 5 is not lab-validated by these offline tests.
+
+### Same-run EW MTU preparation
+
+With EW enabled, phase 04 still validates source guest MTU **1400** and starts
+measurements. Phase 06 reduces network MTUs using the original/target journal,
+verifies generated target configuration, then shows the current run directory and
+pauses **before phase 07**. Keep that Ansible process running; do not start another
+migration. `ew-mtu-preparation.json` preserves the run, journal and original guest
+boots. This wait is included in phase-06/total elapsed time, never the freeze timer.
+
+In a separate terminal, use the displayed directory and existing verified access:
+
+```bash
+source workloads/ew-workload-metrics/ssh.sh
+export EW_RUN_DIR=/the/displayed/current/run-directory
+cat "$EW_RUN_DIR/network-mtu-plan.json"
+ew_ssh ew-app source ip -j address
+```
+
+After **separate operator authorization**, prepare all six existing EW guests
+(`ew-app`, `ew-client-a1`, `ew-client-a2`, `ew-client-b`, `ew-queue`, `ew-db`). Identify
+each interface from its checkpointed fixed IP. For networkd-managed guests, an
+operator may request `sudo networkctl renew <interface>` through `ew_ssh`. If the
+guest receives the new DHCP MTU but does not apply it, separately authorized
+`sudo ip link set dev <interface> mtu <that-network's-target-MTU>` provides an
+explicit guest-side preparation step. For the confirmed lab that target is 1392.
+These are operator operations, never automatic migration hooks. Do not reboot,
+restart application/measurement units, or set 1392 before phase 04. Verify each
+interface and DHCP/routing remain usable, then type `continue` at the original
+prompt. The acknowledgement is **not PASS**: phase 07 still checks every boot,
+identity, target MTU and E2E task, Pair-B readiness and the final fresh generated
+target files before freeze. An unattended prompt cannot acknowledge preparation.
+
+Measurements retain finite lifetimes, so complete preparation before they expire.
+Do not interrupt/relaunch the full entrypoint or reinterpret an already reduced
+network as its original source. `ew_mtu_preparation_pause: false` is available only
+when separately arranged preparation fits that same run; it does not bypass gates.
+
+### Dedicated mentor TCP experiment
+
+Migration EW runs also use `ew-app` as echo server and `ew-client-b` as routed,
+different-compute client, with configurable `ew_tcp_experiment_ports: [18080, 18081]`.
+Both ports must already be permitted by guest/network security
+policy **before migration**; no rules are created or changed. Disable independently
+with `ew_tcp_experiment_enabled: false` if this experiment is not selected.
+
+The first listener binds before measurement readiness. The client continuously
+attempts both ports and validates run/nonce/server-boot echo responses; second-port
+refusals before the activation request are labelled separately. After **all** Neutron workers
+stop, and before DB migration, an explicit hook activates the second listener
+using checkpointed source SSH only, with no Neutron API call. Actual bind plus
+fresh validated client echoes must be observed; a request alone cannot pass.
+Source host identities and namespace access are saved before freeze; the activation
+hook does not initialize OpenStack or rediscover inventory.
+The bounded loops belong to the existing exact measurement units and continue
+through cutover. They stop with those units during collection and never operate
+application services. Raw bind/echo events retain run and guest boot identity.
+
+`east_west_tcp_experiment` reports each port's attempts, validated echoes, failures,
+sampled recovery windows and activation evidence separately from
+`east_west_workload` and Pair-A packet metrics. Missing, late, failed activation or
+incomplete evidence cannot report PASS. Baseline-only/historical runs without this
+experiment remain NOT TESTED. Phase 12 checkpoints `tcp_recovery` before application
+checks: ordered controller freeze/DB/takeover/restoration markers, both endpoints'
+preserved identity/boot, Geneve networks and journaled target guest/network MTUs,
+and a post-OVN client sequence fence. Each port must have `stable_samples`
+consecutive validated echoes after that fence; source-only or missing target
+evidence is UNAVAILABLE. Application reconciliation/E2E failure does not invalidate
+otherwise complete TCP evidence or remove its measured failure windows.
+Verify port permissions, freeze-time source SSH and
+post-OVN echoes in the lab; these paths have only offline coverage so far.
 
 ## Output used to judge success
 

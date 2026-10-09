@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
+# Source this helper, then ew_ssh <catalog VM name> <source|ovn> <command...>.
+# EW_RUN_DIR must identify persisted catalog/lifecycle/access configuration.
 ew_ssh() {
-    local task_ip="$1"
-    shift
-    ssh -i /root/.ssh/ew-lab \
-        -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 \
-        -o StrictHostKeyChecking=accept-new \
-        -o UserKnownHostsFile=/root/ew-image-build/guest-known-hosts \
-        -o 'ProxyCommand=ssh -T -i /root/.ssh/kolla_lab_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new root@10.0.0.160 ip netns exec qrouter-7c696b40-be7b-4524-b202-53bba33f7978 nc %h %p' \
-        "ubuntu@${task_ip}" "$@"
+    local task_guest="$1" task_phase="$2"
+    shift 2
+    local task_repo
+    task_repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+    : "${EW_RUN_DIR:?Set EW_RUN_DIR to the measurement run directory}"
+    python3 "$task_repo/scripts/ew_transport.py" "$EW_RUN_DIR" "$task_guest" "$task_phase" "$@"
 }

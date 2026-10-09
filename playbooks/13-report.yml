@@ -16,6 +16,17 @@
       run_once: true
       changed_when: false
 
+    - name: Stop drain and collect EW measurements without deleting external workload resources
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/ew_workload.py') | quote }} collect {{ migration_run_dir | quote }} --transport-phase ovn
+      args:
+        executable: /bin/bash
+      register: ew_collection_result
+      failed_when: false  # collection failure is not inferred application downtime; final report remains honest
+      when: ew_workloads_enabled | bool
+
     - name: Build JSON and human-readable migration report
       ansible.builtin.shell: |
         set -euo pipefail

@@ -1,0 +1,39 @@
+---
+- name: Checkpoint operator preparation without asserting guest MTU readiness
+  ansible.builtin.copy:
+    dest: "{{ migration_run_dir }}/ew-mtu-preparation.json"
+    mode: '0600'
+    content: >-
+      {{ {'status': 'AWAITING_OPERATOR' if ew_mtu_preparation_pause | bool else 'EXTERNAL_PREPARATION',
+          'run_id': migration_run_id, 'run_directory': migration_run_dir,
+          'network_journal': lookup('file', migration_run_dir + '/network-mtu-plan.json') | from_json,
+          'original_guests': (lookup('file', migration_run_dir + '/ew-lifecycle.json') | from_json).sessions.migration.guests,
+          'instruction': 'Keep this Ansible process and all measurement units running. Prepare guest DHCP/MTU only under separate operator authorization. Never reboot EW guests or start a new migration run. Phase 07 still verifies every identity/boot/MTU/E2E check and fresh generated target files.'} | to_nice_json }}
+
+- name: Show operator the current run and authoritative target MTU journal
+  ansible.builtin.debug:
+    msg:
+      - "Run directory: {{ migration_run_dir }}"
+      - "Original/target MTUs: {{ migration_run_dir }}/network-mtu-plan.json"
+      - "See README 'Same-run EW MTU preparation'. Use a separate terminal and existing verified SSH access."
+      - "Do not rerun migrate-to-ovn.yml, rebase original MTUs, reboot guests, or stop measurements."
+      - "Measurements expire at their configured lifetime; finish preparation before expiry."
+
+- name: Wait between target preparation and freeze for separately authorized operator work
+  ansible.builtin.pause:
+    prompt: "Prepare all six EW guests to their saved target MTUs without changing boots. Type continue when finished; acknowledgement does not bypass phase-07 verification"
+  register: ew_mtu_operator_ack
+  when: ew_mtu_preparation_pause | bool
+
+- name: Require explicit continuation rather than treating an unattended prompt as preparation
+  ansible.builtin.assert:
+    that: ew_mtu_operator_ack.user_input | default('') | trim == 'continue'
+    fail_msg: "No explicit continuation; freeze is blocked. Preserve {{ migration_run_dir }} and running measurements."
+  when: ew_mtu_preparation_pause | bool
+
+- name: Record operator acknowledgement separately from measured readiness
+  ansible.builtin.copy:
+    dest: "{{ migration_run_dir }}/ew-mtu-preparation-ack.json"
+    mode: '0600'
+    content: "{{ {'status': 'ACKNOWLEDGED_NOT_VALIDATED', 'run_id': migration_run_id, 'run_directory': migration_run_dir} | to_nice_json }}"
+  when: ew_mtu_preparation_pause | bool

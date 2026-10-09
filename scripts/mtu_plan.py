@@ -2,9 +2,11 @@
 """Effective IPv4 overlay limits, per-network preparation and retry evidence."""
 import argparse
 import configparser
+import datetime
 import json
 import pathlib
 import re
+import uuid
 
 from dataplane_capture import save
 
@@ -29,6 +31,18 @@ def template_header(text):
     return int(values[0])
 
 
+def require_geneve_header(value):
+    if type(value) is not int or value < 38:
+        raise RuntimeError('OVN Geneve max_header_size must be an integer of at least 38 bytes; refusing to clamp it')
+
+
+def validate_plan_header(plan):
+    require_geneve_header(plan['inputs']['geneve_max_header_size'])
+    require_geneve_header(plan['geneve_header_bytes'])
+    if plan['inputs']['geneve_max_header_size'] != plan['geneve_header_bytes']:
+        raise RuntimeError('Saved Geneve header contradicts the MTU calculation inputs')
+
+
 def calculate(inputs):
     configs = inputs['source_configs']; underlay = inputs['underlay']
     if not configs or not underlay:
@@ -43,8 +57,9 @@ def calculate(inputs):
         raise RuntimeError('Each network/compute tunnel interface needs a positive MTU and IPv4 evidence')
     global_mtu, path_mtu = first['global_physnet_mtu'], first['path_mtu']
     header = inputs['geneve_max_header_size']
-    if type(global_mtu) is not int or global_mtu <= 0 or type(path_mtu) is not int or path_mtu < 0 or type(header) is not int or header < 30:
-        raise RuntimeError('Invalid global/path MTU or Geneve header size')
+    require_geneve_header(header)
+    if type(global_mtu) is not int or global_mtu <= 0 or type(path_mtu) is not int or path_mtu < 0:
+        raise RuntimeError('Invalid global/path MTU')
     physical = min(c['mtu'] for c in underlay.values())
     configured = min([global_mtu] + ([path_mtu] if path_mtu > 0 else []))
     effective = min(configured, physical)
@@ -77,6 +92,7 @@ def journal_rows(path):
 
 def prepare_networks(cloud, root):
     plan = json.loads((root/'mtu-calculation.json').read_text())
+    validate_plan_header(plan)
     journal = root/'network-mtu-migration.tsv'
     recorded = journal_rows(journal)
     rows = []
@@ -105,39 +121,86 @@ def prepare_networks(cloud, root):
     return rows
 
 
-def verify_target(root, configurations):
+def verify_target(root, configurations, evidence_filename='mtu-target-config-verification.json', collection=None):
     plan = json.loads((root/'mtu-calculation.json').read_text())
-    expected = next(iter(plan['inputs']['source_configs'].values()))
+    evidence = dict(configurations=configurations)
+    if collection is not None:
+        evidence['collection'] = collection
     try:
+        validate_plan_header(plan)
+        expected = next(iter(plan['inputs']['source_configs'].values()))
         if set(configurations) != set(plan['inputs']['source_configs']):
             raise RuntimeError('Generated target configuration missing a source controller')
         for host, values in configurations.items():
+            require_geneve_header(values['geneve_max_header_size'])
             if (any(values[k] != expected[k] for k in ('global_physnet_mtu','path_mtu','overlay_ip_version')) or
                 values['geneve_max_header_size'] != plan['geneve_header_bytes'] or
                 values['mechanism_drivers'].strip() != 'ovn' or values['tenant_network_types'].strip() != 'geneve'):
                 raise RuntimeError(f'Generated target config on {host} contradicts the MTU calculation or ML2/OVN scope')
-        save(root/'mtu-target-config-verification.json', dict(status='PASS', configurations=configurations))
+        save(root/evidence_filename, dict(evidence, status='PASS'))
     except Exception as exc:
-        save(root/'mtu-target-config-verification.json', dict(status='FAIL', reason=str(exc), configurations=configurations))
+        save(root/evidence_filename, dict(evidence, status='FAIL', reason=str(exc)))
         raise
 
 
-def require_pre_freeze(root):
+def needs_pre_freeze_collection(root):
     runtime_path=root/'runtime.json'
     runtime=json.loads(runtime_path.read_text()) if runtime_path.exists() else {}
     if 'mtu_plan_schema_version' not in runtime:
-        return  # historical runs retain their old preparation/evidence contract
+        return False  # historical runs retain their old preparation/evidence contract
     if type(runtime['mtu_plan_schema_version']) is not int or runtime['mtu_plan_schema_version']!=1:
         raise RuntimeError('Unsupported MTU plan schema; Neutron freeze prohibited')
-    evidence_path=root/'mtu-target-config-verification.json'
-    if not evidence_path.exists() or json.loads(evidence_path.read_text()).get('status')!='PASS':
-        raise RuntimeError('Missing successful generated target MTU verification; Neutron freeze prohibited')
-    verify_target(root,json.loads((root/'mtu-target-configs.json').read_text()))
+    return True
+
+
+def begin_pre_freeze_collection(root):
+    if not needs_pre_freeze_collection(root):
+        return dict(required=False)
+    plan = json.loads((root/'mtu-calculation.json').read_text())
+    validate_plan_header(plan)
+    controllers = sorted(plan['inputs']['source_configs'])
+    if not controllers:
+        raise RuntimeError('Missing controller identities; Neutron freeze prohibited')
+    intent = dict(required=True, schema_version=1, collection_id=str(uuid.uuid4()),
+                  expected_controllers=controllers,
+                  requested_at=datetime.datetime.now(datetime.timezone.utc).isoformat())
+    # A new token fences out Phase 06 facts and previous failed/retried collections.
+    save(root/'mtu-pre-freeze-collection.json', intent)
+    return intent
+
+
+def require_pre_freeze(root):
+    if not needs_pre_freeze_collection(root):
+        return
+    evidence_name = 'mtu-pre-freeze-target-config-verification.json'
+    collection = None
+    configurations = {}
+    try:
+        intent = json.loads((root/'mtu-pre-freeze-collection.json').read_text())
+        collection = json.loads((root/'mtu-pre-freeze-target-configs.json').read_text())
+        plan = json.loads((root/'mtu-calculation.json').read_text())
+        expected = sorted(plan['inputs']['source_configs'])
+        if (not intent.get('collection_id') or collection['collection_id'] != intent['collection_id'] or
+            intent['expected_controllers'] != expected or not expected or
+            sorted(collection['controllers']) != expected):
+            raise RuntimeError('Fresh target collection is incomplete or belongs to another pre-freeze attempt')
+        for host, record in collection['controllers'].items():
+            if record['controller'] != host or record['collection_id'] != intent['collection_id']:
+                raise RuntimeError('Controller identity/token mismatch in fresh target collection')
+            timestamp = datetime.datetime.fromisoformat(record['collected_at'])
+            if timestamp.tzinfo is None:
+                raise RuntimeError('Fresh controller collection timestamp requires a timezone')
+            configurations[host] = record['settings']
+    except Exception as exc:
+        reason = f'Fresh pre-freeze target configuration unavailable: {exc}; Neutron freeze prohibited'
+        save(root/evidence_name, dict(status='FAIL', reason=reason, collection=collection))
+        raise RuntimeError(reason) from exc
+    verify_target(root, configurations, evidence_name, collection)
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action', choices=('calculate','prepare','verify','ready'))
+    p.add_argument('action', choices=('calculate','prepare','verify','begin-pre-freeze','ready'))
     p.add_argument('root', type=pathlib.Path)
     args = p.parse_args()
     if args.action == 'calculate':
@@ -149,6 +212,8 @@ def main():
     elif args.action=='verify':
         configurations = json.loads((args.root/'mtu-target-configs.json').read_text())
         verify_target(args.root, configurations)
+    elif args.action=='begin-pre-freeze':
+        print(json.dumps(begin_pre_freeze_collection(args.root)))
     else:
         require_pre_freeze(args.root)
 

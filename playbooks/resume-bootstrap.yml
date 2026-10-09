@@ -55,6 +55,7 @@
         ovn_nb_connection_runtime: "{{ resume_connections.stdout_lines[0] }}"
         ovn_sb_connection_runtime: "{{ resume_connections.stdout_lines[1] }}"
         validation_workloads_enabled: "{{ lookup('fileglob', migration_run_dir + '/validation-resources.json') | length > 0 }}"
+        ew_workloads_enabled: "{{ (resume_runtime.content | b64decode | from_json).get('ew_workloads_enabled', false) or (lookup('fileglob', migration_run_dir + '/ew-measurement-config.json') | length > 0) }}"
 
 - name: Verify live late-phase takeover before cleanup resume
   hosts: network:compute

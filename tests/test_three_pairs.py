@@ -516,7 +516,10 @@ class ThreePairsTests(unittest.TestCase):
         self.assertIn('precutover-ready',first['ansible.builtin.shell'])
         self.assertNotIn('failed_when',first)
         self.assertTrue(plays[0]['any_errors_fatal'])
-        self.assertTrue(any('--freeze-start' in t.get('ansible.builtin.command',{}).get('argv',[]) for t in plays[0]['tasks']))
+        tasks=[t for play in plays for t in play['tasks']]
+        freeze=next(i for i,t in enumerate(tasks) if '--freeze-start' in t.get('ansible.builtin.command',{}).get('argv',[]))
+        self.assertGreater(freeze, tasks.index(first))
+        self.assertEqual(tasks[freeze-1]['ansible.builtin.command']['argv'][2],'ready')
         self.assertEqual(plays[1]['hosts'],'control')
 
 

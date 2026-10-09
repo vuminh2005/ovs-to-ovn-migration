@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import json, pathlib, sys
 from workload_validation import validation_ready
+from ew_workload import report_evidence
+from ew_tcp_experiment import report as tcp_report
+from ew_workload import metrics as ew_metrics
 from phase_schema import phase_measurements, schema_version, timestamp, TOTAL_SCOPES, PHASE_SCOPE
 root = pathlib.Path(sys.argv[1])
 m = root/'metrics'
@@ -166,6 +169,12 @@ if orchestration.get('semantics_rc',0) or orchestration.get('workload_rc',0):
 if report['result']=='SUCCESS' and post_remediation.get('remediation_action')=='soft reboot' and post_remediation.get('status')=='PASS':
     report['result']='SUCCESS_WITH_REMEDIATION'
     report['existing_workload_migration']['status']='PASS AFTER REMEDIATION'
+report['east_west_workload']=report_evidence(root)
+report['east_west_tcp_experiment']=tcp_report(root,ew_metrics.assess)
+if report['east_west_workload']['enabled'] and report['east_west_workload']['status']!='PASS':
+    report['result']='MIGRATED_VALIDATION_INCOMPLETE'
+if report['east_west_tcp_experiment']['enabled'] and report['east_west_tcp_experiment']['status']!='PASS':
+    report['result']='MIGRATED_VALIDATION_INCOMPLETE'
 report['limitations'][0]='Pair-A metrics require a continuous drop-free compute-tap PCAP, endpoints and request cadence; gaps or unrecovered loss yield UNAVAILABLE. Console packet history is secondary only. PortBinding convergence remains separate.'
 (root/'migration-report.json').write_text(json.dumps(report,indent=2,sort_keys=True))
 lines=[
@@ -173,7 +182,7 @@ lines=[
   f"Run: {report['run_id']}",
   'Total duration: ' + (str(report['total_duration_seconds']) + ' s' if report['total_duration_seconds'] is not None else 'UNAVAILABLE'),
   f"Total timing scope: {report['total_duration_scope']}",
-  f"Control-plane downtime: {report['control_plane_downtime_seconds']} s",
+  f"Control-plane downtime: {report['control_plane_downtime_seconds']} s (orchestration freeze interval)",
   f"DB migration: {report['db_migration_seconds']} s",
   f"Dataplane Port_Binding convergence: {report['dataplane_convergence_seconds']} s",
   'Dataplane continuity:',
@@ -215,6 +224,24 @@ lines += ['Existing workload migration (Pair B):',
           'Individual check fields:']
 lines += [k + ': ' + v for k,v in report.items() if k.startswith(('existing_', 'new_ovn_')) and isinstance(v,str)]
 lines += ['Tenant dataplane probe: ' + json.dumps(report['dataplane_probe'], sort_keys=True)]
+ew=report['east_west_workload']
+lines += ['Existing East-West application measurement: '+ew['status'],
+          'EW load model: closed loop, one in-flight task per client; attempted/accepted/completed rates reported separately',
+          'EW diagnostics and sampled outages are additional evidence; Pair-A PCAP remains authoritative for tenant packet loss']
+for mode,session in ew.get('sessions',{}).items():
+    lines += [f"EW {mode} acceptance: {session['status']}",
+              'Neutron API availability observer: '+json.dumps(session['neutron_api_observer'],sort_keys=True)]
+    for name,actor in session['actors'].items():
+        lines += [f"EW {name}: {actor['status']}; coverage={actor['coverage']}; rates="+json.dumps(actor.get('rates_per_second'))]
+        lines += ['  Tasks: '+json.dumps(actor.get('counts')),
+                  '  Corruption/processing/redelivery: '+json.dumps(actor.get('task_outcomes')),
+                  '  Integrity/reconciliation/recovery: '+json.dumps({k:actor.get(k,'UNAVAILABLE') for k in ('integrity','task_reconciliation','recovery')})]
+        for flow,probe in actor.get('probes',{}).items():
+            lines += [f"  {flow}: {probe['failures']}/{probe['samples']} failed samples; "+
+                      ('source-boundary diagnostic; ' if probe['source_boundary_diagnostic'] else '')+
+                      'sampled failure windows='+json.dumps(probe['windows'])]
+    lines += ['EW collection: '+json.dumps(session['collection'],sort_keys=True)]
+lines += ['Dedicated two-port TCP experiment: '+json.dumps(report['east_west_tcp_experiment'],sort_keys=True)]
 lines += [f'Phase marker schema: {phase_version}', f'Phase timing scope: {PHASE_SCOPE}', 'Canonical phase timings:']
 lines += [f"Phase {row['number']} {row['name']} ({row['filename']}): " +
           (f"{row['duration_seconds']} s" if row['availability']=='MEASURED' else row['availability'])

@@ -115,6 +115,32 @@ validation_compute_hosts:
 # strict runtime discovery for an EW migration run; the general POC can still
 # run without requiring this separate application topology.
 ew_workloads_enabled: false
+# Existing SSH access only: explicitly provide trusted keys/known-hosts paths.
+# Host connection addresses/users/keys normally come from the Kolla inventory.
+ew_guest_ssh_user: ubuntu
+ew_guest_ssh_key: ''
+ew_guest_known_hosts: ''
+ew_host_ssh_key: ''
+ew_host_known_hosts: ''
+ew_host_access: {}
+ew_guest_direct_access: {}  # optional verified address keyed by exact server UUID
+ew_namespace_hosts: []  # default network + compute inventory hosts
+ew_baseline_seconds: 120
+ew_maximum_lifetime_seconds: 3600
+ew_drain_seconds: 30
+ew_transport_timeout_seconds: 20
+ew_collection_timeout_seconds: 300
+ew_readiness_timeout_seconds: 120
+ew_recovery_observation_seconds: 30
+ew_probe_interval_seconds: 1
+ew_api_probe_interval_seconds: 2
+ew_max_jobs_per_second: 1
+ew_task_slo_seconds: 10
+ew_stable_samples: 5
+ew_maximum_collection_bytes: 67108864
+ew_tcp_experiment_enabled: true  # migration only, requires ew_workloads_enabled
+ew_tcp_experiment_ports: [18080, 18081]  # must already be permitted; no SG changes
+ew_mtu_preparation_pause: true  # same-run operator checkpoint after phase-06 network MTU update
 ew_workload_config:
   image: ew-ubuntu-24.04-netfix
   flavor: ew.2c2g

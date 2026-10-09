@@ -160,6 +160,17 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Observe bounded EW recovery while existing continuous probes remain active
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/ew_workload.py') | quote }} recovery {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      register: ew_recovery_result
+      failed_when: false  # retain failure evidence and complete the existing Pair-A capture/report flow
+      when: ew_workloads_enabled | bool
+
     - name: Stop owned compute capture fetch raw PCAP and calculate strict metrics
       ansible.builtin.shell: |
         set -euo pipefail

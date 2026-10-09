@@ -127,9 +127,16 @@ class MtuTests(unittest.TestCase):
         v.save(self.root/'runtime.json',{'mtu_plan_schema_version':1})
         with self.assertRaisesRegex(RuntimeError,'freeze prohibited'): m.require_pre_freeze(self.root)
         v.save(self.root/'mtu-target-configs.json',self.target()); m.verify_target(self.root,self.target())
+        # Phase 06 proof alone is insufficient: Phase 07 must collect again.
+        with self.assertRaisesRegex(RuntimeError,'freeze prohibited'): m.require_pre_freeze(self.root)
+        intent=m.begin_pre_freeze_collection(self.root)
+        fresh=dict(collection_id=intent['collection_id'],controllers={
+            'controller':dict(controller='controller',collection_id=intent['collection_id'],
+                              collected_at=intent['requested_at'],settings=self.target()['controller'])})
+        v.save(self.root/'mtu-pre-freeze-target-configs.json',fresh)
         m.require_pre_freeze(self.root)
-        changed=self.target(); changed['controller']['path_mtu']=1500
-        v.save(self.root/'mtu-target-configs.json',changed)
+        fresh['controllers']['controller']['settings']['path_mtu']=1500
+        v.save(self.root/'mtu-pre-freeze-target-configs.json',fresh)
         with self.assertRaises(RuntimeError): m.require_pre_freeze(self.root)
 
     def test_legacy_run_is_not_upgraded_or_required_to_have_new_mtu_artifacts(self):
@@ -139,11 +146,14 @@ class MtuTests(unittest.TestCase):
         self.assertFalse((self.root/'mtu-target-config-verification.json').exists())
 
     def test_pre_freeze_verification_covers_enabled_and_disabled_guests(self):
-        tasks=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())[0]['tasks']
+        plays=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
+        tasks=[t for play in plays for t in play['tasks']]
         freeze=next(i for i,t in enumerate(tasks) if '--freeze-start' in t.get('ansible.builtin.command',{}).get('argv',[]))
-        checks=[t for t in tasks[:freeze] if 'mtu_plan.py' in str(t)]
-        self.assertEqual(len(checks),2)
-        self.assertEqual(set(t['when'] for t in checks),{'validation_workloads_enabled | bool','not (validation_workloads_enabled | bool)'})
+        checks=[t for t in tasks[:freeze] if 'ready' in t.get('ansible.builtin.command',{}).get('argv',[])]
+        self.assertEqual(len(checks),1)
+        self.assertNotIn('when',checks[0])
+        self.assertEqual(plays[1]['hosts'],'control')
+        self.assertTrue(all(play['any_errors_fatal'] for play in plays[:3]))
 
     def test_generated_endpoint_facts_still_belong_to_localhost(self):
         plays=yaml.safe_load((ROOT/'playbooks/06-target-config.yml').read_text())

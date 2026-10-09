@@ -1,6 +1,7 @@
 ---
 - name: Phase 04 - Prepare routed guest validation before migration downtime
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -88,6 +89,19 @@
         python3 {{ (playbook_dir + '/../scripts/network_semantics.py') | quote }} before {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
+
+    - name: Configure optional EW measurement using checkpointed external resources
+      ansible.builtin.include_tasks: ew-config-tasks.yml
+      when: ew_workloads_enabled | bool
+
+    - name: Verify six EW guests and start independent continuous application measurement
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/ew_workload.py') | quote }} start {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: ew_workloads_enabled | bool
 
     - name: Mark phase 04 end
       ansible.builtin.command:
