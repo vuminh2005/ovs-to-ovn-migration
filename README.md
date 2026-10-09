@@ -59,7 +59,7 @@ V1 required several environment values. V2 derives them automatically:
 - DB sync host: first control node
 - OVN NB/SB endpoints: parsed from generated `/etc/kolla/neutron-server/ml2_conf.ini`
 - source VM Neutron port UUIDs: OpenStack API snapshot
-- existing network MTUs: OpenStack API; each VXLAN network is reduced by the configured VXLAN->Geneve overhead delta
+- existing network MTUs: OpenStack API; original/target pairs use effective Neutron, installed Geneve template and chassis underlay constraints
 - Port_Binding timeout: calculated from existing compute-port count and capped safely
 
 The deployment host no longer has to be the same machine as the OpenStack controller. Kolla orchestration runs where Ansible is invoked, while Docker/systemd/DB operations run on the appropriate inventory hosts.
@@ -113,6 +113,14 @@ If absent, it is created. Optional `validation_image`/`validation_flavor` overri
 (or their existing environment variables) can select existing resources. A missing
 explicit flavor fails clearly; clear that override to use automatic preparation.
 The default credentials need Glance upload and Nova flavor-create permissions.
+
+Image sizing checks `min_disk`, `min_ram` and virtual disk size when Glance exposes
+it (including custom properties). A new verified QCOW2 download also supplies its
+virtual size from the header; compressed image file size is never treated as root
+disk size. Missing virtual-size metadata is recorded UNAVAILABLE. A netfix image
+requiring 10 GB cannot use the managed 8 GB flavor; select compatible existing
+prerequisites, for example `validation_image=ew-ubuntu-24.04-netfix` and
+`validation_flavor=ew.2c2g`. This does not transfer ownership of the EW workloads.
 
 `validation-prerequisites.json` records resolved image/flavor UUIDs, names, and
 preparation details. Workload configuration automatically consumes these UUIDs.
@@ -376,7 +384,92 @@ VM/network/router/port UUIDs and counts are not hard-coded. The automation snaps
 
 ## Important MTU boundary
 
-V2 updates the Neutron MTU of existing VXLAN networks by subtracting the validated VXLAN-to-Geneve overhead delta. It cannot safely log into arbitrary guests and rewrite static interface configuration. DHCP-managed guests should obtain the advertised MTU according to their DHCP client behavior; statically configured guests remain an operator responsibility and should be handled before the cutover.
+New runs do not assume source 1450 / target 1442. Phase 02 reads compact effective
+settings from the running neutron-server on every controller, IPv4/MTU evidence
+from every network/compute tunnel interface, and the installed Kolla ML2 template's
+literal Geneve `max_header_size`. Set `mtu_kolla_ml2_template_path` if that template
+is outside the discovered Kolla environment. Missing evidence, disagreements or
+configured overlay limits exceeding the physical tunnel-interface limit fail
+before provisioning/migration. IPv6 tunnel support is not added.
+
+The model follows Neutron Caracal's
+[tunnel driver](https://github.com/openstack/neutron/blob/24.0.0/neutron/plugins/ml2/drivers/type_tunnel.py)
+and [Geneve driver](https://github.com/openstack/neutron/blob/24.0.0/neutron/plugins/ml2/drivers/type_geneve.py):
+take the minimum of global physical MTU, positive path MTU and chassis interface
+MTUs, then subtract the IPv4 header (20) and type-driver header (VXLAN 30, Geneve
+the installed value). With global/path/interface MTU 1450 and Geneve header 38,
+validation networks use **1400 → 1392**, and fresh Geneve networks use **1392**.
+These are calculated limits, not new hard-coded defaults.
+
+Each existing network keeps its own source MTU. Its target is the minimum of its
+original MTU minus the computed header delta and the Geneve limit. For example,
+existing EW networks at 1400 become 1392; a deliberately lower 1360 network becomes
+1352. Validation-owned networks are created explicitly at their calculated limits;
+they are not confused with the EW networks. Source/target MTUs are checkpointed
+per validation network and VM.
+
+Artifacts are `mtu-inputs.json`, `mtu-calculation.json`, `network-mtu-plan.json`,
+`network-mtu-migration.tsv`, `mtu-target-configs.json` and
+`mtu-target-config-verification.json`. The TSV is written before network updates;
+retries use the original/target pair even after a lost API response. Unexpected
+live MTU drift or conflicting journal entries fail rather than subtracting twice.
+Every generated controller target must match global/path MTU, IPv4 overlay, the
+Geneve header and ML2/OVN settings before freeze. Phase 07 requires that proof even
+when validation guests are disabled. `mtu_plan_schema_version: 1` in new runtime
+metadata enables this contract; historical runs retain their saved configuration,
+TSV values and old evidence requirements without schema upgrades.
+
+Validation cannot safely rewrite arbitrary guest configuration. Only owned Pair B
+can enter its existing opt-in remediation paths. EW guests are never automatically
+rebooted, rebuilt or deleted by validation. DHCP client/static MTU behavior in
+those external workloads remains a separate readiness concern.
+
+## East-West topology and validation placement (Step 5, first batch)
+
+`group_vars/all.yml` defines `ew_workload_config` with the six existing VM names,
+IPs, networks, compute hosts, gateway-free router, netfix image/flavor names and
+HTTP/PostgreSQL/RabbitMQ endpoints. It contains no credentials or baseline output.
+The general POC keeps `ew_workloads_enabled: false`; enable it explicitly for the
+confirmed EW lab. Phase 02 then resolves each exact resource name uniquely, checks
+placement/IP/image/flavor/router scope and persists `ew-resources.json`. Ambiguous
+names or changed UUIDs cannot silently rebase the checkpoint. The catalog is
+external/non-owned and is separate from `validation-resources.json`.
+
+| VM | Fixed IP | Compute | Network |
+| --- | --- | --- | --- |
+| ew-app | 192.168.101.11 | compute1 | ew-net-a |
+| ew-client-a1 | 192.168.101.12 | compute1 | ew-net-a |
+| ew-client-a2 | 192.168.101.13 | compute2 | ew-net-a |
+| ew-queue | 192.168.102.11 | compute1 | ew-net-b |
+| ew-db | 192.168.102.12 | compute2 | ew-net-b |
+| ew-client-b | 192.168.102.13 | compute2 | ew-net-b |
+
+EW server/port/network/subnet/router/security-group UUIDs are explicitly excluded
+from validation cleanup and reboot; configured EW names are protected even when
+catalog discovery is disabled. No EW rebuild path is implemented. Enabling either
+Pair-B reboot option never opts EW workloads into remediation.
+
+`validation_compute_hosts.fresh` defaults to `[compute1, compute2]`: Pair C requests
+`nova:compute1` and `nova:compute2` and verifies actual Nova compute hosts after
+ACTIVE. `validation_availability_zone` is configurable. Admin Nova host-placement
+and compute-host visibility permissions are required. Pair A/B default to free
+scheduling (`measure`/`existing` empty lists), but their actual hosts are recorded.
+Expected/actual/observed hosts are stored alongside UUID/port/IP checkpoints.
+Changed requested placement, actual host or identity fails without replacement VMs.
+Override these explicit host lists for another inventory.
+
+MTU inputs must cover the requested placement hosts, so configured validation
+compute hosts must also appear in the migration inventory's compute group.
+
+The original 14 EW app/metrics source files were imported from the supplied patch
+without replacement implementations. Their tests are offline; their setup and
+baseline scripts are not called by migration automation. This batch does not
+implement migration runner lifecycle, post-OVN SSH or application result reporting.
+The supplied baseline SSH helper still embeds an OVS qrouter namespace and lab
+addresses; it cannot be assumed usable after cleanup. The baseline DF probe is
+1400 bytes including IPv4/ICMP headers, larger than the target 1392 MTU. Adapting
+that intentional MTU probe and preserving separate application/Pair-A metrics is
+work for the next batch, not evidence of a valid post-OVN migration runner today.
 
 ## Output used to judge success
 
@@ -506,7 +599,7 @@ The root guest service passively observes guest DHCP renewal REQUESTs and their
 matching ACKs with an Ethernet packet socket filtered to IPv4 DHCP. Initial preparation requires at least two guest renewal REQUEST/ACK exchanges
 with sane effective T1/T2 values, including a renewal observed after the initial
 preparation anchor, a usable lease, fresh packet success, working OVS metadata
-and the same boot. Source VXLAN MTU (normally 1450) and the existing OVS metadata
+and the same boot. The calculated source VXLAN MTU and the existing OVS metadata
 route are valid in phase 04; target MTU and OVN metadata next-hop are not checked
 at this stage. This proves the
 owned guests are renewing rather than merely having Neutron-assigned addresses.
@@ -541,13 +634,13 @@ The guard
 runs before `07-migrate-db.yml` freezes Neutron or changes the database. It writes
 `dhcp-precutover-preparation.json`; failure includes a reason and stops the run.
 Defaults are `validation_dhcp_t1_seconds: 30`, `validation_dhcp_t2_seconds: 60`,
-`validation_dhcp_convergence_timeout: 180`, and `target_geneve_mtu: 1442`.
-For a different underlay MTU, configure the validation target to match the existing
-per-network VXLAN-minus-overhead MTU calculation. There are no long fixed sleeps.
+`validation_dhcp_convergence_timeout: 180`. Source/target validation MTUs are
+resolved from the saved effective-config/underlay calculation. There are no long
+fixed sleeps and no required `target_geneve_mtu` override for new runs.
 
 After migration, DHCP availability means a DHCP lease, expected guest IP, usable
 interface and basic default routing. DHCP convergence additionally requires the
-guest interface MTU and Neutron network MTU to equal the configured target MTU, and its selected
+guest interface MTU and Neutron network MTU to equal the checkpointed per-network target MTU, and its selected
 route to 169.254.169.254 to use the fixed IP of the actual `network:distributed`
 port on the correct network/subnet. Missing or ambiguous port evidence yields
 UNAVAILABLE. No address offset or .2/.3 assumption is used. These checks and the

@@ -35,7 +35,7 @@ report={
   'limitations':[
      'Tenant packet evidence is required; PortBinding convergence is separate.',
      'v2 intentionally fails on provider/external networks, floating IPs, router external gateways, DVR and Neutron agent HA because those paths are not yet validated.',
-     'Guest static MTU cannot be changed automatically; existing VXLAN network MTUs are reduced by the configured VXLAN-to-Geneve delta.'
+     'Existing EW guests are never remediated by validation; MTU preparation uses effective config/underlay limits and original per-network journal values. Historical evidence retains its recorded MTU contract.'
   ]
 }
 def evidence(name):
@@ -47,6 +47,11 @@ def status(name, keys):
     values=[r.get(k, 'UNAVAILABLE') for r in rows.values() for k in keys]
     return 'FAIL' if 'FAIL' in values else ('PASS' if all(v=='PASS' for v in values) else 'UNAVAILABLE')
 report.update({
+  'mtu_calculation':evidence('mtu-calculation.json'),
+  'network_mtu_plan':evidence('network-mtu-plan.json'),
+  'target_mtu_config_verification':evidence('mtu-target-config-verification.json'),
+  'existing_ew_resources':evidence('ew-resources.json'),
+  'validation_image_flavor_sizing':evidence('validation-image-flavor-sizing.json'),
   'existing_workload_post_migration_validation':status('pre-workload-checks.json', ['identity','active','bound','dhcp_availability','dhcp_convergence','connectivity','metadata']),
   'existing_workload_post_migration_connectivity':status('pre-workload-checks.json', ['connectivity']),
   'existing_workload_identity_preservation':status('pre-workload-checks.json', ['identity']),

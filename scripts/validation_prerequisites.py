@@ -9,8 +9,18 @@ import sys
 import time
 import urllib.request
 import uuid
+import struct
+from types import SimpleNamespace
 
 from workload_validation import save
+from workload_resources import image_flavor_compatibility
+
+
+def qcow_virtual_size(path):
+    with path.open('rb') as stream: header=stream.read(32)
+    if len(header)!=32 or header[:4]!=b'QFI\xfb':
+        raise RuntimeError('Managed image is not a valid QCOW2 header; cannot verify virtual disk size')
+    return struct.unpack('!Q',header[24:32])[0]
 
 
 def exact_image(cloud, selector):
@@ -104,10 +114,12 @@ def prepare(cloud, cfg, root):
         fcntl.flock(lock, fcntl.LOCK_EX)
         image = exact_image(cloud, cfg['image']) if cfg['image'] else None
         result = {'image': {}, 'flavor': {}, 'cleanup_prerequisites': False}
+        virtual_size = None
         if image is None:
             image = exact_image(cloud, cfg['managed_image_name'])
         if image is None:
             path, sha256, manifest = download_verified(cfg, cache)
+            if path.exists(): virtual_size = qcow_virtual_size(path)
             # Recheck after download, then SDK duplicate protection before upload.
             image = exact_image(cloud, cfg['managed_image_name'])
             if image is None:
@@ -133,11 +145,13 @@ def prepare(cloud, cfg, root):
             if (int(flavor.vcpus), int(flavor.ram), int(flavor.disk)) != (1,1024,8):
                 raise RuntimeError(f'Managed flavor {flavor.name!r} must have 1 vCPU, 1024 MB RAM and 8 GB disk; existing properties are incompatible')
         if flavor is None:
+            image_flavor_compatibility(image, SimpleNamespace(disk=8,ram=1024), virtual_size)
             flavor = cloud.compute.create_flavor(name=cfg['managed_flavor_name'], vcpus=1, ram=1024, disk=8)
             result['flavor']['created'] = True
         result['flavor'].setdefault('created', False)
         result['flavor'].update(id=flavor.id, name=flavor.name, vcpus=int(flavor.vcpus),
                                 ram_mb=int(flavor.ram), disk_gb=int(flavor.disk))
+        result['image_flavor_compatibility'] = image_flavor_compatibility(image, flavor, virtual_size)
         save(root/'validation-prerequisites.json', result)
         return result
 

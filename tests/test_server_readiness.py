@@ -22,7 +22,7 @@ class ReadinessTests(unittest.TestCase):
         obj.state={'pre':pair}
         compute=Mock(); network=Mock(); image=Mock()
         image.find_image.return_value=SimpleNamespace(id='image')
-        compute.find_flavor.return_value=SimpleNamespace(id='flavor')
+        compute.find_flavor.return_value=SimpleNamespace(id='flavor',disk=8,ram=1024)
         network.security_group_rules.return_value=[SimpleNamespace(direction='ingress',protocol='icmp')]
         obj.cloud=SimpleNamespace(compute=compute,network=network,image=image)
         return obj

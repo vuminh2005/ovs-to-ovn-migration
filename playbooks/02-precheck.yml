@@ -1,6 +1,7 @@
 ---
 - name: Phase 02 - Precheck deployment host and supported source scope
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -95,6 +96,7 @@
 
 - name: Phase 02 - Precheck Kolla hosts and OVS source dataplane
   hosts: control:network:compute
+  any_errors_fatal: true
   gather_facts: true
   become: true
   vars_files:
@@ -121,6 +123,29 @@
       when: inventory_hostname in (groups['network'] + groups['compute'])
       changed_when: false
 
+    - name: Record tunnel-interface MTU and IPv4 constraints on every chassis
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - {{ hostvars['localhost']['source_kolla_globals'].tunnel_interface | quote }} <<'PYCODE'
+        import json,subprocess,sys
+        iface=sys.argv[1]
+        links=json.loads(subprocess.check_output(['ip','-j','link','show','dev',iface],text=True))
+        addresses=json.loads(subprocess.check_output(['ip','-j','-4','addr','show','dev',iface],text=True))
+        assert len(links)==1 and len(addresses)==1, 'Expected one configured tunnel interface'
+        print(json.dumps(dict(interface=iface,mtu=links[0]['mtu'],
+            ipv4=[a['local'] for a in addresses[0]['addr_info'] if a['family']=='inet'])))
+        PYCODE
+      args:
+        executable: /bin/bash
+      register: mtu_underlay_query
+      when: inventory_hostname in hostvars['localhost']['chassis_hosts_runtime']
+      changed_when: false
+
+    - name: Publish tunnel-interface constraints for this chassis
+      ansible.builtin.set_fact:
+        mtu_underlay_runtime: "{{ mtu_underlay_query.stdout | from_json }}"
+      when: inventory_hostname in hostvars['localhost']['chassis_hosts_runtime']
+
     - name: Verify source OVS firewall driver where OVS agent config exists
       ansible.builtin.shell: |
         set -euo pipefail
@@ -133,11 +158,17 @@
 
 - name: Phase 02 - Verify DB sync utility on first control host
   hosts: control
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Inspect running source Neutron MTU configuration on every controller
+      ansible.builtin.include_tasks: mtu-config-read-tasks.yml
+      vars:
+        mtu_config_mode: source
+
     - name: Verify migration utility and migrate mode
       ansible.builtin.shell: |
         set -euo pipefail
@@ -148,6 +179,59 @@
       run_once: true
       changed_when: false
 
+- name: Phase 02 - Calculate overlay MTUs and checkpoint existing EW resources
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Read Geneve header size from the installed Kolla ML2 template
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - {{ kolla_ansible_bin_runtime | quote }} {{ mtu_kolla_ml2_template_path | quote }} {{ (playbook_dir + '/../scripts') | quote }} <<'PYCODE'
+        import json,pathlib,sys
+        sys.path.insert(0,sys.argv[3]); from mtu_plan import template_header
+        path=pathlib.Path(sys.argv[2]) if sys.argv[2] else pathlib.Path(sys.argv[1]).resolve().parents[1]/'share/kolla-ansible/ansible/roles/neutron/templates/ml2_conf.ini.j2'
+        print(json.dumps(dict(path=str(path),geneve_max_header_size=template_header(path.read_text()))))
+        PYCODE
+      args:
+        executable: /bin/bash
+      register: mtu_template_query
+      changed_when: false
+
+    - name: Persist effective MTU inputs without configuration secrets
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir }}/mtu-inputs.json"
+        mode: '0600'
+        content: "{{ {'source_configs': dict(groups['control'] | zip(groups['control'] | map('extract', hostvars, 'mtu_configuration_runtime'))), 'underlay': dict(chassis_hosts_runtime | zip(chassis_hosts_runtime | map('extract', hostvars, 'mtu_underlay_runtime'))), 'geneve_max_header_size': (mtu_template_query.stdout | from_json).geneve_max_header_size, 'template_path': (mtu_template_query.stdout | from_json).path} | to_nice_json }}"
+
+    - name: Calculate safe validation and new Geneve network MTUs before provisioning
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/mtu_plan.py", calculate, "{{ migration_run_dir }}"]
+      changed_when: false
+
+    - name: Publish resolved MTU calculation for workload provisioning
+      ansible.builtin.set_fact:
+        mtu_calculation_runtime: "{{ lookup('file', migration_run_dir + '/mtu-calculation.json') | from_json }}"
+
+    - name: Save non-secret existing East-West topology configuration
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir }}/ew-config.json"
+        mode: '0600'
+        content: "{{ ew_workload_config | to_nice_json }}"
+      when: ew_workloads_enabled | bool
+
+    - name: Resolve unique EW resource UUIDs and preserve their external ownership
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_resources.py') | quote }} {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: ew_workloads_enabled | bool
+
     - name: Mark phase 02 end
       ansible.builtin.command:
         argv:
@@ -157,6 +241,5 @@
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '02'
           - end
-      delegate_to: localhost
       run_once: true
       changed_when: false

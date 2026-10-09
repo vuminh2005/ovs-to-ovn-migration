@@ -1,6 +1,7 @@
 ---
 - name: Phase 06 - Prepare target ML2/OVN configuration and MTU
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -36,27 +37,11 @@
         - { key: enable_neutron_dvr, value: 'no' }
         - { key: enable_neutron_agent_ha, value: 'no' }
 
-    - name: Reduce each existing VXLAN network MTU by VXLAN-to-Geneve delta
+    - name: Journal each existing VXLAN network original and calculated target MTU before updates
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        # Retain original-to-target pairs across preparation retries.
-        mtu_journal={{ (migration_run_dir + '/network-mtu-migration.tsv') | quote }}
-        touch "$mtu_journal"
-        for id in $(openstack network list -f value -c ID); do
-          type=$(openstack network show "$id" -f value -c provider:network_type)
-          [ "$type" = "{{ source_tenant_network_type }}" ] || continue
-          old=$(openstack network show "$id" -f value -c mtu)
-          new=$(awk -v id="$id" '$1 == id {print $3}' "$mtu_journal")
-          if [ -z "$new" ]; then
-            new=$((old - {{ mtu_delta_vxlan_to_geneve }}))
-            printf '%s\t%s\t%s\n' "$id" "$old" "$new" >> "$mtu_journal"
-          fi
-          test "$new" -gt 0
-          if [ "$old" -ne "$new" ]; then
-            openstack network set --mtu "$new" "$id"
-          fi
-        done
+        python3 {{ (playbook_dir + '/../scripts/mtu_plan.py') | quote }} prepare {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
 
@@ -85,6 +70,7 @@
 
 - name: Phase 06 - Discover generated OVN DB endpoints from authoritative target config
   hosts: control
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -126,6 +112,30 @@
         - { src: /etc/kolla/neutron-server/neutron.conf, dest: neutron.conf.target }
       run_once: true
 
+    - name: Inspect every generated controller target MTU configuration before freeze
+      ansible.builtin.include_tasks: mtu-config-read-tasks.yml
+      vars:
+        mtu_config_mode: target
+
+- name: Phase 06 - Verify generated ML2/OVN MTU assumptions before freeze
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Persist generated target MTU settings for every controller
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir }}/mtu-target-configs.json"
+        mode: '0600'
+        content: "{{ dict(groups['control'] | zip(groups['control'] | map('extract', hostvars, 'mtu_configuration_runtime'))) | to_nice_json }}"
+
+    - name: Require generated target configuration to match the saved MTU calculation
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/mtu_plan.py", verify, "{{ migration_run_dir }}"]
+      changed_when: false
+
     - name: Mark phase 06 end
       ansible.builtin.command:
         argv:
@@ -135,6 +145,5 @@
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '06'
           - end
-      delegate_to: localhost
       run_once: true
       changed_when: false

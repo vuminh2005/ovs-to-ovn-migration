@@ -19,11 +19,10 @@ target_neutron_plugin_agent: ovn
 target_tenant_network_type: geneve
 neutron_type_drivers_target: "flat,vlan,vxlan,geneve"
 
-# VXLAN -> Geneve adds 8 bytes in the tested Neutron/Kolla configuration
-# (VXLAN network MTU 1450 -> Geneve-safe 1442 on a 1500 underlay).
-# Existing VXLAN networks are reduced individually by this delta; there is no
-# hard-coded 1442 requirement, so jumbo-MTU clouds are handled proportionally.
-mtu_delta_vxlan_to_geneve: 8
+# Empty discovers the installed template beside the kolla-ansible executable.
+# MTUs and the VXLAN/Geneve delta are calculated from effective config and
+# every chassis tunnel interface; no 1450/1442 validation default is assumed.
+mtu_kolla_ml2_template_path: ''
 
 # Kolla systemd units.
 neutron_server_unit: kolla-neutron_server-container.service
@@ -103,4 +102,31 @@ validation_allow_post_cutover_guest_reboot: false
 validation_post_cutover_dhcp_timeout_seconds: 180
 # Persistent compute-local evidence, retained until successful final report.
 validation_capture_directory: /var/lib/ovn-migration-validation
-target_geneve_mtu: 1442
+
+# Admin Nova availability-zone:host placement requests, checked after ACTIVE.
+# Empty Pair-A/B lists allow scheduling, but actual compute hosts are recorded.
+validation_availability_zone: nova
+validation_compute_hosts:
+  measure: []
+  existing: []
+  fresh: [compute1, compute2]
+
+# Existing East-West application resources are NEVER validation-owned. Enable
+# strict runtime discovery for an EW migration run; the general POC can still
+# run without requiring this separate application topology.
+ew_workloads_enabled: false
+ew_workload_config:
+  image: ew-ubuntu-24.04-netfix
+  flavor: ew.2c2g
+  router: ew-router
+  servers:
+    - {name: ew-app, ip: 192.168.101.11, compute_host: compute1, network: ew-net-a}
+    - {name: ew-client-a1, ip: 192.168.101.12, compute_host: compute1, network: ew-net-a}
+    - {name: ew-client-a2, ip: 192.168.101.13, compute_host: compute2, network: ew-net-a}
+    - {name: ew-queue, ip: 192.168.102.11, compute_host: compute1, network: ew-net-b}
+    - {name: ew-db, ip: 192.168.102.12, compute_host: compute2, network: ew-net-b}
+    - {name: ew-client-b, ip: 192.168.102.13, compute_host: compute2, network: ew-net-b}
+  endpoints:
+    api: {host: 192.168.101.11, port: 8080}
+    postgresql: {host: 192.168.102.12, port: 5432}
+    rabbitmq: {host: 192.168.102.11, port: 5672}

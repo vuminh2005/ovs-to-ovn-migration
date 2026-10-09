@@ -260,7 +260,7 @@ class OrchestrationPhaseTests(unittest.TestCase):
         self.assertIn('Mark phase 07 entry',tasks[0]['name'])
         self.assertEqual(tasks[0]['ansible.builtin.command']['argv'][2],'phase-entry')
         self.assertIn('before any Neutron freeze',tasks[1]['name'])
-        self.assertIn('--freeze-start',tasks[2]['ansible.builtin.command']['argv'])
+        self.assertTrue(any('--freeze-start' in t.get('ansible.builtin.command',{}).get('argv',[]) for t in tasks))
 
     def test_phase13_cleanup_gate_precedes_timing_publication_and_end(self):
         tasks=yaml.safe_load((ROOT/'playbooks/13-report.yml').read_text())[0]['tasks']

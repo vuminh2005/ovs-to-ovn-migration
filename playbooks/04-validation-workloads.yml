@@ -33,14 +33,21 @@
           - validation_dhcp_convergence_timeout | int > 0
           - validation_post_cutover_dhcp_timeout_seconds | int > 0
           - validation_capture_directory is match("^/")
-        fail_msg: Validation prerequisites must be resolved by 03-validation-prerequisites.yml; check topology settings.
+          - mtu_calculation_runtime.validation_source_mtu | int > 0
+          - mtu_calculation_runtime.validation_target_mtu | int > 0
+          - validation_compute_hosts.fresh | length == 2
+          - validation_compute_hosts.fresh[0] != validation_compute_hosts.fresh[1]
+          - validation_compute_hosts.fresh | difference(groups['compute']) | length == 0
+          - validation_compute_hosts.measure | difference(groups['compute']) | length == 0
+          - validation_compute_hosts.existing | difference(groups['compute']) | length == 0
+        fail_msg: Resolve image/flavor and calculated MTUs before provisioning; requested validation hosts must belong to the inventory compute group. Check topology settings.
       when: validation_workloads_enabled | bool
 
     - name: Save non-secret guest validation configuration
       ansible.builtin.copy:
         dest: "{{ migration_run_dir }}/validation-config.json"
         mode: '0600'
-        content: "{{ {'run': migration_run_id, 'image': validation_prerequisites_runtime.image.id, 'flavor': validation_prerequisites_runtime.flavor.id, 'prefix': validation_name_prefix, 'cidrs': {'pre': validation_pre_cidrs, 'post': validation_post_cidrs}, 'interval': dataplane_probe_interval_seconds | float, 'lifetime': validation_probe_lifetime_seconds | int, 'timeout': validation_timeout_seconds | int, 'console_interval': validation_console_poll_seconds | float, 'console_tail_lines': validation_console_tail_lines | int, 'dhcp_t1': validation_dhcp_t1_seconds | int, 'dhcp_t2': validation_dhcp_t2_seconds | int, 'dhcp_renewal_tolerance': validation_dhcp_renewal_tolerance_seconds | float, 'dhcp_timeout': validation_dhcp_convergence_timeout | int, 'target_mtu': target_geneve_mtu | int, 'source_mtu': (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int), 'allow_pre_cutover_guest_reboot': validation_allow_pre_cutover_guest_reboot | bool, 'allow_post_cutover_guest_reboot': validation_allow_post_cutover_guest_reboot | bool, 'post_cutover_timeout': validation_post_cutover_dhcp_timeout_seconds | int, 'post_cutover_dhcp_enabled': true, 'capture_enabled': true, 'capture_directory': validation_capture_directory, 'inventory': kolla_inventory_runtime, 'ovn_cli_host': ovn_cli_host_runtime} | to_nice_json }}"
+        content: "{{ {'run': migration_run_id, 'image': validation_prerequisites_runtime.image.id, 'flavor': validation_prerequisites_runtime.flavor.id, 'prefix': validation_name_prefix, 'cidrs': {'pre': validation_pre_cidrs, 'post': validation_post_cidrs}, 'interval': dataplane_probe_interval_seconds | float, 'lifetime': validation_probe_lifetime_seconds | int, 'timeout': validation_timeout_seconds | int, 'console_interval': validation_console_poll_seconds | float, 'console_tail_lines': validation_console_tail_lines | int, 'dhcp_t1': validation_dhcp_t1_seconds | int, 'dhcp_t2': validation_dhcp_t2_seconds | int, 'dhcp_renewal_tolerance': validation_dhcp_renewal_tolerance_seconds | float, 'dhcp_timeout': validation_dhcp_convergence_timeout | int, 'mtu_schema_version': 1, 'target_mtu': mtu_calculation_runtime.validation_target_mtu | int, 'source_mtu': mtu_calculation_runtime.validation_source_mtu | int, 'compute_hosts': validation_compute_hosts, 'availability_zone': validation_availability_zone, 'placement_required': true, 'ew_workloads_enabled': ew_workloads_enabled | bool, 'ew_workload_config': ew_workload_config, 'allow_pre_cutover_guest_reboot': validation_allow_pre_cutover_guest_reboot | bool, 'allow_post_cutover_guest_reboot': validation_allow_post_cutover_guest_reboot | bool, 'post_cutover_timeout': validation_post_cutover_dhcp_timeout_seconds | int, 'post_cutover_dhcp_enabled': true, 'capture_enabled': true, 'capture_directory': validation_capture_directory, 'inventory': kolla_inventory_runtime, 'ovn_cli_host': ovn_cli_host_runtime} | to_nice_json }}"
       when: validation_workloads_enabled | bool
 
     - name: Start continuous Pair A measurement then prepare existing Pair B workloads

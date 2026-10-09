@@ -21,11 +21,18 @@
     - name: Require authoritative Pair B MTU and workload readiness before any Neutron freeze
       ansible.builtin.shell: |
         set -euo pipefail
+        python3 {{ (playbook_dir + '/../scripts/mtu_plan.py') | quote }} ready {{ migration_run_dir | quote }}
         source {{ openrc_path | quote }}
         python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} precutover-ready {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
+
+    - name: Require generated target MTU verification even when validation guests are disabled
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/mtu_plan.py", ready, "{{ migration_run_dir }}"]
+      when: not (validation_workloads_enabled | bool)
+      changed_when: false
 
     - name: Mark phase 07 and control-plane downtime start
       ansible.builtin.command:
