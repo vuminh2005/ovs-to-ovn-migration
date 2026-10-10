@@ -263,7 +263,7 @@ class ProvisionTests(unittest.TestCase):
         self.create(); self.p.state['created'] = {}; self.cloud.rows['rule'].clear()
         with self.assertRaisesRegex(RuntimeError, 'required tenant'): self.p.plan(10 * 1024**3)
 
-    def test_verified_qcow_and_original_inputs_required(self):
+    def test_verified_qcow_and_reviewed_inputs_required(self):
         self.assertEqual(self.validated(), 10 * 1024**3)
         self.spec['bootstrap'] = {}
         with self.assertRaisesRegex(RuntimeError, 'bootstrap source is missing'): self.validated()
@@ -296,7 +296,7 @@ class ProvisionTests(unittest.TestCase):
     def test_unchanged_app_neither_initializes_nor_restarts(self):
         self.p.install = Mock(return_value=[])
         def guest(vm, access, argv, data=None, timeout=None):
-            if 'import gunicorn,psycopg2,pika' in argv: return ''
+            if any('EW_BAKED_DEPENDENCIES' in a for a in argv): return json.dumps({'missing': []})
             if data:
                 value = json.loads(data)
                 self.assertFalse(any(value['services'].values()))
@@ -311,6 +311,7 @@ class ProvisionTests(unittest.TestCase):
     def test_changed_api_only_has_api_handler(self):
         self.p.install = Mock(return_value=['/opt/ew-lab/api.py'])
         def guest(vm, access, argv, data=None, timeout=None):
+            if any('EW_BAKED_DEPENDENCIES' in a for a in argv): return json.dumps({'missing': []})
             if data:
                 services = json.loads(data)['services']
                 self.assertEqual(services, {name: name == 'ew-api.service' for name in services})
@@ -327,6 +328,7 @@ class ProvisionTests(unittest.TestCase):
         for name in ('db-password', 'mq-password'): (directory / name).write_text('a' * 48)
         self.p.install = Mock(return_value=[])
         def guest(vm, access, argv, data=None, timeout=None):
+            if any('EW_BAKED_DEPENDENCIES' in a for a in argv): return json.dumps({'missing': []})
             if argv[:2] == ['python3', '-c'] and 'passwords=' in argv[2]:
                 code = argv[2].replace('/etc/ew-lab', str(directory))
                 output = subprocess.run(['python3', '-c', code, *argv[3:]], text=True, capture_output=True)
@@ -417,7 +419,7 @@ class ProvisionTests(unittest.TestCase):
                 self.assertIn('services', disk()); model['installed'] = True
             return changed
         def guest(vm, access, argv, data=None, timeout=None):
-            if 'import gunicorn,psycopg2,pika' in argv: return ''
+            if any('EW_BAKED_DEPENDENCIES' in a for a in argv): return json.dumps({'missing': []})
             if argv[:2] == ['python3', '-c'] and 'passwords=' in argv[2]:
                 changed = not model['env_applied']
                 if argv[-1] == 'apply':
@@ -516,6 +518,7 @@ class ProvisionTests(unittest.TestCase):
                 addr_info=[dict(family='inet', local=vm['ip'])])], routes=[dict(dst='default', gateway='192.168.101.1')])
         self.p.transport = tr
         def guest(vm, access, argv, data=None, timeout=None):
+            if any('EW_BAKED_DEPENDENCIES' in a for a in argv): return json.dumps({'missing': []})
             if argv[:2] == ['cloud-init', 'status']: return json.dumps({'status': 'done', 'errors': [], 'recoverable_errors': {}})
             if argv[:2] == ['python3', '-']:
                 return 'E2E_RESULT_OK client=' + argv[-1] + ' task_id=11111111-1111-4111-8111-111111111111 latency_ms=1\nWORKLOAD_E2E_OK\n'

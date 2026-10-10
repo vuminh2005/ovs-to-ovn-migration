@@ -463,13 +463,16 @@ Work Item 1 adds a separate [persistent EW provisioning workflow](docs-ew-provis
 and `ew-migrate.yml` imports provisioning → baseline → the existing migration.
 The confirmed netfix image, tenant subnet/gateway/pool settings and original
 unrestricted tenant security rules are configured in `group_vars/all.yml`.
-PostgreSQL/RabbitMQ bootstrap sources remain pending; full application
-provisioning is blocked until those authoritative inputs are supplied. No
-replacement database/broker initialization is invented.
+Reviewed live evidence now supplies reconstructed PostgreSQL 16/RabbitMQ 3.12
+check/apply adapters in `workloads/ew-bootstrap/adapter.py`. Original bootstrap
+scripts remain unresolved; their absence does not block these reconstructed
+implementations. Baked dependencies and recovered private credentials are still
+required, and real-lab adapter validation remains pending.
 The same handover documents a single read-only `ew-collect-bootstrap.yml` batch
 to recover live DB/broker configuration through the existing trusted namespace
 transport. Recovered settings are explicitly distinct from original bootstrap
-source and do not automatically satisfy the pending adapter requirement.
+source. It also documents check-only adapter validation and separately invoked
+private credential recovery; neither runs as part of migration downtime.
 
 EW server/port/network/subnet/router/security-group UUIDs are explicitly excluded
 from validation cleanup and reboot; configured EW names are protected even when

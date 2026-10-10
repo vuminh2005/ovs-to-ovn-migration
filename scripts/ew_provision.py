@@ -136,10 +136,11 @@ def validated_spec(spec, topology, excluded_root, require_bootstrap=True):
         require(re.fullmatch('[0-9a-f]{48}', secret.read_text().strip()) is not None,
                 kind + ': password format must match authoritative setup.sh; value not logged')
     for role in (('ew-db', 'ew-queue') if require_bootstrap else ()):
-        require(role in spec['bootstrap'], role + ': authoritative bootstrap source is missing; application provisioning is blocked')
+        require(role in spec['bootstrap'], role + ': reviewed bootstrap source is missing; application provisioning is blocked')
         script = spec['bootstrap'][role]; path = pathlib.Path(script['path'])
+        require(script.get('interpreter', 'bash') in ('bash', 'python3'), role + ': unsupported bootstrap interpreter')
         require(path.is_file() and digest(path) == script['sha256'],
-                role + ': supply the original audited check/apply bootstrap adapter and SHA256')
+                role + ': reviewed check/apply bootstrap adapter SHA256 mismatch or source missing')
     require(set(spec['bootstrap']) <= {'ew-db', 'ew-queue'}, 'Bootstrap adapters are allowed only for ew-db and ew-queue')
     # The authoritative setup script has fixed endpoints, user and service binds.
     expected = {'api': {'host': '192.168.101.11', 'port': 8080},
@@ -462,7 +463,7 @@ print(json.dumps({'paths':changed}))'''
 
     def deploy_app(self, vm, access):
         """Use original files/units; only changed services receive handlers."""
-        self.guest(vm, access, ['python3', '-c', 'import gunicorn,psycopg2,pika'])
+        self.baked_dependencies(vm, access, ['gunicorn', 'psycopg2', 'pika'])
         setup = (APP / 'setup.sh').read_text()
         units = dict(re.findall(r"cat > (/etc/systemd/system/[^ ]+) <<'UNIT'\n(.*?)\nUNIT", setup, re.S))
         require(len(units) == 2, 'Authoritative application unit definitions missing')
@@ -555,6 +556,43 @@ print(json.dumps({'actions':actions}))'''
         return {k: receipt[k] for k in ('task_id', 'run_id', 'client_id', 'status',
                 'result_sha256', 'process_count', 'created_at', 'completed_at')}
 
+    def baked_dependencies(self, vm, access, modules):
+        code = '''# EW_BAKED_DEPENDENCIES
+import importlib,json,shutil,sys
+missing=[]
+for name in json.loads(sys.argv[1]):
+ try: importlib.import_module(name)
+ except Exception: missing.append(name)
+missing += [name for name in ('cloud-init','ping','python3','sudo','systemctl') if not shutil.which(name)]
+print(json.dumps({'missing':missing}))'''
+        outcome = json.loads(self.guest(vm, access, ['python3', '-c', code, json.dumps(modules)]))
+        require(not outcome['missing'], 'Missing baked guest dependencies (no installation attempted): ' + ', '.join(outcome['missing']))
+
+    def bootstrap(self, name, vm, access):
+        descriptor = self.spec['bootstrap'][name]
+        source = pathlib.Path(descriptor['path']).read_bytes()
+        require(hashlib.sha256(source).hexdigest() == descriptor['sha256'], name + ': bootstrap source changed since preflight')
+        interpreter = descriptor.get('interpreter', 'bash')
+        path = '/opt/ew-provision/bootstrap.py' if interpreter == 'python3' else '/opt/ew-provision/bootstrap.sh'
+        self.install(vm, access, {path: source})
+        def command(action):
+            return [interpreter, path, action] + ([name] if interpreter == 'python3' else [])
+        outcome = json.loads(self.guest(vm, access, command('check'), timeout=self.timeout))
+        require(outcome.get('status') in ('PASS', 'CHANGE_REQUIRED'),
+                name + ': bootstrap inspection refused: ' + str(outcome.get('reason', outcome.get('status', 'invalid response'))))
+        if outcome['status'] == 'CHANGE_REQUIRED':
+            output = self.guest(vm, access, command('apply'), timeout=self.timeout)
+            # Retain the historical bash adapter contract (exit zero). The
+            # reconstructed Python adapters additionally return structured status.
+            if interpreter == 'python3':
+                applied = json.loads(output)
+                require(applied.get('status') == 'PASS', name + ': bootstrap apply did not pass')
+                self.changed |= applied.get('changed', True)
+            else:
+                self.changed = True
+        require(json.loads(self.guest(vm, access, command('check'), timeout=self.timeout)).get('status') == 'PASS',
+                name + ': reviewed DB/broker bootstrap check failed')
+
     def ready(self, deploy=False):
         catalog = resolve_ew(self.cloud, self.cfg, self.root)
         self.transport = self.transport or Transport(self.access_cfg, catalog, cloud=self.cloud)
@@ -588,20 +626,13 @@ print(json.dumps({'actions':actions}))'''
                 require(self.task_receipt(catalog, name, prior['task_id']) == prior,
                         name + ': pre-existing task result changed before provisioning')
             if deploy:
+                self.baked_dependencies(vm, access, [])
                 kinds = ('db', 'mq') if name == 'ew-app' else ('db',) if name == 'ew-db' else ('mq',) if name == 'ew-queue' else ()
                 self.install(vm, access, {'/etc/ew-lab/' + kind + '-password':
                              pathlib.Path(self.spec['secrets'][kind]).read_text().strip().encode() for kind in kinds}, secrets=True)
                 self.install(vm, access, {'/opt/ew-load/' + f: (METRICS / f).read_bytes() for f in ('agent.py', 'runner.py')})
                 if name in self.spec['bootstrap']:
-                    source = pathlib.Path(self.spec['bootstrap'][name]['path']).read_bytes()
-                    self.install(vm, access, {'/opt/ew-provision/bootstrap.sh': source})
-                    outcome = json.loads(self.guest(vm, access, ['bash', '/opt/ew-provision/bootstrap.sh', 'check']))
-                    require(outcome.get('status') in ('PASS', 'CHANGE_REQUIRED'), name + ': invalid bootstrap check response')
-                    if outcome['status'] == 'CHANGE_REQUIRED':
-                        self.guest(vm, access, ['bash', '/opt/ew-provision/bootstrap.sh', 'apply'], timeout=self.timeout)
-                        self.changed = True
-                    require(json.loads(self.guest(vm, access, ['bash', '/opt/ew-provision/bootstrap.sh', 'check'])).get('status') == 'PASS',
-                            name + ': authoritative DB/broker bootstrap check failed')
+                    self.bootstrap(name, vm, access)
                 self.install(vm, access, {'/opt/ew-provision/probe.py': (APP / 'probe.py').read_bytes()})
         # Dependencies are prepared first; run the unchanged app installer only
         # when its source/env/units are absent or stale, never on every rerun.

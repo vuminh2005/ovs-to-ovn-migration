@@ -125,7 +125,18 @@ ew_provision_availability_zone: nova
 # values, checked against live resources when this playbook is explicitly run.
 ew_provision_spec_file: ''
 ew_provision_secret_files: {}
-ew_provision_bootstrap_sources: {}
+# Reconstructed from reviewed live evidence; original scripts remain unresolved.
+ew_provision_bootstrap_sources:
+  ew-db:
+    path: "{{ playbook_dir }}/workloads/ew-bootstrap/adapter.py"
+    sha256: 39ab4c721383f1798a0903b4b99a5fd81920bcfd31aaa4252ce0af1474e26f9c
+    interpreter: python3
+  ew-queue:
+    path: "{{ playbook_dir }}/workloads/ew-bootstrap/adapter.py"
+    sha256: 39ab4c721383f1798a0903b4b99a5fd81920bcfd31aaa4252ce0af1474e26f9c
+    interpreter: python3
+ew_bootstrap_reference_file: /root/ew-bootstrap-live-evidence.json
+ew_provision_private_dir: /root/ew-private
 ew_provision_spec:
   image:
     path: /root/ew-image-build/ew-ubuntu-24.04-netfix.qcow2
@@ -153,8 +164,8 @@ ew_provision_spec:
   security_group: ew-sg
   keypair: ew-key
   keypair_public_key: /root/.ssh/ew-lab.pub
-  # Pending authoritative inputs: private local password-file paths and the
-  # original PostgreSQL/RabbitMQ bootstrap adapters, never inline secrets.
+  # Private local password paths, recovered separately; no inline secrets.
+  # Reviewed reconstructed DB/broker adapters are the default bootstrap inputs.
   secrets: "{{ ew_provision_secret_files }}"
   bootstrap: "{{ ew_provision_bootstrap_sources }}"
 # Existing SSH access only: explicitly provide trusted keys/known-hosts paths.

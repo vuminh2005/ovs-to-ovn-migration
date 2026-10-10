@@ -5,7 +5,7 @@ workflow is **separately authorized reset to OVS → provision EW → baseline �
 migration → report**. This change does not implement/reset the lab, add external
 connectivity, change Pair A/B/C, or extend checkpoint tooling.
 
-## Source audit and current limitation
+## Source audit and reconstructed bootstrap
 
 The six VM names/IPs/compute placements and endpoints come from
 `ew_workload_config`. The user confirmed these additional original creation-log
@@ -34,7 +34,7 @@ Its `.sha256` sidecar must agree. Glance requires the same content, qcow2/bare,
 private visibility, min_disk 10, min_ram 2048, os_distro ubuntu, os_version 24.04.
 These controller paths are configurable; they were not accessed from the coding
 workspace. Retain the image, checksum, private inputs, SSH trust and original
-bootstrap sources **outside every directory/volume removed by a lab reset**.
+bootstrap source and private inputs **outside every directory/volume removed by a lab reset**.
 The provisioner refuses an image or persistent state under the migration backup
 root; the operator must also check any separately authorized reset policy.
 
@@ -43,12 +43,13 @@ initialization executes CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT
 EXISTS against database `ewlab` as `ewapp`; it preserves existing rows. Neither
 script creates the PostgreSQL database/role/listening configuration or RabbitMQ
 user/vhost/server configuration. The original RabbitMQ and PostgreSQL bootstrap
-commands **have not yet been located**. A failed controller `rg` search was not
-evidence of absence. Empty-cloud application provisioning is therefore not yet
-complete or lab-validated. `apply` refuses before cloud mutation until audited
-bootstrap adapters and original private password-file paths are provided.
-Resource `inspect` and existing-application `verify` do not require those pending
-bootstrap inputs.
+commands **have not yet been located**. They are no longer a mandatory blocker:
+`workloads/ew-bootstrap/adapter.py` implements two **reconstructed, reviewed**
+adapters from the supplied `ew-bootstrap-live-evidence.json` (2026-10-10).
+These are not recovered original scripts. Actual controller/guest execution
+remains pending; offline tests do not establish lab compatibility. `apply`
+requires valid private password inputs and SHA256-pinned adapter sources before
+cloud mutation; `inspect` and existing-application `verify` do not require them.
 
 ## Inputs and behavior
 
@@ -146,35 +147,131 @@ but starts **neither** listener. Existing phase-04 measurement starts 18080;
 the existing post-freeze source-transport hook activates 18081. No package or
 application deployment is imported into the downtime interval.
 
-## Pending bootstrap input contract
+## Reconstructed reviewed bootstrap adapters
 
-Do not invent new initialization commands. After the original sources are
-located/audited, supply two private local file paths in `ew_provision_secret_files`
-(`db` and `mq`), retaining the existing 48 lowercase hex passwords. For a fresh
-deployment, obtain credentials through that same separately managed private
-mechanism. This tool does not generate/rotate credentials. Missing guest password
-files may be installed from those inputs; existing differing files are refused.
+Defaults in `ew_provision_bootstrap_sources` identify both roles with the actual
+`{{ playbook_dir }}/workloads/ew-bootstrap/adapter.py` path, pinned SHA256 and
+`interpreter: python3`. The same audited file contains separate PostgreSQL and
+RabbitMQ adapters. The interface remains `check` / `apply`; Python receives the
+exact `ew-db` or `ew-queue` role as its second argument. Reviewed external bash
+adapters retain the historical single-action/exit-zero interface.
 
-`ew_provision_bootstrap_sources` must identify exactly `ew-db` and `ew-queue`,
-each with `path` and its actual `sha256`. These are adapters around the original
-audited sources, not replacement implementations. They run as root on only the
-matching verified guest and receive `check` or `apply` as the first argument.
-`check` must be read-only, exit zero and emit only JSON
-`{"status":"PASS"}` or `{"status":"CHANGE_REQUIRED"}`. `apply` must preserve
-existing credentials/database/queue contents and change only missing/mismatched
-owned configuration. A nonzero exit is failure. The subsequent `check` must
-PASS. Neither mode may print credentials. Refuse conflicting existing DB/broker
-configuration rather than overwriting it. The check must cover dependency
-installation, service/listen/auth configuration and the expected role/database
-or user/vhost permissions. Application task completion is then checked separately.
+`check` is read-only and emits only JSON. PASS means the observed dependency,
+configuration, identity/permission and password-authentication checks passed.
+CHANGE_REQUIRED explicitly lists missing owned configuration/resources or stopped
+services (catalog inspection is marked pending when stopped). CONFLICT refuses
+incompatible configuration/permissions/credentials; MISSING_DEPENDENCIES and
+UNAVAILABLE never count as readiness. No install, write, service start/reload or
+lock/journal creation occurs in check mode. Apply is separately authorized:
 
-Provide these dictionaries in a private extra-vars file outside the repository,
-for example `/root/ew-provision-inputs.yml`, **after their real paths and hashes
-are established**. No runnable bootstrap implementation or guessed paths are
-included. `ew_provision_spec_file` optionally selects a complete JSON specification
-instead of the defaults, including these dictionaries. Other configurable inputs
-are `ew_provision_action` (inspect/apply/verify), `ew_provision_timeout_seconds`,
-`ew_provision_state_dir`, `ew_provision_availability_zone`, and `ew_provision_spec`.
+- PostgreSQL requires the baked 16.15-0ubuntu0.24.04.1 server package, runtime
+  16.15, Ubuntu cluster tools and psql client. The adapter uses Python standard-library
+  code; psycopg2 is required on ew-app by the existing application, not added as
+  an extra requirement on ew-db. It manages only
+  16/main/5432, `listen_addresses=127.0.0.1,192.168.102.12`, SCRAM, the observed
+  Ubuntu snakeoil SSL paths, and the exact workload HBA rule for ewlab/ewapp from
+  192.168.101.11/32. All seven standard local/loopback/replication rules remain
+  intact. Missing ewapp is created LOGIN/INHERIT without elevated privileges;
+  missing ewlab is UTF8/C.UTF-8 owned by ewapp. A wholly absent cluster can be
+  created by the baked Ubuntu tool only if no other cluster and neither data nor
+  config directory exists. Both local-peer and host-SCRAM initdb authentication
+  methods are explicit; the standard admin-peer rule is finalized before start.
+  A separate durable cluster intent permits interrupted finalization without
+  repeating initdb on existing data. Partial/inconsistent cluster remnants are refused.
+  Existing roles/memberships, credentials, DB/public-schema ACL/ownership and
+  application object ownership must match. PostgreSQL 16's pg_database_owner
+  public schema is retained. No application tables/indexes are created here.
+- RabbitMQ requires baked package 3.12.1-1ubuntu1.6, runtime 3.12.1, its existing
+  CLI tools. Pika remains an application dependency on ew-app. It manages only the missing AMQP listener
+  192.168.102.11:5672, ewapp (no tags), ewlab (tracing false), and its .* / .* / .*
+  permissions. It preserves guest/administrator and loopback restriction,
+  internal PLAIN/AMQPLAIN auth, no TLS listener and no enabled plugins. Other
+  listener/auth settings, existing workload permissions/tags or credentials
+  conflict. It neither declares application exchanges/queues nor inspects,
+  consumes, publishes or purges messages.
+
+The prepared image must contain these dependencies; provisioning never downloads,
+installs or upgrades packages. A stock netfix guest lacking DB/broker packages
+fails explicitly: prepare/review an appropriate baked image separately. Version
+pins intentionally refuse unreviewed updates instead of silently upgrading.
+
+Authentication is checked without credentials in argv/logs: PostgreSQL uses a
+private stdin payload to a local peer-authenticated Python helper, then psql
+opens a real read-only password-authenticated TCP connection. The helper supplies
+PGPASSWORD only in that child process environment (as the established app uses
+its own private environment); never in argv, SQL or logs. Missing roles receive a SCRAM
+verifier inside the helper; existing passwords are never changed. RabbitMQ
+`add_user ewapp` / `authenticate_user ewapp` consume a private stdin pipe, as
+supported by the pinned [3.12.1 add-user source](https://github.com/rabbitmq/rabbitmq-server/blob/v3.12.1/deps/rabbitmq_cli/lib/rabbitmq/cli/ctl/commands/add_user_command.ex)
+and [authentication source](https://github.com/rabbitmq/rabbitmq-server/blob/v3.12.1/deps/rabbitmq_cli/lib/rabbitmq/cli/ctl/commands/authenticate_user_command.ex).
+PostgreSQL's verifier behavior follows [CREATE ROLE](https://www.postgresql.org/docs/16/sql-createrole.html).
+Failed subprocess bodies and authentication hashes are never returned.
+
+Configuration restart intent is root-private and durable before file changes
+(`/var/lib/ew-provision/postgresql16.json` or `rabbitmq312.json`). A failed restart
+remains pending; retries revalidate and finish it. Logical resource creation is
+atomic per role/user/database/vhost operation, so interruption is recovered by
+reinspection, without recreating or replacing completed resources. No response
+from a restart is ambiguous and may require repeating that pending restart;
+a completed unchanged healthy run rewrites nothing and restarts nothing.
+Do not edit pending journals or run concurrent administrative changes.
+
+## Private controller credential recovery and validation batch
+
+`ew-recover-credentials.yml` is prepared for a separately authorized invocation.
+It uses only existing verified namespace SSH, reads no original source secrets
+from the reviewed JSON (none were collected), and installs nothing in guests.
+It verifies current server/port/IP, MAC, placement and reviewed guest boot IDs,
+reads only root:root 0600 regular password files, validates 48 lowercase hex,
+privately compares ew-app/db against ew-db and ew-app/mq against ew-queue, then
+rechecks guest identity/boot. No mismatch is adopted. If a legitimate reboot
+occurred since collection, obtain/review a fresh reference; do not weaken boot
+validation to bypass this refusal.
+
+Matching values are atomically published without replacement under
+`/root/ew-private` (0700), with files root:root 0600:
+`db-password`, `mq-password`, `recovery-evidence.json` and
+`ew-provision-inputs.yml`. The latter maps `ew_provision_secret_files.db/mq` to
+those paths, containing no inline passwords. Existing different, invalid,
+symlinked or non-private outputs are refused; equivalent normalized values retain
+bytes/mtime/permissions. A crash between atomic link publication and temporary
+file removal can leave a private temporary hard link; matching final files remain
+retryable and the helper never deletes unrelated temporary files. A partial local save can retry with the same reviewed
+sources; already matching files remain untouched. Passwords travel only through
+encrypted SSH stdout into private controller memory; nothing prints passwords
+or credential hashes, and the Ansible task has no_log enabled.
+
+The current `reset-lab-to-ovs.yml` destroys Kolla containers/data, removes
+`/etc/kolla/config` and optionally `/root/ovs-to-ovn-backup`; it does not remove
+`/root/ew-private`. This survival statement assumes its default deletion paths.
+Review any reset overrides/custom scripts and separately back up these files.
+The helper rejects repository/SSH/backup destinations. Do not store private inputs
+inside this repository, the migration backup tree or guest/Kolla volumes.
+Controller access IP **117.1.28.69** is a management address, never a workload
+endpoint. Run the following one complete batch in an already established
+controller session only after review/authorization. It is also provided as
+`workloads/ew-bootstrap/controller-validation.sh`; it was **not executed** here:
+
+```bash
+set -euo pipefail
+source /root/venvs/kolla-2024.1/bin/activate
+cd /root/ovs-to-ovn-migration
+test -f /root/ew-bootstrap-live-evidence.json
+ansible-playbook -i /root/multinode ew-bootstrap-check.yml --syntax-check
+ansible-playbook -i /root/multinode ew-recover-credentials.yml --syntax-check
+ansible-playbook -i /root/multinode ew-bootstrap-check.yml -e @/root/ew-access.yml
+ansible-playbook -i /root/multinode ew-recover-credentials.yml -e @/root/ew-access.yml
+ansible-playbook -i /root/multinode ew-provision.yml \
+  -e @/root/ew-access.yml -e @/root/ew-private/ew-provision-inputs.yml \
+  -e ew_provision_action=inspect
+```
+
+Place the reviewed evidence at `/root/ew-bootstrap-live-evidence.json` or override
+`ew_bootstrap_reference_file`. Check failure stops the batch; inspect its private
+`ew-bootstrap-check.json` evidence first. The batch reads guests/APIs and saves
+private controller files only: no service changes, application deployment,
+baseline, reset or migration. Review the result before any later apply. Actual
+fresh-image readiness and a second no-op apply remain unexecuted lab tests.
 
 ## One read-only controller collection batch
 
@@ -222,8 +319,8 @@ uses the existing verified OVN metadata transport, without changing networking.
   truncation/unreadable-path indication. Private access-file contents are not printed.
 
 The output is **recovered live configuration**, not proof of the original bootstrap
-commands. `original_bootstrap_sources` stays UNRESOLVED and `adapters_ready` stays
-false; no adapter is generated automatically. Preserve the private evidence and
+commands. `original_bootstrap_sources` stays UNRESOLVED and the historical collector field `adapters_ready` stays
+false; it describes collection, not acceptance of the new reconstructed adapters. Preserve the private evidence and
 inspect candidate original sources locally without pasting credentials. A missing
 tool, stopped/unreachable dependency, unsupported diagnostic command or permission
 failure remains UNAVAILABLE; do not start/install anything just to complete collection.
@@ -235,9 +332,9 @@ configuration/enablement, and the installed dependency/package provenance of the
 netfix image. Any omitted external-auth options, TLS/private-key material, cluster
 units, plugin/auth-backend configuration and config-file ordering must be reviewed
 privately if the observed deployment uses them. Confirm that the existing private
-password inputs match the current services without disclosing values. Only then
-can compatible read-only `check` / idempotent `apply` adapters be authored and
-reviewed against those observed settings; collection alone is not complete bootstrap.
+password inputs match the current services without disclosing values. The supplied reviewed collection now supports the reconstructed adapters above.
+Missing/omitted fields still need private review if used; collection alone is not
+proof that apply was executed or that the baked image contains its dependencies.
 
 ## Exact controller commands (not executed during development)
 
@@ -253,7 +350,7 @@ ansible-playbook -i /root/multinode ew-provision.yml \
 
 Review the displayed run directory's `ew-provision-plan.json`, including current
 SG rules and `missing`. Review code/diff before authorizing apply. Existing
-application verification can be run without the pending bootstrap sources;
+application verification can be run without recovering private bootstrap inputs;
 it creates three smoke-test tasks but does not install files/restart services:
 
 ```bash
@@ -261,16 +358,16 @@ ansible-playbook -i /root/multinode ew-provision.yml \
   -e @/root/ew-access.yml -e ew_provision_action=verify
 ```
 
-Only after the pending original bootstrap/private inputs are supplied and reviewed:
+Only after the reconstructed adapters, private inputs and check results are reviewed and apply is separately authorized:
 
 ```bash
 ansible-playbook -i /root/multinode ew-provision.yml \
-  -e @/root/ew-access.yml -e @/root/ew-provision-inputs.yml \
+  -e @/root/ew-access.yml -e @/root/ew-private/ew-provision-inputs.yml \
   -e ew_provision_action=apply
 cp /var/lib/ovs-to-ovn-ew-provisioning/resources.json /root/ew-provision-before-second.json
 cp /var/lib/ovs-to-ovn-ew-provisioning/readiness.json /root/ew-readiness-before-second.json
 ansible-playbook -i /root/multinode ew-provision.yml \
-  -e @/root/ew-access.yml -e @/root/ew-provision-inputs.yml \
+  -e @/root/ew-access.yml -e @/root/ew-private/ew-provision-inputs.yml \
   -e ew_provision_action=apply
 ansible-playbook -i /root/multinode ew-provision.yml \
   -e @/root/ew-access.yml -e ew_provision_action=inspect
@@ -297,8 +394,7 @@ The inspect step also refuses duplicate resource names/IP ownership and changed
 checkpointed identities. Smoke evidence proves new tasks, same-ID retries and
 preserved results for the original three checkpointed smoke tasks; it is not a
 complete database-content audit or proof about tasks that existed before the
-first provisioning/verification run. Once the original DB bootstrap
-sources are supplied, review their data-preservation behavior and perform a
+first provisioning/verification run. For the reconstructed adapters, review their data-preservation behavior and perform a
 lab-specific existing-row/queue audit; mocks cannot establish preservation of
 all application data.
 
@@ -306,7 +402,7 @@ The overall workflow is explicitly separate from independent provisioning:
 
 ```bash
 ansible-playbook -i /root/multinode ew-migrate.yml \
-  -e @/root/ew-access.yml -e @/root/ew-provision-inputs.yml
+  -e @/root/ew-access.yml -e @/root/ew-private/ew-provision-inputs.yml
 ```
 
 That command **runs migration** and is for later separate authorization, not a
@@ -324,7 +420,8 @@ matching reuse, UUID checkpointing, conflicts, readiness and entrypoint ordering
 Atomic writes/credential refusal and environment generation are also exercised
 against temporary local files. No OpenStack API, lab SSH, service changes, reset
 or migration ran in the coding environment. Real Nova 2.74 placement, netfix
-cloud-init/host-key output, Glance content/properties, namespace access, original
-DB/broker adapters, no-restart reruns and data preservation still require lab
-verification. End-to-end empty-cloud provisioning remains blocked by the pending
-authoritative bootstrap inputs, rather than reported as complete.
+cloud-init/host-key output, Glance content/properties, namespace access, reconstructed
+DB/broker adapters, credential recovery, no-restart reruns and data preservation
+still require lab verification. Original scripts remain unresolved; reviewed
+reconstructed adapters are accepted. Missing baked dependencies or private inputs
+remain real blockers. No end-to-end lab provisioning success is claimed.

@@ -1,0 +1,38 @@
+---
+- name: Work Item 1 - Inspect reconstructed bootstrap compatibility without guest changes
+  hosts: localhost
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  vars_files: [group_vars/all.yml]
+  tasks:
+    - name: Require the reviewed live configuration reference
+      ansible.builtin.assert:
+        that: ew_bootstrap_reference_file | length > 0
+    - name: Allocate private read-only check evidence
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: ew-bootstrap-check-
+      register: ew_bootstrap_check_directory
+    - name: Reuse verified namespace access
+      ansible.builtin.include_tasks: playbooks/ew-config-tasks.yml
+      vars:
+        migration_run_dir: "{{ ew_bootstrap_check_directory.path }}"
+        kolla_inventory_runtime: "{{ ansible_inventory_sources[0] }}"
+    - name: Save non-secret topology for exact identity verification
+      ansible.builtin.copy:
+        dest: "{{ ew_bootstrap_check_directory.path }}/ew-config.json"
+        content: "{{ ew_workload_config | to_nice_json }}"
+        mode: '0600'
+    - name: Stream check-only adapters to verified guests without installation
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/scripts/ew_bootstrap_verify.py') | quote }} {{ ew_bootstrap_check_directory.path | quote }} --reference {{ ew_bootstrap_reference_file | quote }}
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: ew_bootstrap_check_result
+    - name: Display non-secret dependency compatibility results
+      ansible.builtin.debug:
+        msg: "{{ ew_bootstrap_check_result.stdout | from_json }}"
