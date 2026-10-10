@@ -118,6 +118,8 @@ ew_workloads_enabled: false
 # Work Item 1: persistent EW provisioning, separate from validation ownership.
 # Inspect is read-only with respect to the cloud; apply must be requested.
 ew_provision_action: inspect
+# Optional controller-only summary for the Work Item 2 generation journal.
+ew_provision_result_file: ''
 ew_provision_state_dir: /var/lib/ovs-to-ovn-ew-provisioning
 ew_provision_timeout_seconds: 900
 ew_provision_availability_zone: nova
@@ -178,6 +180,29 @@ ew_host_known_hosts: ''
 ew_host_access: {}
 ew_guest_direct_access: {}  # optional verified address keyed by exact server UUID
 ew_namespace_hosts: []  # default network + compute inventory hosts
+
+# Work Item 2: independent reset/rebuild; never starts baseline or migration.
+reset_action: preflight  # preflight / apply / continue / reconcile / accept
+reset_generation: ''  # explicit durable ID; reuse it only for continuation
+reset_lab_confirm: false
+reset_generation_root: /var/lib/ovs-to-ovn-reset
+reset_kolla_venv: /root/venvs/kolla-2024.1
+reset_kolla_inventory: "{{ ansible_inventory_sources[0] }}"
+reset_globals_path: "{{ kolla_globals_path }}"
+reset_config_path: /etc/kolla/config
+reset_passwords_path: /etc/kolla/passwords.yml
+reset_backup_root: "{{ migration_backup_root }}"
+reset_delete_migration_backups: false  # rejected: prior evidence must survive
+reset_snapshot_root: /root/kolla-reset-snapshots
+# Separately reviewed source OVS files; never use current OVN globals or a
+# reduced-network migration checkpoint as a new source baseline.
+reset_source_globals: /root/ew-private/source-kolla/globals.yml
+reset_source_config: /root/ew-private/source-kolla/config
+reset_access_file: /root/ew-access.yml
+reset_credentials_file: /root/ew-private/ew-provision-inputs.yml
+reset_expected_underlay_mtu: 1450
+reset_required_retained_paths: []  # controller, REQUIRED additional artifacts
+reset_host_protected_paths: {}  # inventory host -> REQUIRED additional paths
 ew_baseline_seconds: 120
 ew_maximum_lifetime_seconds: 3600
 ew_drain_seconds: 30

@@ -4,6 +4,13 @@ V2 turns the lab-validated migration into a **single-invocation migration proof 
 
 ## Run
 
+For **Work Item 2 (Việc 2)**, [the reviewed reset/EW rebuild workflow](docs-reset-ew.md)
+provides preflight, an explicitly confirmed destructive generation, continuation
+and final acceptance. `reset-ew-lab.yml` rebuilds OVS, runs EW apply/verify and a
+second unchanged apply. It does not start baseline or migration. The compatibility
+entrypoint `reset-lab-to-ovs.yml` now uses the same guards. Reset/fresh provisioning
+remain pending operator-run lab validation; the pre-reset audit is historical.
+
 From the Kolla deployment host, with `ansible-playbook` and `kolla-ansible` available in the current environment:
 
 ```bash

@@ -59,3 +59,10 @@
     - name: Show provisioning evidence location and outcome
       ansible.builtin.debug:
         msg: "{{ ew_provision_result.stdout | from_json }}"
+
+    - name: Save optional reset-generation provisioning summary after successful readiness
+      ansible.builtin.copy:
+        dest: "{{ ew_provision_result_file }}"
+        content: "{{ ew_provision_result.stdout | from_json | to_nice_json }}"
+        mode: '0600'
+      when: ew_provision_result_file | length > 0

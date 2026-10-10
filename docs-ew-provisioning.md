@@ -85,7 +85,10 @@ A local lock prevents concurrent invocations sharing the provisioning state.
 After a separately authorized destructive reset, archive the old provisioning
 state and explicitly choose a new `ew_provision_state_dir` for the rebuilt cloud;
 do not reuse/erase historical UUID evidence to hide missing resources. Automatic
-reset/state rotation is outside this Work Item.
+reset/state rotation is outside Work Item 1's ordinary rerun interface.
+[Work Item 2](docs-reset-ew.md) now provides explicit generation-aware reset,
+historical archival and separate new state/guest trust. It preserves this
+provisioner's strict same-generation behavior; reset remains unverified in the lab.
 
 SSH uses the existing verified `qrouter-<exact UUID>` namespace transport, without
 FIP or uplink. Existing guests need already trusted host keys. For a genuinely
@@ -247,10 +250,11 @@ sources; already matching files remain untouched. Passwords travel only through
 encrypted SSH stdout into private controller memory; nothing prints passwords
 or credential hashes, and the Ansible task has no_log enabled.
 
-The current `reset-lab-to-ovs.yml` destroys Kolla containers/data, removes
-`/etc/kolla/config` and optionally `/root/ovs-to-ovn-backup`; it does not remove
-`/root/ew-private`. This survival statement assumes its default deletion paths.
-Review any reset overrides/custom scripts and separately back up these files.
+The reviewed Work Item 2 reset checks actual cleanup scopes before destruction,
+protects private inputs/evidence and rejects migration-backup deletion, including
+overrides. It uses retained source configuration and generation-specific state
+and trust. Review [its preflight and commands](docs-reset-ew.md), plus any external
+custom scripts, and separately back up these files.
 The helper rejects repository/SSH/backup destinations. Do not store private inputs
 inside this repository, the migration backup tree or guest/Kolla volumes.
 Controller access IP **117.1.28.69** is a management address, never a workload

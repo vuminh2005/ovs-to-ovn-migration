@@ -124,7 +124,10 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn('no_log: true',(ROOT/'ew-recover-credentials.yml').read_text())
         reset=(ROOT/'reset-lab-to-ovs.yml').read_text()
         self.assertNotIn('/root/ew-private',reset)
-        self.assertIn('reset_backup_root: /root/ovs-to-ovn-backup',reset)
+        self.assertIn('reset-ew-lab.yml',reset)
+        # The reviewed reset now rejects evidence deletion, including overrides.
+        workflow=(ROOT/'scripts/reset_workflow.py').read_text()
+        self.assertIn("require(not spec['delete_backups']",workflow)
 
 
 class AccessTests(unittest.TestCase):
