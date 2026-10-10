@@ -136,7 +136,7 @@ def validated_spec(spec, topology, excluded_root, require_bootstrap=True):
     require(image['visibility'] == 'private' and image['min_disk'] == 10 and image['min_ram'] == 2048,
             'Netfix image must retain private visibility, min_disk=10 and min_ram=2048')
     for kind in (('db', 'mq') if require_bootstrap else ()):
-        require(kind in spec['secrets'], kind + ': supply the original private local password file path')
+        require(kind in spec['secrets'], kind + ': supply a matching private local password file path in the provisioning spec')
         secret = pathlib.Path(spec['secrets'][kind])
         require(secret.is_file() and secret.stat().st_mode & 0o077 == 0,
                 kind + ': existing local password file must be private (0600)')
@@ -641,8 +641,8 @@ print(json.dumps({'missing':missing}))'''
                 if name in self.spec['bootstrap']:
                     self.bootstrap(name, vm, access)
                 self.install(vm, access, {'/opt/ew-provision/probe.py': (APP / 'probe.py').read_bytes()})
-        # Dependencies are prepared first; run the unchanged app installer only
-        # when its source/env/units are absent or stale, never on every rerun.
+        # Dependencies are prepared first; deploy the original app sources with
+        # change-aware handlers, without invoking setup.sh on ordinary reruns.
         vm = catalog['servers']['ew-app']; access = self.transport.access(vm, 'source')
         if deploy:
             result['application_deployment'] = self.deploy_app(vm, access)

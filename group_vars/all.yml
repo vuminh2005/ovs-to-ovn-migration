@@ -54,7 +54,7 @@ binding_poll_interval_seconds: 5
 # required and no permanent tenant resource is left behind.
 validation_ephemeral_network: true
 
-# Guest VM1 tenant ICMP interval.
+# Validation guest ICMP interval; Pair A supplies the tenant PCAP measurement.
 dataplane_probe_interval_seconds: 0.2
 
 # Optional resume target. Leave empty to auto-pick the newest migration run.
@@ -73,8 +73,8 @@ validation_post_cidrs: ['10.232.0.0/24', '10.232.1.0/24']
 validation_timeout_seconds: 300
 validation_probe_lifetime_seconds: 14400
 validation_console_poll_seconds: 2
-# ~65 minutes of VM1 packet/health records at the default 5 packets/s.
-# Nova may retain fewer lines: missing anchored sequences remain UNAVAILABLE.
+# Secondary guest packet/health diagnostics. Nova may retain fewer lines;
+# Pair-A packet metrics use compute PCAP coverage, independently of console tails.
 validation_console_tail_lines: 20000
 
 # Empty image/flavor overrides select automatically prepared reusable defaults.

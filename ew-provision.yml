@@ -4,12 +4,12 @@
   gather_facts: false
   vars_files: [group_vars/all.yml]
   tasks:
-    - name: Require an explicit local provisioning specification
+    - name: Validate provisioning action and configured compute placement
       ansible.builtin.assert:
         that:
           - ew_provision_action in ['inspect', 'apply', 'verify']
           - ew_workload_config.servers | map(attribute='compute_host') | difference(groups['compute'] | default([])) | length == 0
-        fail_msg: See docs-ew-provisioning.md for the required authoritative inputs; inspect is the default action.
+        fail_msg: See docs-ew-provisioning.md for reviewed configuration and private access inputs; inspect is the default action.
 
 - name: Discover source runtime for provisioning only
   ansible.builtin.import_playbook: playbooks/00-bootstrap.yml

@@ -33,8 +33,8 @@ The prepared source is `/root/ew-image-build/ew-ubuntu-24.04-netfix.qcow2`, SHA2
 Its `.sha256` sidecar must agree. Glance requires the same content, qcow2/bare,
 private visibility, min_disk 10, min_ram 2048, os_distro ubuntu, os_version 24.04.
 These controller paths are configurable; they were not accessed from the coding
-workspace. Retain the image, checksum, private inputs, SSH trust and original
-bootstrap source and private inputs **outside every directory/volume removed by a lab reset**.
+workspace. Retain the image, checksum, reviewed adapter/application sources,
+private inputs and SSH trust **outside every directory/volume removed by a lab reset**.
 The provisioner refuses an image or persistent state under the migration backup
 root; the operator must also check any separately authorized reset policy.
 
@@ -46,8 +46,14 @@ user/vhost/server configuration. The original RabbitMQ and PostgreSQL bootstrap
 commands **have not yet been located**. They are no longer a mandatory blocker:
 `workloads/ew-bootstrap/adapter.py` implements two **reconstructed, reviewed**
 adapters from the supplied `ew-bootstrap-live-evidence.json` (2026-10-10).
-These are not recovered original scripts. Actual controller/guest execution
-remains pending; offline tests do not establish lab compatibility. `apply`
+These are not recovered original scripts. The operator reports successful
+bootstrap checks, credential recovery, inspect, application verification and two
+apply runs on the existing controller/lab. The second apply returned
+`changed=false`, preserving resource UUIDs, all six guest/boot identities and the
+three original task receipts. This audit did not repeat those live checks.
+Fresh provisioning from an empty cloud remains unverified; offline regressions
+do not prove that path. The prepared QCOW2's dependencies, including the pinned
+PostgreSQL/RabbitMQ packages, were confirmed by the operator. `apply`
 requires valid private password inputs and SHA256-pinned adapter sources before
 cloud mutation; `inspect` and existing-application `verify` do not require them.
 
@@ -271,7 +277,8 @@ Place the reviewed evidence at `/root/ew-bootstrap-live-evidence.json` or overri
 `ew-bootstrap-check.json` evidence first. The batch reads guests/APIs and saves
 private controller files only: no service changes, application deployment,
 baseline, reset or migration. Review the result before any later apply. Actual
-fresh-image readiness and a second no-op apply remain unexecuted lab tests.
+fresh provisioning remains an unexecuted lab test; the operator has since reported
+the existing-lab no-op second apply described above.
 
 ## One read-only controller collection batch
 

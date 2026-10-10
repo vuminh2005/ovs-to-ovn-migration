@@ -466,13 +466,23 @@ unrestricted tenant security rules are configured in `group_vars/all.yml`.
 Reviewed live evidence now supplies reconstructed PostgreSQL 16/RabbitMQ 3.12
 check/apply adapters in `workloads/ew-bootstrap/adapter.py`. Original bootstrap
 scripts remain unresolved; their absence does not block these reconstructed
-implementations. Baked dependencies and recovered private credentials are still
-required, and real-lab adapter validation remains pending.
+implementations. The operator reports successful controller bootstrap checks,
+credential recovery, inspect, application verification and two applies on the
+existing lab; the second apply returned `changed=false` with UUIDs, six guest
+boots and three original task receipts preserved. These are reported lab results,
+not checks repeated by this repository audit. Fresh provisioning remains unverified.
 The same handover documents a single read-only `ew-collect-bootstrap.yml` batch
 to recover live DB/broker configuration through the existing trusted namespace
 transport. Recovered settings are explicitly distinct from original bootstrap
 source. It also documents check-only adapter validation and separately invoked
 private credential recovery; neither runs as part of migration downtime.
+
+The [pre-reset audit](docs-pre-reset-audit.md) distinguishes these existing paths
+from planned reset integration and documents state/SSH trust generation requirements.
+The six extension Work Items (Việc), listed in the audit, remain separate from
+the numbered migration phases. Work Items 2–6 are not claimed complete by
+provisioning on the existing lab. `ew-migrate.yml` currently starts with
+provisioning, not reset.
 
 EW server/port/network/subnet/router/security-group UUIDs are explicitly excluded
 from validation cleanup and reboot; configured EW names are protected even when
@@ -705,7 +715,7 @@ Run from the deployment host with the Kolla environment activated:
 ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
-This is a POC, with static verification only until tested on your Kolla lab.
+This is a POC; offline checks do not establish readiness for the next Kolla lab run.
 There is no production rollback framework. Partial creation checkpoints are
 saved after each API response; a process crash between resource creation and
 checkpoint persistence can leave an orphan requiring manual inspection of this

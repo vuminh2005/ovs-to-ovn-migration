@@ -1,4 +1,4 @@
-"""Offline Work Item 1 tests. No OpenStack, SSH or guest services are used."""
+"""Offline Work Item 1 tests. No cloud API, SSH or guest services are used."""
 import copy
 import contextlib
 import hashlib
@@ -418,7 +418,7 @@ class ProvisionTests(unittest.TestCase):
                 services = json.loads(data)['services']
                 self.assertEqual(services, {name: name == 'ew-api.service' for name in services})
                 return json.dumps({'actions': ['restart:ew-api.service'] if services.get('ew-api.service') else []})
-            if argv[0] == 'python3' and argv[2] != 'import gunicorn,psycopg2,pika':
+            if argv[0] == 'python3':
                 return json.dumps({'changed': False})
             return ''
         self.p.guest = Mock(side_effect=guest)
@@ -433,7 +433,7 @@ class ProvisionTests(unittest.TestCase):
             if any('EW_BAKED_DEPENDENCIES' in a for a in argv): return json.dumps({'missing': []})
             if argv[:2] == ['python3', '-c'] and 'passwords=' in argv[2]:
                 code = argv[2].replace('/etc/ew-lab', str(directory))
-                output = subprocess.run(['python3', '-c', code, *argv[3:]], text=True, capture_output=True)
+                output = subprocess.run([sys.executable, '-c', code, *argv[3:]], text=True, capture_output=True)
                 if output.returncode: raise RuntimeError(output.stderr)
                 return output.stdout
             if data: return json.dumps({'actions': []})
@@ -466,7 +466,7 @@ class ProvisionTests(unittest.TestCase):
     def test_install_never_overwrites_credentials_and_unchanged_writes_nothing(self):
         secret = self.path / 'existing-secret'; secret.write_bytes(b'a' * 48); secret.chmod(0o600)
         def local_guest(vm, access, argv, data=None, timeout=None):
-            result = subprocess.run(argv, input=data, text=True, capture_output=True)
+            result = subprocess.run([sys.executable, *argv[1:]], input=data, text=True, capture_output=True)
             if result.returncode: raise RuntimeError(result.stderr)
             return result.stdout
         self.p.guest = local_guest
@@ -484,7 +484,7 @@ class ProvisionTests(unittest.TestCase):
 
     def test_normalized_credentials_retain_bytes_mode_and_mtime(self):
         def local_guest(vm, access, argv, data=None, timeout=None):
-            result = subprocess.run(argv, input=data, text=True, capture_output=True)
+            result = subprocess.run([sys.executable, *argv[1:]], input=data, text=True, capture_output=True)
             if result.returncode: raise RuntimeError(result.stderr)
             return result.stdout
         self.p.guest = local_guest
