@@ -103,6 +103,12 @@
         executable: /bin/bash
       when: ew_workloads_enabled | bool
 
+    - name: Anchor independent N-S observers before staging or MTU updates
+      ansible.builtin.include_tasks: ns-operation-tasks.yml
+      vars:
+        ns_action: start
+      when: ns_enabled | bool
+
     - name: Mark phase 04 end
       ansible.builtin.command:
         argv:

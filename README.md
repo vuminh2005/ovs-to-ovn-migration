@@ -31,7 +31,7 @@ KOLLA_OPENRC=/custom/admin-openrc.sh \
 ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
-## Supported scope in v2
+## Supported default scope in v2
 
 V2 intentionally auto-detects and **fails before downtime** if the cloud is outside the paths already validated in the lab:
 
@@ -53,6 +53,23 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
 - OVN metadata agent
 
 This is a deliberate safety property. V2 does **not** claim that FIP/provider/DVR/HA migration is supported merely because the generic OVN components can run.
+
+## Work Item 3: opt-in North–South scope
+
+The disabled-by-default `ns_enabled` extension supports a bounded, explicitly
+verified existing flat/VLAN external network with centralized SNAT and optional
+exact FIP ingress. It adds independent continuous HTTP/optional established TCP
+observations, external-aware takeover/cleanup and separate report acceptance.
+It does not claim lab validation, HA/failover or session preservation.
+
+Read [the scope, input schema, audit and staged operator checklist](docs-north-south.md)
+and [the required-input template](examples/ns-inputs.yml). `ns-inspect.yml` provides
+read-only source inspection before separately authorized preparation/migration.
+No uplink addresses are inferred and no external resources are provisioned.
+Tenant-only runs retain the restrictions above; reset is not a prerequisite.
+Pair A/B/C, EW/TCP and computed tenant MTU gates remain required. External flat/VLAN
+MTUs are preserved. The six-Work-Item plan and Work Items 1/2 acceptance limitations
+remain unchanged.
 
 ## What is now auto-discovered
 

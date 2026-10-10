@@ -61,6 +61,12 @@
         mtu_config_pre_freeze: true
       when: hostvars['localhost']['mtu_pre_freeze_collection'].required | bool
 
+    - name: Require controller external network support independently of tenant MTU calculation
+      ansible.builtin.include_tasks: ns-controller-tasks.yml
+      vars:
+        ns_controller_mode: target
+      when: hostvars['localhost']['ns_enabled'] | default(false) | bool
+
 - name: Phase 07 - Enforce fresh target configuration before control-plane downtime
   hosts: localhost
   any_errors_fatal: true
@@ -79,6 +85,12 @@
               'requested_at': mtu_pre_freeze_collection.requested_at,
               'controllers': dict(groups['control'] | zip(groups['control'] | map('extract', hostvars, 'mtu_pre_freeze_configuration_runtime')))} | to_nice_json }}
       when: mtu_pre_freeze_collection.required | bool
+
+    - name: Refresh exact N-S identities attachments and continuous endpoint readiness before freeze
+      ansible.builtin.include_tasks: ns-operation-tasks.yml
+      vars:
+        ns_action: ready
+      when: hostvars['localhost']['ns_enabled'] | default(false) | bool
 
     - name: Require fresh authoritative target MTU verification with or without validation guests
       ansible.builtin.command:

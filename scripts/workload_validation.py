@@ -276,7 +276,9 @@ def validation_ready(root):
         role_ready = role_ready and read_evidence(root,'existing-post-cutover-readiness.json').get('status')=='PASS'
     if cfg.get('capture_enabled'):
         role_ready = role_ready and read_evidence(root,'tenant-dataplane-probe.json').get('evidence_source')=='compute-tap-pcap'
-    return (role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
+    from ns_measurement import report as ns_report
+    ns_ready=ns_report(root)['status'] in ('PASS','NOT TESTED')
+    return (ns_ready and role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
             workload_pass(read_evidence(root, 'pre-workload-checks.json'), 'geneve') and
             workload_pass(read_evidence(root, 'post-workload-checks.json'), 'geneve') and
             read_evidence(root, 'post-ovn-bindings.json').get('status') == 'PASS' and

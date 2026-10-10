@@ -160,6 +160,13 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Verify independent fresh N-S recovery after restoration without application reconciliation dependency
+      ansible.builtin.include_tasks: ns-operation-tasks.yml
+      vars:
+        ns_action: recovery
+        ns_failure_is_evidence: true
+      when: hostvars['localhost']['ns_enabled'] | default(false) | bool
+
     - name: Observe bounded EW recovery while existing continuous probes remain active
       ansible.builtin.shell: |
         set -euo pipefail

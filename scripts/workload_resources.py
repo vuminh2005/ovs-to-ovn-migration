@@ -55,7 +55,11 @@ def resolve_ew(cloud, cfg, root):
         raise RuntimeError('EW flavor must match the configured 2 vCPU/2048 MB/10 GB lab baseline')
     result['image_flavor'] = dict(image=image.id, flavor=flavor.id, sizing=image_flavor_compatibility(image, flavor))
     router = exact(cloud.network.routers(name=cfg['router']), cfg['router'], 'EW router')
-    if router.external_gateway_info: raise RuntimeError('EW router external gateway is outside supported scope')
+    if router.external_gateway_info:
+        runtime_path=root/'runtime.json'; ns_path=root/'ns-before.json'
+        ns_allowed=(runtime_path.exists() and json.loads(runtime_path.read_text()).get('ns_enabled') is True and
+                    ns_path.exists() and json.loads(ns_path.read_text()).get('router')==router.id)
+        if not ns_allowed: raise RuntimeError('EW external gateway requires the exact reviewed opt-in N-S router snapshot')
     result['router'] = router.id
     for name in sorted({v['network'] for v in cfg['servers']}):
         net = exact(cloud.network.networks(name=name), name, 'EW network')

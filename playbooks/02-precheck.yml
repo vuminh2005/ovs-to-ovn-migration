@@ -77,6 +77,7 @@
       args:
         executable: /bin/bash
       changed_when: false
+      when: not (ns_enabled | bool)
 
     - name: Verify all existing tenant overlay networks are VXLAN in supported scope
       ansible.builtin.shell: |
@@ -89,6 +90,11 @@
       args:
         executable: /bin/bash
       changed_when: false
+      when: not (ns_enabled | bool)
+
+    - name: Inspect exact existing N-S topology and source paths before any workload changes
+      ansible.builtin.include_tasks: ns-config-tasks.yml
+      when: ns_enabled | bool
 
     - name: Mark precheck deployment-host portion complete
       ansible.builtin.debug:
@@ -168,6 +174,12 @@
       ansible.builtin.include_tasks: mtu-config-read-tasks.yml
       vars:
         mtu_config_mode: source
+
+    - name: Require controller external network support independently of tenant MTU calculation
+      ansible.builtin.include_tasks: ns-controller-tasks.yml
+      vars:
+        ns_controller_mode: source
+      when: hostvars['localhost']['ns_enabled'] | default(false) | bool
 
     - name: Verify migration utility and migrate mode
       ansible.builtin.shell: |

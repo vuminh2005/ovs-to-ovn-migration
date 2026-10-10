@@ -1,0 +1,10 @@
+---
+- name: "N-S {{ ns_action }} using immutable run evidence and strict independent transport"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    source {{ openrc_path | quote }}
+    python3 {{ ((ns_scripts_directory | default(playbook_dir + '/../scripts')) + '/ns_workflow.py') | quote }} {{ ns_action | quote }} {{ migration_run_dir | quote }}
+  args:
+    executable: /bin/bash
+  register: ns_operation_result
+  failed_when: ns_operation_result.rc != 0 and not (ns_failure_is_evidence | default(false) | bool)

@@ -1,0 +1,38 @@
+---
+- name: Verify effective flat VLAN physnet and physical MTU support on every controller
+  ansible.builtin.shell: |
+    set -euo pipefail
+    {{ 'docker exec -i neutron_server' if ns_controller_mode == 'source' else '' }} python3 - {{ ns_config | to_json | quote }} {{ ns_controller_mode | quote }} <<'PYCODE'
+    import configparser,json,pathlib,sys,time
+    c=json.loads(sys.argv[1]); p=configparser.ConfigParser(interpolation=None)
+    base=pathlib.Path('/etc/neutron/plugins/ml2' if sys.argv[2]=='source' else '/etc/kolla/neutron-server')
+    path=base/'ml2_conf.ini'
+    assert path.is_file(), 'Missing authoritative ML2 configuration'
+    p.read(path)
+    assert c['type'] in p.get('ml2','type_drivers').replace(' ','').split(','), 'External type driver missing'
+    if c['type']=='flat':
+        assert c['physnet'] in p.get('ml2_type_flat','flat_networks').replace(' ','').split(',') or p.get('ml2_type_flat','flat_networks').strip()=='*', 'Flat physnet not allowed'
+    else:
+        ranges=[x.strip().split(':') for x in p.get('ml2_type_vlan','network_vlan_ranges').split(',')]
+        assert any(r[0]==c['physnet'] and (len(r)==1 or len(r)==3 and int(r[1])<=c['segmentation_id']<=int(r[2])) for r in ranges), 'VLAN range not allowed'
+    neutron=pathlib.Path('/etc/neutron/neutron.conf' if sys.argv[2]=='source' else '/etc/kolla/neutron-server/neutron.conf')
+    assert neutron.is_file(), 'Missing Neutron physical MTU configuration'
+    n=configparser.ConfigParser(interpolation=None); n.read(neutron)
+    limits={x.strip().split(':')[0]:int(x.strip().split(':')[1]) for x in p.get('ml2','physical_network_mtus',fallback='').split(',') if x.strip()}
+    limit=limits.get(c['physnet'],n.getint('DEFAULT','global_physnet_mtu'))
+    assert c['mtu']<=limit, 'External MTU exceeds effective physnet MTU'
+    print(json.dumps(dict(controller_mode=sys.argv[2],physnet=c['physnet'],type=c['type'],physical_mtu_limit=limit,collected_at=time.time())))
+    PYCODE
+  args:
+    executable: /bin/bash
+  register: ns_controller_settings
+  changed_when: false
+  when: hostvars['localhost']['ns_enabled'] | default(false) | bool
+
+- name: Persist controller external-type configuration evidence separately from overlay MTU evidence
+  ansible.builtin.copy:
+    dest: "{{ hostvars['localhost']['migration_run_dir'] }}/ns-controller-{{ ns_controller_mode }}-{{ inventory_hostname }}.json"
+    mode: '0600'
+    content: "{{ ns_controller_settings.stdout }}"
+  delegate_to: localhost
+  when: hostvars['localhost']['ns_enabled'] | default(false) | bool

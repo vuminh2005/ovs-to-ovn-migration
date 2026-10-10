@@ -234,3 +234,21 @@ ew_workload_config:
     api: {host: 192.168.101.11, port: 8080}
     postgresql: {host: 192.168.102.12, port: 5432}
     rabbitmq: {host: 192.168.102.11, port: 5672}
+
+# Work Item 3: existing, verified centralized external topology only. No addresses
+# or resource UUIDs are guessed. See docs-north-south.md and examples/ns-inputs.yml.
+ns_enabled: false
+ns_config: {}  # required schema_version=1 topology and controlled endpoints when enabled
+# Independent transport configuration; reuse strict EW namespace access without
+# changing EW ownership, guest trust or measurement actors. No guest packages installed.
+ns_transport:
+  inventory: "{{ kolla_inventory_runtime }}"
+  namespace_hosts: "{{ groups['network'] + groups['compute'] }}"
+  guest_user: "{{ ew_guest_ssh_user }}"
+  guest_key: "{{ ew_guest_ssh_key }}"
+  guest_known_hosts: "{{ ew_guest_known_hosts }}"
+  host_key: "{{ ew_host_ssh_key }}"
+  host_known_hosts: "{{ ew_host_known_hosts }}"
+  host_access: "{{ ew_host_access }}"
+  direct_access: "{{ ew_guest_direct_access }}"
+  transport_timeout: "{{ ew_transport_timeout_seconds }}"

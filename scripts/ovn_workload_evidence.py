@@ -17,7 +17,7 @@ def value(item):
 
 
 def query(tool,db,table,columns,condition,operation='find'):
-    command=['docker','exec','ovn_northd',tool,'--timeout=10','--db='+db,'--format=json','--columns='+columns,operation,table,condition]
+    command=['docker','exec','ovn_northd',tool,'--timeout=10','--db='+db,'--format=json','--columns='+columns,operation,table]+([condition] if condition else [])
     try:
         output=subprocess.check_output(command,text=True,stderr=subprocess.PIPE)
     except subprocess.CalledProcessError as exc:

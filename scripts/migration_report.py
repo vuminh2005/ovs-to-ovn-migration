@@ -3,6 +3,7 @@ import json, pathlib, sys
 from workload_validation import validation_ready
 from ew_workload import report_evidence
 from ew_tcp_experiment import report as tcp_report
+from ns_measurement import report as ns_report
 from ew_workload import metrics as ew_metrics
 from phase_schema import phase_measurements, schema_version, timestamp, TOTAL_SCOPES, PHASE_SCOPE
 root = pathlib.Path(sys.argv[1])
@@ -175,6 +176,12 @@ if report['east_west_workload']['enabled'] and report['east_west_workload']['sta
     report['result']='MIGRATED_VALIDATION_INCOMPLETE'
 if report['east_west_tcp_experiment']['enabled'] and report['east_west_tcp_experiment']['status']!='PASS':
     report['result']='MIGRATED_VALIDATION_INCOMPLETE'
+report['north_south']=ns_report(root)
+report['north_south_finalization']=evidence('ns-finalization.json') or {'status':'NOT TESTED' if not report['north_south']['enabled'] else 'UNAVAILABLE'}
+report['north_south_finalization_failure']=evidence('ns-finalize-failure.json')
+if report['north_south']['enabled'] and report['north_south']['status']!='PASS':
+    report['result']='MIGRATED_VALIDATION_INCOMPLETE'
+report['limitations'][1]=('Opt-in N-S covers one reviewed flat/VLAN external segment with centralized SNAT and optional exact FIP; direct provider instances, DVR, L3 HA and failover remain unsupported. No conntrack/session preservation claim.')
 report['limitations'][0]='Pair-A metrics require a continuous drop-free compute-tap PCAP, endpoints and request cadence; gaps or unrecovered loss yield UNAVAILABLE. Console packet history is secondary only. PortBinding convergence remains separate.'
 (root/'migration-report.json').write_text(json.dumps(report,indent=2,sort_keys=True))
 lines=[
@@ -241,6 +248,11 @@ for mode,session in ew.get('sessions',{}).items():
                       ('source-boundary diagnostic; ' if probe['source_boundary_diagnostic'] else '')+
                       'sampled failure windows='+json.dumps(probe['windows'])]
     lines += ['EW collection: '+json.dumps(session['collection'],sort_keys=True)]
+lines += ['North-South independent validation: '+report['north_south']['status']]
+for direction,ns in report['north_south'].get('directions',{}).items():
+    lines += [f"N-S {direction} fresh HTTP: {ns['status']}; coverage={ns['coverage']}; attempts={ns['attempts']}; successes={ns['successes']}; failures={ns['failures']}",
+              f"N-S {direction} longest recovered sampled outage: "+(str(ns['longest_recovered_outage_seconds'])+' s' if ns['status']=='PASS' else 'UNAVAILABLE')]
+lines += ['North-South independent observations: '+json.dumps(report['north_south'],sort_keys=True)]
 lines += ['Dedicated two-port TCP experiment: '+json.dumps(report['east_west_tcp_experiment'],sort_keys=True)]
 lines += [f'Phase marker schema: {phase_version}', f'Phase timing scope: {PHASE_SCOPE}', 'Canonical phase timings:']
 lines += [f"Phase {row['number']} {row['name']} ({row['filename']}): " +

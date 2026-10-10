@@ -1,0 +1,29 @@
+---
+- name: Require exact bounded OVN gateway placement before source inspection
+  ansible.builtin.assert:
+    that:
+      - "'ovn-controller-network' in groups"
+      - "groups['ovn-controller-network'] | sort == groups['network'] | sort"
+      - "groups['ovn-controller-network'] | intersect(groups['compute']) | length == 0"
+    fail_msg: N-S requires the intended network hosts as OVN gateway chassis; no provider compute expansion.
+  when: ns_enabled | bool
+
+- name: Persist explicit existing N-S topology without guessing external values
+  ansible.builtin.copy:
+    dest: "{{ migration_run_dir }}/ns-config.json"
+    mode: '0600'
+    content: "{{ ns_config | combine({'transport': ns_transport, 'hosts': ((groups['network'] + groups['compute']) | unique | list)}) | to_nice_json }}"
+  when: ns_enabled | bool
+
+- name: Record only reviewed source bridge settings for N-S Kolla verification
+  ansible.builtin.copy:
+    dest: "{{ migration_run_dir }}/source-globals-ns.json"
+    mode: '0600'
+    content: "{{ {'neutron_bridge_name': source_kolla_globals.get('neutron_bridge_name'), 'neutron_external_interface': source_kolla_globals.get('neutron_external_interface'), 'enable_neutron_provider_networks': source_kolla_globals.get('enable_neutron_provider_networks', false)} | to_nice_json }}"
+  when: ns_enabled | bool
+
+- name: Fail before staging on unreviewed N-S scope or inconsistent existing resources
+  ansible.builtin.include_tasks: ns-operation-tasks.yml
+  vars:
+    ns_action: inspect
+  when: ns_enabled | bool
