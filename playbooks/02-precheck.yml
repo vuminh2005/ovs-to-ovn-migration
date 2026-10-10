@@ -230,7 +230,9 @@
         python3 {{ (playbook_dir + '/../scripts/workload_resources.py') | quote }} {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
-      when: ew_workloads_enabled | bool
+      when:
+        - ew_workloads_enabled | bool
+        - not (ew_provisioning_precheck | default(false) | bool)
 
     - name: Mark phase 02 end
       ansible.builtin.command:

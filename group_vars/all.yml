@@ -115,6 +115,48 @@ validation_compute_hosts:
 # strict runtime discovery for an EW migration run; the general POC can still
 # run without requiring this separate application topology.
 ew_workloads_enabled: false
+# Work Item 1: persistent EW provisioning, separate from validation ownership.
+# Inspect is read-only with respect to the cloud; apply must be requested.
+ew_provision_action: inspect
+ew_provision_state_dir: /var/lib/ovs-to-ovn-ew-provisioning
+ew_provision_timeout_seconds: 900
+ew_provision_availability_zone: nova
+# Optional complete JSON override. Defaults below are confirmed creation-log
+# values, checked against live resources when this playbook is explicitly run.
+ew_provision_spec_file: ''
+ew_provision_secret_files: {}
+ew_provision_bootstrap_sources: {}
+ew_provision_spec:
+  image:
+    path: /root/ew-image-build/ew-ubuntu-24.04-netfix.qcow2
+    sha256: 822f3f2e3c988c7560609cdf0469f708ff3f7c6ab678d3268c8809b8b93501a8
+    sha256_file: /root/ew-image-build/ew-ubuntu-24.04-netfix.qcow2.sha256
+    visibility: private
+    min_disk: 10
+    min_ram: 2048
+    properties: {os_distro: ubuntu, os_version: '24.04'}
+  networks:
+    ew-net-a:
+      subnet: ew-subnet-a
+      cidr: 192.168.101.0/24
+      gateway_ip: 192.168.101.1
+      allocation_pools: [{start: 192.168.101.100, end: 192.168.101.199}]
+      dns_nameservers: []
+      host_routes: []
+    ew-net-b:
+      subnet: ew-subnet-b
+      cidr: 192.168.102.0/24
+      gateway_ip: 192.168.102.1
+      allocation_pools: [{start: 192.168.102.100, end: 192.168.102.199}]
+      dns_nameservers: []
+      host_routes: []
+  security_group: ew-sg
+  keypair: ew-key
+  keypair_public_key: /root/.ssh/ew-lab.pub
+  # Pending authoritative inputs: private local password-file paths and the
+  # original PostgreSQL/RabbitMQ bootstrap adapters, never inline secrets.
+  secrets: "{{ ew_provision_secret_files }}"
+  bootstrap: "{{ ew_provision_bootstrap_sources }}"
 # Existing SSH access only: explicitly provide trusted keys/known-hosts paths.
 # Host connection addresses/users/keys normally come from the Kolla inventory.
 ew_guest_ssh_user: ubuntu

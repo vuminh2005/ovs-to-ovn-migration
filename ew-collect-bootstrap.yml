@@ -1,0 +1,39 @@
+---
+- name: Work Item 1 - Collect bootstrap evidence through trusted namespace SSH
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files: [group_vars/all.yml]
+  tasks:
+    - name: Allocate a private controller evidence directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: ew-bootstrap-collection-
+      register: ew_collection_directory
+
+    - name: Reuse the existing verified EW transport configuration
+      ansible.builtin.include_tasks: playbooks/ew-config-tasks.yml
+      vars:
+        migration_run_dir: "{{ ew_collection_directory.path }}"
+        kolla_inventory_runtime: "{{ ansible_inventory_sources[0] }}"
+
+    - name: Save the non-secret authoritative EW topology for exact discovery
+      ansible.builtin.copy:
+        dest: "{{ ew_collection_directory.path }}/ew-config.json"
+        content: "{{ ew_workload_config | to_nice_json }}"
+        mode: '0600'
+
+    - name: Read current catalog and guest configuration without deployment
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/scripts/ew_collect_bootstrap.py') | quote }} {{ ew_collection_directory.path | quote }}
+      args:
+        executable: /bin/bash
+      register: ew_collection_result
+      changed_when: false
+
+    - name: Show only the private evidence path and collection availability
+      ansible.builtin.debug:
+        msg: "{{ ew_collection_result.stdout | from_json }}"

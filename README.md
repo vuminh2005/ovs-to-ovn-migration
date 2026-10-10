@@ -458,9 +458,23 @@ external/non-owned and is separate from `validation-resources.json`.
 | ew-db | 192.168.102.12 | compute2 | ew-net-b |
 | ew-client-b | 192.168.102.13 | compute2 | ew-net-b |
 
+Work Item 1 adds a separate [persistent EW provisioning workflow](docs-ew-provisioning.md):
+`ew-provision.yml` inspects by default, `apply` provisions before measurement,
+and `ew-migrate.yml` imports provisioning → baseline → the existing migration.
+The confirmed netfix image, tenant subnet/gateway/pool settings and original
+unrestricted tenant security rules are configured in `group_vars/all.yml`.
+PostgreSQL/RabbitMQ bootstrap sources remain pending; full application
+provisioning is blocked until those authoritative inputs are supplied. No
+replacement database/broker initialization is invented.
+The same handover documents a single read-only `ew-collect-bootstrap.yml` batch
+to recover live DB/broker configuration through the existing trusted namespace
+transport. Recovered settings are explicitly distinct from original bootstrap
+source and do not automatically satisfy the pending adapter requirement.
+
 EW server/port/network/subnet/router/security-group UUIDs are explicitly excluded
 from validation cleanup and reboot; configured EW names are protected even when
-catalog discovery is disabled. No EW rebuild path is implemented. Enabling either
+catalog discovery is disabled. Provisioning never deletes/rebuilds existing EW
+resources or rotates their credentials. Enabling either
 Pair-B reboot option never opts EW workloads into remediation.
 
 `validation_compute_hosts.fresh` defaults to `[compute1, compute2]`: Pair C requests
