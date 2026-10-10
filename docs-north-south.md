@@ -204,6 +204,12 @@ access; local raw evidence remains if that access is unavailable.
 
 ## Staged controller checklist — prepared, not executed
 
+For executable source discovery and the separate allocation/configuration/traffic
+checks, use [Work Item 4 preparation](docs-north-south-preparation.md). In particular,
+`ns-inspect.yml` checks configured source resources and mappings; it neither proves
+HTTP/SNAT reachability nor starts observers. OVS preparation requires no OVN takeover
+evidence. Keep unresolved inputs unresolved until the operator supplies evidence.
+
 1. **Information:** confirm uplink assignment, physical/VLAN mode/tag, physnet,
    external subnet/gateway/pool/MTU, real upstream routes, nested MAC/IP forwarding,
    exact existing router/gateway/FIP/guest ports, all gateway hostnames/MACs and

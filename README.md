@@ -71,6 +71,11 @@ Pair A/B/C, EW/TCP and computed tenant MTU gates remain required. External flat/
 MTUs are preserved. The six-Work-Item plan and Work Items 1/2 acceptance limitations
 remain unchanged.
 
+**Work Item 4 (Việc 4)** is [source-path preparation on the existing OVS lab](docs-north-south-preparation.md).
+Start with its read-only discovery batch; allocation-dependent configuration stays
+blocked until the uplinks, upstream permissions and controlled endpoints are confirmed.
+Preparation is separate from Work Item 5 calibration and Work Item 6 migration.
+
 ## What is now auto-discovered
 
 V1 required several environment values. V2 derives them automatically:
