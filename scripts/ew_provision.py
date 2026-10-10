@@ -39,6 +39,13 @@ def same(resource, expected, kind):
                 f'{kind} {resource.name}: mismatched {key}; expected {value!r}')
 
 
+def security_group_rule_evidence(rule):
+    """Keep the evidence's Neutron field name, using the SDK attribute explicitly."""
+    return dict(ethertype=rule.ether_type, **{key: getattr(rule, key, None) for key in
+                ('direction', 'protocol', 'remote_ip_prefix', 'remote_group_id',
+                 'port_range_min', 'port_range_max')})
+
+
 def file_md5(path):
     value = hashlib.md5()
     with pathlib.Path(path).open('rb') as stream:
@@ -181,11 +188,11 @@ class Provisioner:
         # Only tenant CIDRs, never external access. Do not start any TCP listener.
         rules = []
         for net in self.spec['networks'].values():
-            rules.append(dict(direction='ingress', ethertype='IPv4', protocol='icmp',
+            rules.append(dict(direction='ingress', ether_type='IPv4', protocol='icmp',
                               remote_ip_prefix=net['cidr'], port_range_min=None, port_range_max=None))
-            rules.extend(dict(direction='ingress', ethertype='IPv4', protocol=protocol, remote_ip_prefix=net['cidr'],
+            rules.extend(dict(direction='ingress', ether_type='IPv4', protocol=protocol, remote_ip_prefix=net['cidr'],
                               port_range_min=None, port_range_max=None) for protocol in ('tcp', 'udp'))
-        rules.extend(dict(direction='egress', ethertype=family, protocol=None, remote_ip_prefix=None,
+        rules.extend(dict(direction='egress', ether_type=family, protocol=None, remote_ip_prefix=None,
                           port_range_min=None, port_range_max=None) for family in ('IPv4', 'IPv6'))
         return rules
 
@@ -195,7 +202,7 @@ class Provisioner:
         ports = {22, *[e['port'] for e in self.cfg['endpoints'].values()], *self.access_cfg['tcp_ports']}
         def covers(rule, cidr, protocol, port=None):
             actual = getattr(rule, 'protocol', None)
-            return (rule.direction == 'ingress' and rule.ethertype == 'IPv4' and
+            return (rule.direction == 'ingress' and rule.ether_type == 'IPv4' and
                     not getattr(rule, 'remote_group_id', None) and
                     actual in (None, protocol, {'tcp': '6', 'icmp': '1'}[protocol]) and
                     (not rule.remote_ip_prefix or ipaddress.ip_network(cidr).subnet_of(ipaddress.ip_network(rule.remote_ip_prefix))) and
@@ -205,7 +212,7 @@ class Provisioner:
         return (all(any(covers(r, net['cidr'], 'icmp') for r in existing) and
                     all(any(covers(r, net['cidr'], 'tcp', port) for r in existing) for port in ports)
                     for net in self.spec['networks'].values()) and
-                all(any(r.direction == 'egress' and r.ethertype == family and r.protocol is None and
+                all(any(r.direction == 'egress' and r.ether_type == family and r.protocol is None and
                         r.remote_ip_prefix in (None, '0.0.0.0/0' if family == 'IPv4' else '::/0') and
                         not getattr(r, 'remote_group_id', None) for r in existing)
                     for family in ('IPv4', 'IPv6')))
@@ -692,8 +699,7 @@ def main():
         found, missing = provision.plan(virtual)
         save(args.root / 'ew-provision-plan.json', dict(status='PASS', missing=missing,
              resources={k: r.id if r else None for k, r in found.items()}, source_mtu=provision.mtu,
-             security_group_rules=[{k: getattr(r, k, None) for k in ('direction', 'ethertype', 'protocol',
-                 'remote_ip_prefix', 'remote_group_id', 'port_range_min', 'port_range_max')}
+             security_group_rules=[security_group_rule_evidence(r)
                  for r in provision.cloud.network.security_group_rules(security_group_id=found['security_group:' + spec['security_group']].id)]
                  if found.get('security_group:' + spec['security_group']) else []))
         if args.action == 'apply': provision.apply(found)

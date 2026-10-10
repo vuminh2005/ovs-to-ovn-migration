@@ -1,6 +1,8 @@
 """Offline Work Item 1 tests. No OpenStack, SSH or guest services are used."""
 import copy
+import contextlib
 import hashlib
+import io
 import json
 import pathlib
 import struct
@@ -13,6 +15,11 @@ from types import SimpleNamespace as NS
 from unittest.mock import Mock, patch
 
 import yaml
+
+try:
+    from openstack.network.v2.security_group_rule import SecurityGroupRule
+except ImportError:
+    SecurityGroupRule = None
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
@@ -153,6 +160,101 @@ class ProvisionTests(unittest.TestCase):
         for rule in self.cloud.rows['rule']:
             if rule.protocol in ('tcp', 'udp'): rule.port_range_min = 1; rule.port_range_max = 65535
         self.assertTrue(self.p.rules_ready(self.cloud.rows['rule']))
+
+    def sdk_rules(self):
+        # Neutron response names, deliberately independent of rules() and the
+        # evidence serializer. Real resources expose ether_type, not ethertype.
+        sg = self.cloud.rows['security_group'][0]
+        rows = [dict(direction='ingress', ethertype='IPv4', protocol=protocol,
+                     remote_ip_prefix=net['cidr'])
+                for net in self.spec['networks'].values() for protocol in ('icmp', 'tcp', 'udp')]
+        rows += [dict(direction='egress', ethertype=family, protocol=None, remote_ip_prefix=None)
+                 for family in ('IPv4', 'IPv6')]
+        return [SecurityGroupRule(id=str(uuid.uuid4()), security_group_id=sg.id,
+                    port_range_min=None, port_range_max=None, remote_group_id=None, **row) for row in rows]
+
+    @unittest.skipIf(SecurityGroupRule is None, 'openstacksdk required for real security-group resources')
+    def test_sdk_unrestricted_ingress_and_both_egress_families_are_required(self):
+        self.create(); rules = self.sdk_rules()
+        self.assertFalse(hasattr(rules[0], 'ethertype'))
+        self.assertTrue(self.p.rules_ready(rules))
+        for family in ('IPv4', 'IPv6'):
+            with self.subTest(missing_egress=family):
+                self.assertFalse(self.p.rules_ready([r for r in rules if not
+                    (r.direction == 'egress' and r.ether_type == family)]))
+        for r in rules:
+            if r.protocol == 'tcp': r.port_range_min = 22; r.port_range_max = 22
+        self.assertFalse(self.p.rules_ready(rules))
+        rules = self.sdk_rules()
+        for r in rules:
+            if r.direction == 'ingress': r.ether_type = 'IPv6'
+        self.assertFalse(self.p.rules_ready(rules))
+
+    @unittest.skipIf(SecurityGroupRule is None, 'openstacksdk required for real security-group resources')
+    def test_sdk_existing_unrestricted_group_reused_without_mutation(self):
+        self.create(); self.cloud.rows['rule'] = self.sdk_rules()
+        self.p.state['created'] = {}  # Existing group, not owned by this invocation.
+        before = [r.to_dict() for r in self.cloud.rows['rule']]; count = len(self.cloud.created)
+        self.cloud.network.create_security_group_rule = Mock(side_effect=AssertionError('Unexpected rule creation'))
+        found, missing = self.p.plan(10 * 1024**3)
+        self.assertEqual(missing, [])
+        self.p.changed = False; self.p.apply(found)
+        self.assertFalse(self.p.changed)
+        self.cloud.network.create_security_group_rule.assert_not_called()
+        self.assertEqual(len(self.cloud.created), count)
+        self.assertEqual([r.to_dict() for r in self.cloud.rows['rule']], before)
+
+    @unittest.skipIf(SecurityGroupRule is None, 'openstacksdk required for real security-group resources')
+    def test_sdk_rule_creation_serialization_and_partial_retry_no_duplicates(self):
+        bodies = []
+        def create_rule(**attrs):
+            self.assertIn('ether_type', attrs); self.assertNotIn('ethertype', attrs)
+            pending = SecurityGroupRule(**attrs)
+            body = pending._prepare_request(requires_id=False, prepend_key=True).body['security_group_rule']
+            self.assertEqual(body['ethertype'], attrs['ether_type']); self.assertNotIn('ether_type', body)
+            self.assertIsNone(body['port_range_min']); self.assertIsNone(body['port_range_max'])
+            bodies.append(body)
+            row = SecurityGroupRule(id=str(uuid.uuid4()), **body)
+            self.cloud.rows['rule'].append(row); self.cloud.created.append(('rule', row))
+            return row
+        create = self.cloud.network.create_security_group_rule = Mock(side_effect=create_rule)
+        self.create()
+        self.assertEqual(create.call_count, 8)
+        self.assertEqual({b['ethertype'] for b in bodies if b['direction'] == 'egress'}, {'IPv4', 'IPv6'})
+        self.assertEqual({b['protocol'] for b in bodies if b['direction'] == 'ingress'}, {'icmp', 'tcp', 'udp'})
+        # Interrupted owned-group initialization: only the missing rule is added.
+        self.cloud.rows['rule'] = [r for r in self.cloud.rows['rule'] if r.ether_type != 'IPv6']
+        create.reset_mock(); self.p.apply(self.p.plan(10 * 1024**3)[0])
+        create.assert_called_once_with(security_group_id=self.cloud.rows['security_group'][0].id,
+            direction='egress', ether_type='IPv6', protocol=None, remote_ip_prefix=None,
+            port_range_min=None, port_range_max=None)
+        self.assertEqual(len(self.cloud.rows['rule']), 8)
+        create.reset_mock(); self.p.apply(self.p.plan(10 * 1024**3)[0]); create.assert_not_called()
+
+    @unittest.skipIf(SecurityGroupRule is None, 'openstacksdk required for real security-group resources')
+    def test_sdk_inspect_plan_preserves_neutron_ethertype_evidence(self):
+        self.create(); self.cloud.rows['rule'] = self.sdk_rules()
+        spec = self.path / 'spec.json'; spec.write_text(json.dumps(self.spec))
+        argv = ['ew_provision.py', 'inspect', str(self.root), '--spec', str(spec),
+                '--state', str(self.state), '--excluded-root', str(self.path / 'backups')]
+        count = len(self.cloud.created)
+        with patch.object(sys, 'argv', argv), patch.object(ew, 'validated_spec', return_value=10 * 1024**3), \
+             patch('openstack.connect', return_value=self.cloud), contextlib.redirect_stdout(io.StringIO()):
+            ew.main()
+        evidence = json.loads((self.root / 'ew-provision-plan.json').read_text())
+        self.assertEqual(evidence['missing'], [])
+        rules = evidence['security_group_rules']; self.assertEqual(len(rules), 8)
+        self.assertEqual([r['ethertype'] for r in rules], [r.ether_type for r in self.cloud.rows['rule']])
+        for r, observed in zip(rules, self.cloud.rows['rule']):
+            self.assertNotIn('ether_type', r)
+            self.assertEqual(r, dict(ethertype=observed.ether_type, direction=observed.direction,
+                protocol=observed.protocol, remote_ip_prefix=observed.remote_ip_prefix,
+                remote_group_id=None, port_range_min=None, port_range_max=None))
+        self.assertEqual(len(self.cloud.created), count)
+
+    def test_rule_evidence_does_not_default_mismatched_sdk_attribute(self):
+        with self.assertRaises(AttributeError):
+            ew.security_group_rule_evidence(NS(ethertype='IPv4'))
 
     def test_checkpoint_precedes_active_wait_for_new_and_recovered(self):
         def check(server):
