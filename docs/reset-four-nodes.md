@@ -84,12 +84,12 @@ overrides nằm trong `/etc/kolla/config/neutron/`. Transport MTU 1450, VXLAN
 tenant MTU 1400, target Geneve MTU 1392. Không tăng MTU của NIC outer cloud.
 
 UUID image/flavor thay đổi sau mỗi lần destroy. File `migration-lab.yml` trong
-snapshot mới ghi UUID hiện tại cùng `target_geneve_mtu: 1392`. Sau khi phần
-migration 4 node được sửa xong, dùng file của lần reset mới nhất:
+snapshot mới ghi UUID hiện tại cùng `target_geneve_mtu: 1392` để lưu bằng chứng.
+Bản migration A/B/C/D đã có mặc định cho lab này và tìm image/flavor theo tên;
+không cần truyền file snapshot đó:
 
 ```bash
-ansible-playbook -i /root/multinode migrate-to-ovn.yml \
-    -e @/root/kolla-reset-snapshots/<UTC-run-id>/migration-lab.yml
+ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
 Không dùng lại UUID hay override file của cloud đã bị destroy.

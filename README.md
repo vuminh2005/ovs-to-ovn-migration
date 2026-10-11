@@ -31,17 +31,16 @@ V2 turns the lab-validated migration into a **single-invocation migration proof 
 From the Kolla deployment host, with `ansible-playbook` and `kolla-ansible` available in the current environment:
 
 ```bash
-ansible-playbook \
-  -i /root/multinode \
-  migrate-to-ovn.yml -e @migration-lab.yml
+ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
 Image and flavor preparation is automatic. The deployment host needs outbound HTTPS
 to `cloud-images.ubuntu.com` only when the managed Ubuntu image is absent.
 Existing image/flavor overrides remain optional; no manual upload or flavor creation is required.
-The supplied `migration-lab.yml` selects reusable image/flavor names without stale
-UUIDs and sets Geneve MTU 1392 for the verified 1450-byte nested tunnel transport.
-For another lab, choose an appropriate MTU profile before running.
+`group_vars/all.yml` contains the defaults for this four-node nested lab:
+Geneve MTU 1392, automatic Pair D, and guarded Pair-B remediation enabled both
+before and after cutover. No `migration-lab.yml` or extra variables are required.
+For another lab, configure an appropriate validation target MTU before running.
 
 If non-standard Kolla file locations are used, environment overrides are available without editing the repo:
 
@@ -347,7 +346,8 @@ Configuration in `group_vars/all.yml`:
 | `validation_console_tail_lines` | Bounded console tail per API call; default 20,000 |
 | `dataplane_probe_interval_seconds` | Guest ICMP interval |
 | `validation_capture_directory` | Persistent compute evidence base; default `/var/lib/ovn-migration-validation` |
-| `validation_allow_post_cutover_guest_reboot` | Independent explicit Pair-B post-cutover opt-in; default false |
+| `validation_allow_pre_cutover_guest_reboot` | Guarded, owned Pair-B pre-cutover remediation; default true for this lab |
+| `validation_allow_post_cutover_guest_reboot` | Independent guarded, owned Pair-B post-cutover remediation; default true for this lab |
 | `validation_post_cutover_dhcp_timeout_seconds` | Automatic OVN DHCP convergence bound; default 180 |
 
 Use an Ubuntu cloud image containing cloud-init, Python3, ping, iproute2,
@@ -526,7 +526,7 @@ through Neutron `extra_dhcp_opts`. Caracal supports these options in both its
 [dnsmasq agent](https://github.com/openstack/neutron/blob/24.0.0/neutron/agent/linux/dhcp.py)
 and [OVN option mapping](https://github.com/openstack/neutron/blob/24.0.0/neutron/common/ovn/constants.py).
 No database SQL, forced lease renewal or unrelated tenant DHCP configuration is used.
-Guest reboot is limited to the opt-in, validation-owned Pair-B remediation below. Short T2 bounds broadcast rebinding when the old OVS DHCP
+Guest reboot is limited to the guarded, validation-owned Pair-B remediation below. Short T2 bounds broadcast rebinding when the old OVS DHCP
 server disappears; T1 alone would keep renewing against that old server.
 
 The root guest service passively observes guest DHCP renewal REQUESTs and their
@@ -568,7 +568,7 @@ The guard
 runs before `07-migrate-db.yml` freezes Neutron or changes the database. It writes
 `dhcp-precutover-preparation.json`; failure includes a reason and stops the run.
 Defaults are `validation_dhcp_t1_seconds: 30`, `validation_dhcp_t2_seconds: 60`,
-`validation_dhcp_convergence_timeout: 180`, and `target_geneve_mtu: 1442`.
+`validation_dhcp_convergence_timeout: 180`, and `target_geneve_mtu: 1392`.
 For a different underlay MTU, configure the validation target to match the existing
 per-network VXLAN-minus-overhead MTU calculation. There are no long fixed sleeps.
 
@@ -593,12 +593,13 @@ resume does not fabricate preparation or silently reboot them.
 
 ## Pair-B controlled pre-cutover remediation and checkpoints
 
-`validation_allow_pre_cutover_guest_reboot` defaults to **false**. To permit the
-planned reboot of validation-owned Pair B on a fresh lab run:
+`validation_allow_pre_cutover_guest_reboot` defaults to **true** for this lab.
+Reboot is still conditional on all remediation guards below. To disable only
+pre-cutover remediation on a fresh lab run:
 
 ```bash
 ansible-playbook -i /root/multinode migrate-to-ovn.yml \
-  -e validation_allow_pre_cutover_guest_reboot=true
+  -e validation_allow_pre_cutover_guest_reboot=false
 ```
 
 After the bounded automatic attempt fails, a guest is REBOOT_REQUIRED only if
@@ -702,13 +703,11 @@ plus an exact SB Port_Binding with chassis and `up=true`. Missing/ambiguous dist
 ports, incorrect DHCP options/bindings, changed identity or generic metadata failure
 with an already-correct route cannot authorize reboot.
 
-`validation_allow_post_cutover_guest_reboot: false` is independent of the pre-cutover
-opt-in. To allow both narrowly owned lab remediations on a fresh run:
+`validation_allow_post_cutover_guest_reboot: true` is independent of the pre-cutover
+setting. Both guarded lab remediations are enabled by the default invocation:
 
 ```bash
-ansible-playbook -i /root/multinode migrate-to-ovn.yml \
-  -e validation_allow_pre_cutover_guest_reboot=true \
-  -e validation_allow_post_cutover_guest_reboot=true
+ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
 Each SOFT reboot is sequential and journaled before Nova is called. New boot,

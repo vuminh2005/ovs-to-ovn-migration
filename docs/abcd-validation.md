@@ -63,36 +63,30 @@ source /root/venvs/kolla-2024.1/bin/activate
 source /etc/kolla/admin-openrc.sh
 cd /root/ovn-migration-abcd/ovs-to-ovn-migration
 
-ansible-playbook -i /root/multinode migrate-to-ovn.yml \
-    -e @migration-lab.yml --syntax-check
+ansible-playbook -i /root/multinode migrate-to-ovn.yml --syntax-check
 ```
 
-File profile đi kèm giữ D bật và để `validation_image`/`validation_flavor` rỗng:
-phase 03 tìm `ovn-validation-ubuntu-24.04` và `ovn-validation.small` đang có.
-Không dùng file `migration-lab.yml` chứa UUID cũ ở repo trước.
+Không cần file `migration-lab.yml`. `group_vars/all.yml` đặt sẵn Geneve MTU 1392,
+D bật và hai cờ cho phép remediation Pair B bằng `true`. Khi không có override
+image/flavor qua biến môi trường, phase 03 tìm `ovn-validation-ubuntu-24.04` và
+`ovn-validation.small` đang có; không dùng UUID từ lần reset cũ.
 
 Chạy đầy đủ A/B/C/D cùng một lượt:
 
 ```bash
-set -o pipefail
-migration_log="/root/ovn-migration-abcd-$(date -u +%Y%m%dT%H%M%SZ).log"
-ansible-playbook -i /root/multinode migrate-to-ovn.yml \
-    -e @migration-lab.yml \
-    -e validation_allow_pre_cutover_guest_reboot=true \
-    -e validation_allow_post_cutover_guest_reboot=true \
-    2>&1 | tee "$migration_log"
+ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
-Hai cờ reboot là opt-in có kiểm soát chỉ cho Pair B thuộc run, khi các guard cũ
+Hai cờ reboot mặc định `true`, chỉ cho Pair B thuộc run, khi các guard cũ
 chứng minh stale DHCP/MTU đủ điều kiện. B được reboot tuần tự và UUID/port/IP phải
-giữ nguyên. Code vẫn giữ mặc định hai cờ này là false; bỏ chúng nếu muốn dừng để
-điều tra khi B cần remediation. Lệnh trên cho phép xử lý tự động trong lab.
+giữ nguyên. `true` cho phép xử lý tự động nếu cần, không buộc reboot mọi lần.
+Muốn tắt remediation, truyền riêng cờ tương ứng bằng `false`.
 
 Khi demo D thủ công, chạy một **lượt mới trên OVS baseline** với biến cuối:
 
 ```bash
 ansible-playbook -i /root/multinode migrate-to-ovn.yml \
-    -e @migration-lab.yml -e validation_pair_d_enabled=false
+    -e validation_pair_d_enabled=false
 ```
 
 Không có chế độ manual trong playbook. D thủ công do bạn quản lý từ đầu đến cuối;
@@ -127,9 +121,7 @@ Nếu đã qua cutover và gate late-resume hiện có chấp nhận checkpoint,
 
 ```bash
 ansible-playbook -i /root/multinode resume-after-cleanup.yml \
-    -e @migration-lab.yml \
-    -e 'migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>' \
-    -e validation_allow_post_cutover_guest_reboot=true
+    -e 'migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>'
 ```
 
 Entrypoint này không lặp freeze/DB sync/ARM. Nếu dừng trước freeze/cutover,

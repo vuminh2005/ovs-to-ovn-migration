@@ -399,11 +399,13 @@ class SummaryFenceTests(unittest.TestCase):
 class YAMLIntegrationTests(unittest.TestCase):
     def test_default_enabled_and_no_lab_uuid(self):
         defaults = yaml.safe_load((ROOT/'group_vars/all.yml').read_text())
-        lab = yaml.safe_load((ROOT/'migration-lab.yml').read_text())
         self.assertTrue(defaults['validation_pair_d_enabled'])
-        self.assertEqual(lab['target_geneve_mtu'], 1392)
-        self.assertEqual(lab['validation_image'], '')
-        self.assertEqual(lab['validation_flavor'], '')
+        self.assertEqual(defaults['target_geneve_mtu'], 1392)
+        self.assertTrue(defaults['validation_allow_pre_cutover_guest_reboot'])
+        self.assertTrue(defaults['validation_allow_post_cutover_guest_reboot'])
+        self.assertIn("default('', true)", defaults['validation_image'])
+        self.assertIn("default('', true)", defaults['validation_flavor'])
+        self.assertFalse((ROOT/'migration-lab.yml').exists())
 
     def test_trigger_is_between_freeze_and_db_migration(self):
         plays = yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())

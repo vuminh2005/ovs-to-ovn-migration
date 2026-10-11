@@ -20,9 +20,10 @@ target_tenant_network_type: geneve
 neutron_type_drivers_target: "flat,vlan,vxlan,geneve"
 
 # VXLAN -> Geneve adds 8 bytes in the tested Neutron/Kolla configuration
-# (VXLAN network MTU 1450 -> Geneve-safe 1442 on a 1500 underlay).
+# (this nested lab: VXLAN network MTU 1400 -> Geneve-safe 1392
+# on a 1450-byte tunnel transport).
 # Existing VXLAN networks are reduced individually by this delta; there is no
-# hard-coded 1442 requirement, so jumbo-MTU clouds are handled proportionally.
+# hard-coded target requirement, so larger-MTU clouds are handled proportionally.
 mtu_delta_vxlan_to_geneve: 8
 
 # Kolla systemd units.
@@ -106,11 +107,13 @@ validation_dhcp_t2_seconds: 60
 # Allow small scheduling/network delays in the observed renewal cadence.
 validation_dhcp_renewal_tolerance_seconds: 5
 validation_dhcp_convergence_timeout: 180
-# Opt in only for validation-owned Pair B; Pair A is never rebooted.
-validation_allow_pre_cutover_guest_reboot: false
-# Independent opt-in for owned Pair-B stale DHCP state after OVN takeover.
-validation_allow_post_cutover_guest_reboot: false
+# Allow guarded remediation only for validation-owned Pair B in this lab.
+# Pair A and Pair D are never rebooted; true does not force a reboot.
+validation_allow_pre_cutover_guest_reboot: true
+# Independently allow guarded owned Pair-B remediation after OVN takeover.
+validation_allow_post_cutover_guest_reboot: true
 validation_post_cutover_dhcp_timeout_seconds: 180
 # Persistent compute-local evidence, retained until successful final report.
 validation_capture_directory: /var/lib/ovn-migration-validation
-target_geneve_mtu: 1442
+# Nested lab: eth1 MTU 1450, VXLAN tenant MTU 1400 -> Geneve MTU 1392.
+target_geneve_mtu: 1392

@@ -966,8 +966,8 @@
       register: reset_completion
       changed_when: true
 
-    - name: Show completed reset and the new migration override file
+    - name: Show completed reset and the default migration command
       ansible.builtin.debug:
         msg:
           - "{{ reset_completion.stdout_lines }}"
-          - "Use fresh UUIDs from {{ reset_run_dir }}/migration-lab.yml; previous image/flavor UUIDs were destroyed."
+          - "Run ansible-playbook -i {{ ansible_inventory_sources[0] }} migrate-to-ovn.yml; the A/B/C/D defaults discover managed image/flavor names. Fresh UUID evidence is in {{ reset_run_dir }}/migration-lab.yml."
