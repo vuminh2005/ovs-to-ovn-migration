@@ -1,6 +1,7 @@
 ---
 - name: Phase 02 - Precheck deployment host and supported source scope
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -95,6 +96,7 @@
 
 - name: Phase 02 - Precheck Kolla hosts and OVS source dataplane
   hosts: control:network:compute
+  any_errors_fatal: true
   gather_facts: true
   become: true
   vars_files:
@@ -116,6 +118,30 @@
       when: inventory_hostname in (groups['network'] + groups['compute'])
       changed_when: false
 
+    - name: Read effective tunnel interface MTU and IPv4 address
+      ansible.builtin.command:
+        argv: [ip, -j, -4, addr, show, dev, "{{ hostvars['localhost']['source_kolla_globals'].tunnel_interface }}"]
+      register: validation_tunnel_interface
+      changed_when: false
+      when:
+        - validation_workloads_enabled | bool
+        - inventory_hostname in (groups['network'] + groups['compute'])
+
+    - name: Verify transport MTU can carry the source validation VXLAN profile
+      ansible.builtin.assert:
+        that:
+          - (validation_tunnel_interface.stdout | from_json)[0].mtu | int >= (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int) + 50
+      when:
+        - validation_workloads_enabled | bool
+        - inventory_hostname in (groups['network'] + groups['compute'])
+
+    - name: Save exact tunnel IPv4 address for full mesh probes
+      ansible.builtin.set_fact:
+        validation_tunnel_ip: "{{ ((validation_tunnel_interface.stdout | from_json)[0].addr_info | selectattr('family', 'equalto', 'inet') | list)[0].local }}"
+      when:
+        - validation_workloads_enabled | bool
+        - inventory_hostname in (groups['network'] + groups['compute'])
+
     - name: Verify br-int exists on network/compute chassis
       ansible.builtin.shell: docker exec openvswitch_vswitchd ovs-vsctl br-exists br-int
       when: inventory_hostname in (groups['network'] + groups['compute'])
@@ -131,8 +157,77 @@
       when: inventory_hostname in (groups['network'] + groups['compute'])
       changed_when: false
 
+- name: Phase 02 - Verify cross-node tunnel transport and packet capture tool
+  hosts: network:compute
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Verify full mesh tunnel transport with no fragmentation
+      ansible.builtin.command:
+        argv: [ping, -I, "{{ hostvars['localhost']['source_kolla_globals'].tunnel_interface }}", -M, do,
+               -s, "{{ (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int) + 50 - 28 }}",
+               -c, '3', -W, '2', "{{ hostvars[item]['validation_tunnel_ip'] }}"]
+      loop: "{{ ((groups['network'] + groups['compute']) | unique | list) | difference([inventory_hostname]) }}"
+      when: validation_workloads_enabled | bool
+      changed_when: false
+    - name: Require tcpdump on both placement computes
+      ansible.builtin.command: tcpdump --version
+      when:
+        - validation_workloads_enabled | bool
+        - inventory_hostname in validation_pair_compute_hosts
+      changed_when: false
+
+- name: Phase 02 - Resolve exact workload placement before any resource creation
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Require two distinct compute targets and supported automatic D topology
+      ansible.builtin.assert:
+        that:
+          - validation_pair_compute_hosts | length == 2
+          - validation_pair_compute_hosts | unique | length == 2
+          - validation_pair_compute_hosts | difference(groups['compute']) | length == 0
+          - not (validation_pair_d_enabled | bool) or groups['network'] | length == 1
+          - "[validation_tcp_old_port, validation_tcp_new_port, validation_tcp_control_port] | unique | length == 3"
+          - validation_tcp_old_port | int > 1024 and validation_tcp_old_port | int <= 65535
+          - validation_tcp_new_port | int > 1024 and validation_tcp_new_port | int <= 65535
+          - validation_tcp_control_port | int > 1024 and validation_tcp_control_port | int <= 65535
+          - validation_tcp_interval_seconds | float >= 0.1
+          - validation_tcp_timeout_seconds | float > 0
+        fail_msg: Workload validation needs two compute targets; automatic D requires one network node and three distinct TCP ports.
+      when: validation_workloads_enabled | bool
+    - name: Build inventory and gathered host identity request
+      ansible.builtin.set_fact:
+        validation_placement_request:
+          pair_hosts: "{{ validation_pair_compute_hosts }}"
+          compute_hosts: "{{ groups['compute'] }}"
+          identities: {}
+      when: validation_workloads_enabled | bool
+    - name: Include exact hostnames gathered from each target compute
+      ansible.builtin.set_fact:
+        validation_placement_request: "{{ validation_placement_request | combine({'identities': {item: [hostvars[item]['ansible_hostname'], hostvars[item]['ansible_fqdn']]}}, recursive=true) }}"
+      loop: "{{ validation_pair_compute_hosts }}"
+      when: validation_workloads_enabled | bool
+    - name: Resolve enabled Nova computes hypervisors and source OVS binding hosts
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation_placement.py') | quote }} {{ migration_run_dir | quote }} {{ validation_placement_request | to_json | quote }}
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+      changed_when: false
+
 - name: Phase 02 - Verify DB sync utility on first control host
   hosts: control
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:

@@ -67,6 +67,12 @@ report.update({
   'ovn_portbinding_convergence_seconds':report['dataplane_convergence_seconds'],
   'validation_orchestration':evidence('validation-orchestration.json'),
 })
+cfg = evidence('validation-config.json') or {}
+report['workload_placement'] = evidence('workload-placement.json') or {'status': 'NOT TESTED'}
+report['pair_d_tcp'] = (evidence('pair-d-tcp.json') or {'status': 'UNAVAILABLE'}) if cfg.get('pair_d_enabled') else {'status': 'DISABLED', 'enabled': False}
+report['pair_d_tcp']['baseline'] = evidence('pair-d-baseline.json')
+report['pair_d_tcp']['trigger'] = evidence('pair-d-trigger.json')
+report['limitations'].append('Pair D measures small application TCP echoes and new connections, with client monotonic timing; it is not a throughput or large-packet MTU benchmark.')
 report['new_ovn_workload_bindings']=(evidence('post-ovn-bindings.json') or {}).get('status','NOT TESTED')
 report['dataplane_probe']=evidence('tenant-dataplane-probe.json') or {'status':'NOT TESTED'}
 if report['dataplane_probe'].get('status')=='PASS' and (report['dataplane_probe'].get('measurement_workload')!='Pair A' or report['dataplane_probe'].get('evidence_source')!='compute-tap-pcap'):
@@ -209,6 +215,9 @@ lines += ['Existing workload migration (Pair B):',
           'Pair-C OVN binding: ' + report['new_ovn_workload_bindings'],
           'Individual check fields:']
 lines += [k + ': ' + v for k,v in report.items() if k.startswith(('existing_', 'new_ovn_')) and isinstance(v,str)]
+lines += ['Cross-compute placement: ' + report['workload_placement']['status'],
+          'Pair D TCP: ' + report['pair_d_tcp']['status'],
+          'Pair D TCP streams: ' + json.dumps(report['pair_d_tcp'].get('streams', {}), sort_keys=True)]
 lines += ['Tenant dataplane probe: ' + json.dumps(report['dataplane_probe'], sort_keys=True)]
 lines += [f'Phase marker schema: {phase_version}', f'Phase timing scope: {PHASE_SCOPE}', 'Canonical phase timings:']
 lines += [f"Phase {row['number']} {row['name']} ({row['filename']}): " +

@@ -1,0 +1,17 @@
+---
+- name: Check or arm the owned Pair D control endpoint
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Send control command through the exact owned OVS router namespace
+      ansible.builtin.script:
+        cmd: "../scripts/tcp_trigger.py {{ pair_d_trigger | to_json | quote }}"
+        executable: python3
+      delegate_to: "{{ pair_d_network_host }}"
+      register: pair_d_arm
+    - name: Persist the guest ARM acknowledgement on the deployment host
+      ansible.builtin.copy:
+        dest: "{{ pair_d_root }}/{{ pair_d_ack_filename }}"
+        content: "{{ pair_d_arm.stdout | trim | from_json | to_nice_json }}"
+        mode: '0600'

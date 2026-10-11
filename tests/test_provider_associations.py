@@ -230,7 +230,7 @@ class Phase07Tests(unittest.TestCase):
             self.assertIn(token, log)
 
     def test_helper_runs_in_existing_neutron_image_after_api_freeze(self):
-        migration_play = self.plays[2]
+        migration_play = next(p for p in self.plays if 'provider_association_container_command' in p.get('vars', {}))
         command = migration_play['vars']['provider_association_container_command']
         self.assertIn('neutron_server_image.stdout', command)
         self.assertIn('/etc/kolla/neutron-server:/var/lib/kolla/config_files:ro', command)

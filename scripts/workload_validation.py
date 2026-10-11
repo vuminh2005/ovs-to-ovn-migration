@@ -17,7 +17,7 @@ import sys
 import time
 
 PREFIX = 'OVN_MIGRATION_JSON '
-ROLES = {'measure': ('pre', 'measure'), 'pre': ('pre', 'existing'), 'post': ('post', 'fresh')}
+ROLES = {'measure': ('pre', 'measure'), 'pre': ('pre', 'existing'), 'post': ('post', 'fresh'), 'tcp': ('pre', 'tcp')}
 
 def save(path, value):
     tmp = path.with_suffix('.tmp')
@@ -271,6 +271,10 @@ def validation_ready(root):
             for row in read_evidence(root, 'pre-workload-checks.json').values()) and
         all(row.get('mtu') == 'PASS' for row in read_evidence(root, 'post-workload-checks.json').values())))
     cfg=read_evidence(root,'validation-config.json')
+    if cfg.get('placement_enabled'):
+        role_ready = role_ready and read_evidence(root, 'workload-placement.json').get('status') == 'PASS'
+    if cfg.get('pair_d_enabled'):
+        role_ready = role_ready and read_evidence(root, 'pair-d-tcp.json').get('status') == 'PASS'
     if cfg.get('post_cutover_dhcp_enabled'):
         role_ready = role_ready and read_evidence(root,'existing-post-cutover-readiness.json').get('status')=='PASS'
     if cfg.get('capture_enabled'):
@@ -291,6 +295,8 @@ class Validation:
         self.cloud = openstack.connect()
         self.root = root
         self.cfg = json.loads((root/'validation-config.json').read_text())
+        if self.cfg.get('placement_enabled'):
+            self.cloud.compute.default_microversion = '2.74'
         self.path = root/'validation-resources.json'
         self.state = json.loads(self.path.read_text()) if self.path.exists() else {}
         if not self.state:
@@ -321,8 +327,40 @@ class Validation:
             return s
         raise RuntimeError(f'Missing {role} pair; resources preserved; no role substitution allowed')
 
+    def placement(self, vm, server=None, port=None):
+        if not self.cfg.get('placement_enabled'):
+            return {'status': 'PASS', 'scope': 'historical placement not enforced'}
+        from validation_placement import check
+        target = vm.get('placement')
+        if not target:
+            return {'status': 'FAIL', 'reason': 'Missing checkpointed placement'}
+        server = server or self.cloud.compute.get_server(vm['server'])
+        port = port or self.cloud.network.get_port(vm['port'])
+        return check(server, port, target)
+
+    def audit_placement(self, stages):
+        checks = {stage: {key: self.placement(vm) for key, vm in self.pair(stage).items()}
+                  for stage in stages}
+        good = all(r['status'] == 'PASS' for pair in checks.values() for r in pair.values())
+        save(self.root/'workload-placement.json', {'status': 'PASS' if good else 'FAIL', 'pairs': checks})
+        if not good:
+            raise RuntimeError('Nova host/hypervisor and Neutron binding host differ from placement checkpoint')
+
+    def wait_placement(self, vm):
+        if not self.cfg.get('placement_enabled'):
+            return
+        deadline = time.monotonic()+self.cfg['timeout']
+        while self.placement(vm)['status'] != 'PASS':
+            if time.monotonic() >= deadline:
+                raise RuntimeError('Server has wrong compute placement; resources preserved')
+            time.sleep(2)
+
     def create(self, stage):
         c, cfg = self.cloud, self.cfg
+        if stage == 'tcp' and not cfg.get('pair_d_enabled'):
+            return
+        if cfg.get('placement_enabled') and set(cfg.get('placement', {})) != {'0', '1'}:
+            raise RuntimeError('Resolve both compute placements before workload creation')
         topology, role = ROLES[stage]
         s = self.state.setdefault(topology, {})
         modern = self.state.get('schema_version') == 2
@@ -344,6 +382,24 @@ class Validation:
         if not any(r.direction == 'ingress' and r.protocol == 'icmp' for r in rules):
             c.network.create_security_group_rule(security_group_id=sg, direction='ingress',
                                                 ether_type='IPv4', protocol='icmp')
+        if stage == 'tcp':
+            for tcp_port in (cfg['tcp_old_port'], cfg['tcp_new_port'], cfg['tcp_control_port']):
+                if not any(r.direction == 'ingress' and r.protocol == 'tcp' and
+                           r.ether_type == 'IPv4' and
+                           r.port_range_min == tcp_port and r.port_range_max == tcp_port and
+                           r.remote_group_id == sg for r in rules):
+                    c.network.create_security_group_rule(security_group_id=sg, direction='ingress',
+                        ether_type='IPv4', protocol='tcp', port_range_min=tcp_port, port_range_max=tcp_port,
+                        remote_group_id=sg)
+                # The exact owned qrouter uses subnet gateway IPs to arm D.1.
+                if tcp_port == cfg['tcp_control_port'] and not any(
+                        r.direction == 'ingress' and r.protocol == 'tcp' and
+                        r.ether_type == 'IPv4' and
+                        r.port_range_min == tcp_port and r.port_range_max == tcp_port and
+                        r.remote_ip_prefix == cfg['cidrs']['pre'][0] for r in rules):
+                    c.network.create_security_group_rule(security_group_id=sg, direction='ingress',
+                        ether_type='IPv4', protocol='tcp', port_range_min=tcp_port, port_range_max=tcp_port,
+                        remote_ip_prefix=cfg['cidrs']['pre'][0])
         if not s.get('router'):
             s['router'] = c.network.create_router(name=prefix).id
             self.commit()
@@ -364,6 +420,12 @@ class Validation:
                 net['interface'] = True
                 self.commit()
             vm = pair.setdefault(str(i), {})
+            if cfg.get('placement_enabled'):
+                target = cfg['placement'][str(i)]
+                if vm.get('placement') and vm['placement'] != target:
+                    raise RuntimeError('Retry cannot change checkpointed compute placement')
+                vm['placement'] = target
+                self.commit()
             vm.update(network=net['network'], subnet=net['subnet'])
             name = prefix + '-' + role + str(i) if modern else prefix + '-' + str(i+1)
             vm.setdefault('record_vm', role+str(i) if modern else stage+str(i))
@@ -390,10 +452,14 @@ class Validation:
                 # Missing checkpointed IDs fail closed; never silently replace
                 # a VM whose identity is part of the preservation evidence.
                 self.wait_active(vm['server'])
+                self.wait_placement(vm)
                 continue
             guest = (pathlib.Path(__file__).parent/'guest_probe.py').read_text()
             config = dict(run=cfg['run'], vm=vm['record_vm'], peer=pair[str(1-i)]['ip'],
                           ip=vm['ip'], interval=cfg['interval'], lifetime=cfg['lifetime'], dhcp_t1=cfg.get('dhcp_t1',30), continuous_ping=(stage=='measure'))
+            if stage == 'tcp':
+                config.update(tcp_role='client' if i == 0 else 'server',
+                    **{k:cfg[k] for k in ('tcp_old_port','tcp_new_port','tcp_control_port','tcp_interval','tcp_timeout')})
             # Guest obtains its own immutable instance UUID from cloud-init's datasource.
             launcher = "import json,pathlib; p=pathlib.Path('/etc/migration-probe.json'); c=json.loads(p.read_text()); c['server_id']=pathlib.Path('/var/lib/cloud/data/instance-id').read_text().strip(); p.write_text(json.dumps(c))"
             user_data = '#cloud-config\n' + __import__('yaml').safe_dump(dict(
@@ -401,6 +467,15 @@ class Validation:
                              dict(path='/etc/migration-probe.json', content=json.dumps(config), permissions='0600'),
                              dict(path='/etc/systemd/system/migration-probe.service', content='[Unit]\nAfter=network-online.target\n[Service]\nExecStart=/usr/bin/python3 /usr/local/bin/migration-probe.py\n[Install]\nWantedBy=multi-user.target\n')],
                 runcmd=[['python3', '-c', launcher], ['systemctl', 'enable', '--now', 'migration-probe']]))
+            if stage == 'tcp':
+                data = __import__('yaml').safe_load(user_data)
+                data['write_files'].extend([
+                    dict(path='/usr/local/bin/tcp-migration-probe.py',
+                         content=(pathlib.Path(__file__).parent/'tcp_guest_probe.py').read_text(), permissions='0700'),
+                    dict(path='/etc/systemd/system/tcp-migration-probe.service',
+                         content='[Unit]\nAfter=network-online.target\n[Service]\nExecStart=/usr/bin/python3 /usr/local/bin/tcp-migration-probe.py\n[Install]\nWantedBy=multi-user.target\n')])
+                data['runcmd'].append(['systemctl','enable','--now','tcp-migration-probe'])
+                user_data = '#cloud-config\n'+__import__('yaml').safe_dump(data)
             # Stable name + explicit port lets retry recover a server if API reply was lost.
             matches = list(c.compute.servers(name=vm['name']))
             matches = [v for v in matches if v.name == vm['name']]
@@ -411,13 +486,16 @@ class Validation:
             if modern and matches and (matches[0].metadata.get('ovn_migration_run')!=cfg['run'] or
                                        matches[0].metadata.get('ovn_validation_role')!=role):
                 raise RuntimeError('Recovered server ownership metadata does not match this validation role')
+            destination = ({'host':vm['placement']['nova_host'], 'hypervisor_hostname':vm['placement']['hypervisor']}
+                           if cfg.get('placement_enabled') else {})
             server = matches[0] if matches else c.compute.create_server(name=vm['name'],
                 image_id=image.id, flavor_id=flavor.id, networks=[{'port': vm['port']}],
                 metadata={'ovn_migration_run': cfg['run'], 'ovn_validation_role': role},
-                user_data=base64.b64encode(user_data.encode()).decode())
+                user_data=base64.b64encode(user_data.encode()).decode(), **destination)
             vm['server'] = server.id
             self.commit()
             self.wait_active(server.id)
+            self.wait_placement(vm)
 
     def wait_active(self, server_id):
         server = self.cloud.compute.get_server(server_id)
@@ -501,6 +579,7 @@ class Validation:
             identity = port.device_id == vm['server'] and port.fixed_ips == vm['fixed_ips']
             if self.state.get('schema_version') == 2:
                 identity = identity and server.id == vm['server'] and port.id == vm['port']
+            identity = identity and self.placement(vm, server, port)['status'] == 'PASS'
             checks[str(i)] = dict(identity='PASS' if identity else 'FAIL',
                 active='PASS' if server.status == 'ACTIVE' else 'FAIL',
                 bound='PASS' if port.status == 'ACTIVE' and port.binding_host_id and port.binding_vif_type not in ('unbound','binding_failed') else 'FAIL')
@@ -577,6 +656,7 @@ class Validation:
             identity = (server.id == vm['server'] and port.id == vm['port'] and
                         port.device_id == vm['server'] and port.fixed_ips == vm['fixed_ips'] and
                         (not old or all(vm[k] == old.get(k) for k in ('server','port','fixed_ips'))))
+            identity = identity and self.placement(vm, server, port)['status'] == 'PASS'
             checks[key] = dict(identity='PASS' if identity else 'FAIL',
                 active='PASS' if server.status == 'ACTIVE' else 'FAIL',
                 bound='PASS' if port.status == 'ACTIVE' and port.binding_host_id and port.binding_vif_type not in ('unbound','binding_failed') else 'FAIL',
@@ -873,6 +953,7 @@ class Validation:
                     health.get('metadata') is True and health.get('mtu')==self.cfg.get('target_mtu',1442) and
                     network.mtu==self.cfg.get('target_mtu',1442) and network.provider_network_type=='vxlan' and
                     guest_checks(rows[key],anchors[key],self.cfg['interval'])['connectivity']=='PASS')
+                good = good and self.placement(vm, server, port)['status'] == 'PASS'
                 ready[key]={'status':'PASS' if good else 'FAIL','health':health,'boot':current}
             if all(r['status']=='PASS' for r in ready.values()):
                 save(self.root/'dhcp-precutover-preparation.json',{'status':'PASS','guests':ready})
@@ -1095,9 +1176,17 @@ class Validation:
                 return
             s['cleanup_started'] = True
             self.commit()
-            roles = ('measure','existing') if stage=='pre' else ('fresh',)
+            roles = ('tcp','measure','existing') if stage=='pre' else ('fresh',)
             vms = [vm for role in roles for vm in s.get(role,{}).values()] if 'networks' in s else [s[k] for k in ('0','1')]
             for vm in vms:
+                if vm.get('record_vm', '').startswith('tcp'):
+                    server = self.cloud.compute.find_server(vm['server'])
+                    port = self.cloud.network.get_port(vm['port']) if server is not None else None
+                    if server is not None and (vm.get('owned') is not True or
+                            server.metadata.get('ovn_migration_run') != self.cfg['run'] or
+                            server.metadata.get('ovn_validation_role') != 'tcp' or
+                            port.id != vm['port'] or port.device_id != vm['server'] or port.fixed_ips != vm['fixed_ips']):
+                        raise RuntimeError('Pair D cleanup ownership changed; resources preserved')
                 def delete_server():
                     self.cloud.compute.delete_server(vm['server'], ignore_missing=True)
                     deadline = time.monotonic()+self.cfg['timeout']
@@ -1142,12 +1231,14 @@ class Validation:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready', 'prepare-dhcp', 'precutover-ready', 'capture-finish', 'capture-cleanup'])
+    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready', 'prepare-dhcp', 'precutover-ready', 'capture-finish', 'capture-cleanup', 'd-arm'])
     p.add_argument('root', type=pathlib.Path)
     args = p.parse_args()
     if args.action == 'cleanup-ready':
         return 0 if validation_ready(args.root) else 1
     v = Validation(args.root)
+    from tcp_validation import PairD
+    pair_d = PairD(v)
     if args.action == 'collect':
         running = True
         def stop(*_):
@@ -1157,6 +1248,8 @@ def main():
         while running:
             try:
                 v.collect('measure')
+                if pair_d.enabled:
+                    v.collect('tcp')
             except Exception as exc:
                 with (v.root/'console-collector-errors.log').open('a') as f:
                     f.write(str(exc)+'\n')
@@ -1171,12 +1264,18 @@ def main():
             if cp and cp.get('status') == 'STOPPED':
                 capture.transport('remove',cp)
         return 0
+    elif args.action == 'd-arm':
+        pair_d.arm()
     elif args.action == 'anchor-start':
         v.checkpoint_start()
     elif args.action == 'prepare-dhcp':
         v.prepare_dhcp(target=True)
     elif args.action == 'precutover-ready':
         v.verify_precutover()
+        if v.cfg.get('placement_enabled'):
+            v.audit_placement(['measure', 'pre'] + (['tcp'] if pair_d.enabled else []))
+        pair_d.wait(freeze=True)
+        pair_d.control_precheck()
     elif args.action == 'finalize':
         v.finalize()
     elif args.action == 'pre':
@@ -1190,6 +1289,9 @@ def main():
             save(v.root/'existing-initial-baseline.json',v.baseline('pre',rows))
         save(v.root/'initial-freshness-anchors.json', read_evidence(v.root, 'pre-freshness-anchors.json'))
         v.prepare_dhcp()
+        if pair_d.enabled:
+            v.create('tcp')
+        pair_d.wait()
     else:
         failures = []
         try:
@@ -1213,6 +1315,12 @@ def main():
             if not v.state.get('post', {}).get('cleaned'):
                 v.create('post')
                 v.wait('post')
+        except Exception as exc:
+            failures.append(str(exc))
+        try:
+            pair_d.wait(post=True)
+            if v.cfg.get('placement_enabled'):
+                v.audit_placement(['measure', 'pre', 'post'] + (['tcp'] if pair_d.enabled else []))
         except Exception as exc:
             failures.append(str(exc))
         if getattr(v,'state',{}).get('schema_version')==2 and not v.state.get('historical_dual_pair'):

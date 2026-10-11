@@ -1,0 +1,26 @@
+Python AST and YAML parsing: PASS
+Full regression: PASS
+............................................................................................ [ 30%]
+............................................................................. [ 55%]
+................................................... [ 72%]
+............................................... [ 87%]
+.....................................               [100%]
+=============================== warnings summary ===============================
+tests/test_four_pairs.py: 39 warnings
+  /tmp/ovn-validation-venv/lib/python3.12/site-packages/openstack/resource.py:871: RemovedInSDK50Warning: The _compute_attributes method is deprecated for removal
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+304 passed, 39 warnings, 258 subtests passed in 4.71s
+migrate-to-ovn.yml syntax: PASS
+resume-after-cleanup.yml syntax: PASS
+reset-lab-to-ovs.yml syntax: PASS
+playbooks/dataplane-capture-tasks.yml syntax: PASS
+playbooks/pair-d-trigger-tasks.yml syntax: PASS
+playbooks/workload-ovn-evidence-tasks.yml syntax: PASS
+D disabled syntax: PASS
+Diff whitespace: PASS
+Validation environment: Python 3.12; OpenStackSDK 4.21.0; Ansible Core 2.16.19.
+Real TCP sockets tested on loopback. Nova destination serialization verified using installed SDK.
+No real OpenStack or Kolla lab operations were executed here.
+Base ZIP revision: 7de41d3; original four-node reset behavior retained.

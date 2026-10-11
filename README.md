@@ -1,13 +1,28 @@
 # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
 
+## Cross-compute A/B/C/D update
+
+Every pair now places member 1 on `compute1` and member 2 on `compute2`.
+Precheck resolves inventory aliases to real Nova hosts, hypervisors and OVS
+binding hosts; Nova API 2.74 requested destinations retain scheduler filters.
+Placement is checkpointed and checked before freeze and after migration.
+Pair-A PCAP delegation uses this verified compute mapping.
+
+Pair D is enabled automatically by default (`validation_pair_d_enabled: true`).
+A/B/D share the pre-migration two-network routed topology. C still creates its
+own two Geneve networks/subnets and router after migration. With D enabled the
+run creates eight VMs, four networks/subnets and two routers in total.
+See [A/B/C/D lab instructions](docs/abcd-validation.md) for TCP semantics,
+checkpoints, cleanup and the current nested-lab commands.
+
 ## Four-node reset update
 
 `reset-lab-to-ovs.yml` now resets the lab with `controller`, `network1`,
 `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
 with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
 See [four-node reset instructions](docs/reset-four-nodes.md) for destructive
-scope, commands, new UUIDs and retry. Migration workload placement and Pair D
-are not changed by this reset-focused update.
+scope, commands, new UUIDs and retry. This A/B/C/D update leaves reset operations
+unchanged.
 
 V2 turns the lab-validated migration into a **single-invocation migration proof of concept** for its supported scope. It discovers the Kolla inventory path from the `-i` argument, finds `kolla-ansible` from the active execution environment, parses `/etc/kolla/globals.yml`, uses standard Kolla inventory groups to find control/network/compute/OVN hosts, and reads the generated ML2/OVN config to discover the real OVN NB/SB connection strings.
 
@@ -18,12 +33,15 @@ From the Kolla deployment host, with `ansible-playbook` and `kolla-ansible` avai
 ```bash
 ansible-playbook \
   -i /root/multinode \
-  migrate-to-ovn.yml
+  migrate-to-ovn.yml -e @migration-lab.yml
 ```
 
 Image and flavor preparation is automatic. The deployment host needs outbound HTTPS
 to `cloud-images.ubuntu.com` only when the managed Ubuntu image is absent.
 Existing image/flavor overrides remain optional; no manual upload or flavor creation is required.
+The supplied `migration-lab.yml` selects reusable image/flavor names without stale
+UUIDs and sets Geneve MTU 1392 for the verified 1450-byte nested tunnel transport.
+For another lab, choose an appropriate MTU profile before running.
 
 If non-standard Kolla file locations are used, environment overrides are available without editing the repo:
 

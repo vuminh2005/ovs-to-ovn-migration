@@ -64,6 +64,23 @@
         executable: /bin/bash
       changed_when: false
 
+- name: Phase 07 - Arm TCP probes after API freeze and before dataplane cutover
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Open the additional Pair D listener and retain its original TCP session
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} d-arm {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
 - name: Phase 07 - Run Neutron to OVN DB migration exactly once
   hosts: control
   any_errors_fatal: true  # a failed DB sync/compatibility gate must block later plays on every host

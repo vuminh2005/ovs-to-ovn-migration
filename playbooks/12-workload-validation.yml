@@ -78,7 +78,7 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: Recover Pair A packets validate Pair B and provision fresh Pair C
+    - name: Recover Pair A validate B/D and provision fresh Pair C
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}

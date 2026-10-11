@@ -66,6 +66,16 @@ migration_resume_run_dir: "{{ lookup('env', 'OVS_TO_OVN_RESUME_RUN_DIR') | defau
 # Workload POC: UUID or unambiguous name. Ubuntu cloud images must already
 # contain cloud-init, Python3, ping, iproute2, systemd and ttyS0 support.
 validation_workloads_enabled: true
+# Both members of every pair must run on these distinct inventory computes.
+validation_pair_compute_hosts: ['compute1', 'compute2']
+# Pair D uses the pre-migration topology with A/B. Manual demos are managed
+# outside the playbook; disable only automatic D with an extra variable.
+validation_pair_d_enabled: true
+validation_tcp_old_port: 18080
+validation_tcp_new_port: 18081
+validation_tcp_control_port: 18082
+validation_tcp_interval_seconds: 0.5
+validation_tcp_timeout_seconds: 1.0
 validation_image: "{{ lookup('env', 'MIGRATION_VALIDATION_IMAGE') | default('', true) }}"
 validation_flavor: "{{ lookup('env', 'MIGRATION_VALIDATION_FLAVOR') | default('', true) }}"
 validation_name_prefix: ovn-validation

@@ -407,8 +407,13 @@ class Capture:
                 server.metadata.get('ovn_validation_role')!='measure'):
                 raise RuntimeError('Pair-A capture identity changed')
             host=port.binding_host_id
-            inventory=json.loads(subprocess.check_output(['ansible-inventory','-i',self.v.cfg['inventory'],'--list'],text=True))
-            compute_host=inventory_compute_host(inventory,host)
+            if self.v.cfg.get('placement_enabled'):
+                if self.v.placement(vm, server, port)['status'] != 'PASS':
+                    raise RuntimeError('Pair A capture compute differs from placement checkpoint')
+                compute_host=vm['placement']['inventory_host']
+            else:
+                inventory=json.loads(subprocess.check_output(['ansible-inventory','-i',self.v.cfg['inventory'],'--list'],text=True))
+                compute_host=inventory_compute_host(inventory,host)
             run=str(uuid.UUID(self.v.cfg['run'])) if re.fullmatch(r'[0-9a-fA-F-]{36}',self.v.cfg['run']) else self.v.cfg['run']
             if run in ('.','..') or not re.fullmatch(r'[A-Za-z0-9_.-]+',run): raise ValueError('Unsafe capture run identifier')
             directory=str(pathlib.Path(self.v.cfg['capture_directory'])/run)

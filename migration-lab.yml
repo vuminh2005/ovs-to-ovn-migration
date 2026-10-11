@@ -1,0 +1,7 @@
+---
+# Nested lab: eth1 carries 1450-byte IP packets; VXLAN 1400 -> Geneve 1392.
+target_geneve_mtu: 1392
+validation_image: ''
+validation_flavor: ''
+validation_pair_compute_hosts: [compute1, compute2]
+validation_pair_d_enabled: true

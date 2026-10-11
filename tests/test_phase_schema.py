@@ -265,7 +265,7 @@ class OrchestrationPhaseTests(unittest.TestCase):
     def test_phase13_cleanup_gate_precedes_timing_publication_and_end(self):
         tasks=yaml.safe_load((ROOT/'playbooks/13-report.yml').read_text())[0]['tasks']
         names=[task['name'] for task in tasks]
-        before='Rebuild final report including all three pairs cleanup evidence'
+        before='Rebuild final report including all enabled pairs cleanup evidence'
         cleanup='Remove compute copy only after successful final reports are persisted'
         end='Mark phase 13 and total end after finalization and capture cleanup'
         publication='Publish final timing metadata without repeating finalization or cleanup'
