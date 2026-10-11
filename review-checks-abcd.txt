@@ -1,29 +1,47 @@
 Python AST and YAML parsing: PASS
-Full regression: PASS
-............................................................................................ [ 30%]
-............................................................................. [ 55%]
-................................................... [ 72%]
-............................................... [ 87%]
-.....................................               [100%]
+Full regression OpenStackSDK 4.21.0: PASS
+............................................................................................ [ 29%]
+.................................. [ 40%]
+.................................... [ 51%]
+..................................... [ 63%]
+.......................................................... [ 81%]
+.........................................................                                                     [100%]
 =============================== warnings summary ===============================
-tests/test_four_pairs.py: 39 warnings
+tests/test_four_pairs.py: 51 warnings
+tests/test_nova_destination.py: 1 warning
   /tmp/ovn-validation-venv/lib/python3.12/site-packages/openstack/resource.py:871: RemovedInSDK50Warning: The _compute_attributes method is deprecated for removal
     warnings.warn(
 
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-304 passed, 39 warnings, 258 subtests passed in 4.41s
+tests/test_nova_destination.py::NovaDestinationHTTPTests::test_host_and_hypervisor_reach_nova_as_request_keys_with_274
+tests/test_nova_destination.py::NovaDestinationHTTPTests::test_missing_id_preserves_uncertain_request_without_second_post
+tests/test_nova_destination.py::NovaDestinationHTTPTests::test_nova_rejection_is_not_retried_without_a_destination
+  /tmp/ovn-validation-venv/lib/python3.12/site-packages/openstack/proxy.py:309: RemovedInSDK50Warning: The 'service_type' parameter is unnecesary and will be removed in a future release.
+    warnings.warn(
 
-migrate-to-ovn.yml syntax without lab profile: PASS
-resume-after-cleanup.yml syntax without lab profile: PASS
-reset-lab-to-ovs.yml syntax without lab profile: PASS
-playbooks/dataplane-capture-tasks.yml syntax without lab profile: PASS
-playbooks/pair-d-trigger-tasks.yml syntax without lab profile: PASS
-playbooks/workload-ovn-evidence-tasks.yml syntax without lab profile: PASS
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+314 passed, 55 warnings, 282 subtests passed in 4.94s
+
+Full regression OpenStackSDK 1.5.0: PASS
+............................................................................................ [ 29%]
+.................................. [ 40%]
+.................................... [ 51%]
+..................................... [ 63%]
+.......................................................... [ 81%]
+.........................................................                                                     [100%]
+314 passed, 282 subtests passed in 4.58s
+
+migrate-to-ovn.yml syntax: PASS
+retry-validation-preparation.yml syntax: PASS
+resume-after-cleanup.yml syntax: PASS
+reset-lab-to-ovs.yml syntax: PASS
+playbooks/dataplane-capture-tasks.yml syntax: PASS
+playbooks/pair-d-trigger-tasks.yml syntax: PASS
+playbooks/workload-ovn-evidence-tasks.yml syntax: PASS
 D disabled syntax: PASS
+Actual Ansible retry bootstrap offline replay: PASS; saved flags survive vars_files; checkpoint files unchanged.
 Diff whitespace: PASS
-Default invocation requires no migration-lab.yml and no reboot extra vars.
-Nested lab defaults: target_geneve_mtu=1392; both guarded Pair-B reboot flags=true; automatic D=true.
-Validation environment: Python 3.12; OpenStackSDK 4.21.0; Ansible Core 2.16.19.
-Real TCP sockets tested on loopback. Nova destination serialization verified using installed SDK.
-No real OpenStack or Kolla lab operations were executed here.
-Base ZIP revision: 7de41d3; four-node reset operations retained; final command guidance updated.
+Actual compute-adapter HTTP requests tested with SDK 1.5.0 and 4.21.0: plain host/hypervisor_hostname, compute 2.74 headers.
+Pair-A rejected first request retry reuses saved ports/networks without duplicate creation or placement fallback.
+Preparation retry retains the same run/configuration, rechecks OVS and destinations, and rejects any later phase evidence or recorded VM.
+Lab defaults retained: Geneve MTU1392; both guarded Pair-B reboot flags=true; automatic D=true; root migration-lab.yml absent.
+No real OpenStack/Kolla lab operations were executed here.

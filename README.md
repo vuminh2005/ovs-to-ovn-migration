@@ -5,6 +5,9 @@
 Every pair now places member 1 on `compute1` and member 2 on `compute2`.
 Precheck resolves inventory aliases to real Nova hosts, hypervisors and OVS
 binding hosts; Nova API 2.74 requested destinations retain scheduler filters.
+Creation sends the API request keys `host` and `hypervisor_hostname` through
+the authenticated compute adapter, so older SDKs cannot drop the host or
+serialize the response-only `OS-EXT-SRV-ATTR:hypervisor_hostname` key.
 Placement is checkpointed and checked before freeze and after migration.
 Pair-A PCAP delegation uses this verified compute mapping.
 
@@ -41,6 +44,19 @@ Existing image/flavor overrides remain optional; no manual upload or flavor crea
 Geneve MTU 1392, automatic Pair D, and guarded Pair-B remediation enabled both
 before and after cutover. No `migration-lab.yml` or extra variables are required.
 For another lab, configure an appropriate validation target MTU before running.
+
+If phase 04 failed on the **first VM-create request**, before any recorded VM,
+OVN staging or target changes, update the code and retry its explicit checkpoint:
+
+```bash
+ansible-playbook -i /root/multinode retry-validation-preparation.yml \
+  -e migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>
+```
+
+This restricted entrypoint rechecks the live OVS source and placement, retains
+the original run/configuration and reuses prepared ports/networks. It then runs
+phase 04 onward; it creates no new run and repeats no backup. It rejects later
+checkpoints and cannot replace the separate late-cutover resume entrypoint.
 
 If non-standard Kolla file locations are used, environment overrides are available without editing the repo:
 

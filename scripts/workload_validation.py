@@ -486,12 +486,18 @@ class Validation:
             if modern and matches and (matches[0].metadata.get('ovn_migration_run')!=cfg['run'] or
                                        matches[0].metadata.get('ovn_validation_role')!=role):
                 raise RuntimeError('Recovered server ownership metadata does not match this validation role')
-            destination = ({'host':vm['placement']['nova_host'], 'hypervisor_hostname':vm['placement']['hypervisor']}
-                           if cfg.get('placement_enabled') else {})
-            server = matches[0] if matches else c.compute.create_server(name=vm['name'],
-                image_id=image.id, flavor_id=flavor.id, networks=[{'port': vm['port']}],
-                metadata={'ovn_migration_run': cfg['run'], 'ovn_validation_role': role},
-                user_data=base64.b64encode(user_data.encode()).decode(), **destination)
+            if matches:
+                server = matches[0]
+            else:
+                attributes = dict(name=vm['name'], image_id=image.id, flavor_id=flavor.id,
+                    networks=[{'port': vm['port']}],
+                    metadata={'ovn_migration_run': cfg['run'], 'ovn_validation_role': role},
+                    user_data=base64.b64encode(user_data.encode()).decode())
+                if cfg.get('placement_enabled'):
+                    from validation_placement import create_on_target
+                    server = create_on_target(c.compute, vm['placement'], **attributes)
+                else:
+                    server = c.compute.create_server(**attributes)
             vm['server'] = server.id
             self.commit()
             self.wait_active(server.id)

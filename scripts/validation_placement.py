@@ -45,6 +45,28 @@ def check(server, port, target):
                 hypervisor=server.hypervisor_hostname, neutron_host=port.binding_host_id)
 
 
+def create_on_target(compute, target, *, name, image_id, flavor_id, networks, metadata, user_data):
+    """POST the Nova 2.74 request keys unchanged across SDK versions.
+
+    Older Server resources map hypervisor_hostname to its response-only
+    OS-EXT-SRV-ATTR name and can silently discard the host input. Use the
+    authenticated compute adapter for this request; normal SDK reads remain.
+    """
+    from openstack import exceptions
+    from openstack.compute.v2.server import Server
+    if not target.get('nova_host') or not target.get('hypervisor'):
+        raise RuntimeError('Missing explicit Nova host/hypervisor destination')
+    body = dict(name=name, imageRef=image_id, flavorRef=flavor_id,
+                networks=networks, metadata=metadata, user_data=user_data,
+                host=target['nova_host'], hypervisor_hostname=target['hypervisor'])
+    response = compute.post('/servers', json={'server': body}, microversion='2.74')
+    exceptions.raise_from_response(response, error_message='Create validation server on requested destination')
+    server = response.json().get('server', {})
+    if not isinstance(server, dict) or not isinstance(server.get('id'), str) or not server['id']:
+        raise RuntimeError('Nova create response has no server ID; inspect owned name/port before retry')
+    return Server.existing(**server)
+
+
 def main():
     import openstack
     root = pathlib.Path(sys.argv[1])

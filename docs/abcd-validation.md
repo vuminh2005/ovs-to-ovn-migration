@@ -55,10 +55,10 @@ không được đổi thành PASS. Không reboot A hoặc D để cứu metric.
 
 ## Lệnh chạy trên controller
 
-Đưa `ovs-to-ovn-migration-abcd.zip` vào `/root`, rồi giải nén sang thư mục mới:
+Đưa `ovs-to-ovn-migration-abcd-sdkfix.zip` vào `/root`, rồi giải nén sang thư mục mới:
 
 ```bash
-python3 -m zipfile -e /root/ovs-to-ovn-migration-abcd.zip /root/ovn-migration-abcd
+python3 -m zipfile -e /root/ovs-to-ovn-migration-abcd-sdkfix.zip /root/ovn-migration-abcd
 source /root/venvs/kolla-2024.1/bin/activate
 source /etc/kolla/admin-openrc.sh
 cd /root/ovn-migration-abcd/ovs-to-ovn-migration
@@ -93,6 +93,26 @@ Không có chế độ manual trong playbook. D thủ công do bạn quản lý 
 nên dùng topology riêng để không phụ thuộc vào network của A/B bị cleanup.
 Biến enabled được giữ trong `validation-config.json` của từng run; resume không
 thay đổi vai trò/UUID hoặc tự tạo một D khác.
+
+## Retry lỗi tạo VM đầu tiên ở phase 04
+
+SDK cũ có thể gửi trường phản hồi `OS-EXT-SRV-ATTR:hypervisor_hostname` vào POST
+tạo VM và bỏ trường `host`, khiến Nova trả 400. Bản sửa gửi JSON đúng chuẩn
+Nova 2.74 qua compute adapter đang xác thực; không cần nâng cấp SDK trên lab.
+
+Nếu phase 04 dừng tại request tạo VM đầu tiên, cập nhật mã rồi chạy:
+
+```bash
+ansible-playbook -i /root/multinode retry-validation-preparation.yml \
+    -e migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>
+```
+
+Dùng đúng run của lỗi, không lấy run mới nhất tùy tiện. Lệnh kiểm tra marker của
+phase 00–03, phase 04 chưa hoàn tất, chưa có VM ghi vào checkpoint và chưa có
+staging/MTU change/freeze/cutover. Nó kiểm tra lại cloud vẫn là OVS và placement
+không đổi, giữ cấu hình và các UUID đã chuẩn bị, rồi chạy phase 04 đến cuối.
+Không tạo run mới, không lặp backup, không cleanup phần chuẩn bị để tạo lại.
+Checkpoint đã sang bước sau hoặc đã có VM được ghi nhận sẽ bị từ chối.
 
 ## Báo cáo, cleanup và resume
 
@@ -131,7 +151,8 @@ trước. Run mới luôn tạo run ID mới, không tiếp quản workload củ
 ## Kiểm tra bản sửa
 
 Regression chạy offline gồm socket TCP thật trên loopback, SDK 4.21.0 request
-serialization/mapping, placement sai, retry/lost reply, D bật/tắt, boot/session/
+serialization/mapping, HTTP request với SDK 1.5.0 và 4.21.0, guard retry phase 04,
+placement sai, retry/lost reply, D bật/tắt, boot/session/
 UUID/freshness fences, ARM và cleanup topology chung. Các entrypoint Ansible
 được syntax-check. Đây là kiểm chứng mã; lần migration thực tế trên lab vẫn cần
 chạy bằng các lệnh bên trên.

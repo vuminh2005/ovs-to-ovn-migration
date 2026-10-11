@@ -16,7 +16,7 @@ from test_three_pairs import Scenario
 from test_validation import ROOT, ready_evidence, v
 from tcp_guest_probe import LineReader, Probe, Stats
 from tcp_validation import PairD
-from validation_placement import check, resolve
+from validation_placement import check, create_on_target, resolve
 
 
 def target(i):
@@ -81,9 +81,18 @@ class PlacementTests(unittest.TestCase):
         self.assertEqual(check(server, port, target(0))['status'], 'FAIL')
 
     def test_sdk_request_uses_supported_destination_body(self):
-        from openstack.compute.v2.server import Server
-        body = Server(host='nova1', hypervisor_hostname='hv1')._prepare_request(requires_id=False).body
-        self.assertEqual(body, {'server': {'host':'nova1', 'hypervisor_hostname':'hv1'}})
+        compute = Mock()
+        response = Mock(status_code=202)
+        response.json.return_value = {'server': {'id':'new-server'}}
+        compute.post.return_value = response
+        result = create_on_target(compute, target(0), name='vm', image_id='image', flavor_id='flavor',
+            networks=[{'port':'owned-port'}], metadata={'ovn_migration_run':'run'}, user_data='encoded')
+        self.assertEqual(result.id, 'new-server')
+        compute.post.assert_called_once_with('/servers', microversion='2.74', json={'server': {
+            'name':'vm', 'imageRef':'image', 'flavorRef':'flavor', 'networks':[{'port':'owned-port'}],
+            'metadata':{'ovn_migration_run':'run'}, 'user_data':'encoded',
+            'host':'nova1', 'hypervisor_hostname':'hv1'}})
+        compute.create_server.assert_not_called()
 
 
 class LifecycleTests(unittest.TestCase):
@@ -123,7 +132,10 @@ class LifecycleTests(unittest.TestCase):
                       device_id='', status='ACTIVE', binding_vif_type='ovs', binding_host_id=target(int(key))['neutron_host'])
             self.s.ports[port.id] = port
             return port
-        def create_server(**kw):
+        def create_server(path, *, microversion, **request):
+            self.assertEqual(path, '/servers')
+            self.assertEqual(microversion, '2.74')
+            kw = request['json']['server']
             key = kw['name'][-1]
             self.assertEqual(kw['host'], target(int(key))['nova_host'])
             self.assertEqual(kw['hypervisor_hostname'], target(int(key))['hypervisor'])
@@ -137,15 +149,18 @@ class LifecycleTests(unittest.TestCase):
             config = json.loads(next(f['content'] for f in data['write_files'] if f['path']=='/etc/migration-probe.json'))
             self.assertEqual(config['tcp_role'], 'client' if key=='0' else 'server')
             self.assertIn(['systemctl','enable','--now','tcp-migration-probe'], data['runcmd'])
-            return server
+            response = Mock(status_code=202)
+            response.json.return_value = {'server': {'id':server.id}}
+            return response
         self.obj.cloud.network.create_port.side_effect = create_port
-        self.obj.cloud.compute.create_server.side_effect = create_server
+        self.obj.cloud.compute.post.side_effect = create_server
         self.obj.create('tcp')
 
     def test_d_reuses_pre_topology_and_retries_never_create_duplicates(self):
         self.provision_d()
         self.obj.create('tcp')
-        self.assertEqual(self.obj.cloud.compute.create_server.call_count, 2)
+        self.assertEqual(self.obj.cloud.compute.post.call_count, 2)
+        self.obj.cloud.compute.create_server.assert_not_called()
         self.assertEqual(self.obj.cloud.network.create_port.call_count, 2)
         self.obj.cloud.network.create_network.assert_not_called()
         self.obj.cloud.network.create_subnet.assert_not_called()
@@ -159,6 +174,7 @@ class LifecycleTests(unittest.TestCase):
         d = PairD(self.obj)
         d.wait(); d.arm()
         self.obj.cloud.compute.create_server.assert_not_called()
+        self.obj.cloud.compute.post.assert_not_called()
         self.obj.cloud.network.create_port.assert_not_called()
         self.assertEqual(d.read('pair-d-tcp.json')['status'], 'DISABLED')
 
@@ -168,13 +184,49 @@ class LifecycleTests(unittest.TestCase):
         self.obj.cloud.compute.servers.return_value = [NS(id='tcp0', name=self.obj.state['pre']['tcp']['0']['name'],
             metadata={'ovn_migration_run':'run', 'ovn_validation_role':'tcp'})]
         self.obj.create('tcp')
-        self.assertEqual(self.obj.cloud.compute.create_server.call_count, 2)
+        self.assertEqual(self.obj.cloud.compute.post.call_count, 2)
         self.assertEqual(self.obj.state['pre']['tcp']['0']['server'], 'tcp0')
 
     def test_retry_cannot_change_placement(self):
         self.obj.cfg['placement']['0'] = target(1)
         with self.assertRaisesRegex(RuntimeError, 'placement'):
             self.obj.create('measure')
+        self.obj.cloud.compute.create_server.assert_not_called()
+
+    def test_rejected_first_pair_a_create_retries_saved_ports_without_duplicate_topology(self):
+        from openstack.exceptions import BadRequestException
+        from requests import Response
+        pair = self.obj.state['pre']['measure']
+        for vm in pair.values():
+            self.s.servers.pop(vm.pop('server'))
+            self.s.ports[vm['port']].device_id = ''
+        self.obj.commit()
+        self.obj.cloud.compute.servers.return_value = []
+        failed = Response()
+        failed.status_code = 400
+        failed.headers['Content-Type'] = 'application/json'
+        failed._content = json.dumps({'badRequest': {'message':'unexpected response-only hypervisor key'}}).encode()
+        self.obj.cloud.compute.post.return_value = failed
+        before = {k:(vm['port'],vm['network'],vm['subnet']) for k,vm in pair.items()}
+        with self.assertRaises(BadRequestException):
+            self.obj.create('measure')
+        self.assertTrue(all('server' not in vm for vm in pair.values()))
+        def accepted(path, *, microversion, **request):
+            data = request['json']['server']; key = data['name'][-1]
+            server = NS(id='measure'+key, status='ACTIVE', metadata=data['metadata'],
+                        compute_host=data['host'], hypervisor_hostname=data['hypervisor_hostname'])
+            self.s.servers[server.id] = server
+            self.s.ports[data['networks'][0]['port']].device_id = server.id
+            response = Mock(status_code=202)
+            response.json.return_value = {'server': {'id':server.id}}
+            return response
+        self.obj.cloud.compute.post.side_effect = accepted
+        self.obj.create('measure'); self.obj.create('measure')
+        self.assertEqual(self.obj.cloud.compute.post.call_count, 3)  # one rejected, two accepted
+        self.assertEqual(before, {k:(vm['port'],vm['network'],vm['subnet']) for k,vm in pair.items()})
+        self.obj.cloud.network.create_port.assert_not_called()
+        self.obj.cloud.network.create_network.assert_not_called()
+        self.obj.cloud.network.create_router.assert_not_called()
         self.obj.cloud.compute.create_server.assert_not_called()
 
     def test_wrong_nova_or_binding_host_blocks_workload_audit(self):

@@ -143,9 +143,43 @@ def finish(root):
         mark(root, 13, 'end', also='total.end')
 
 
+def preparation_retry_check(root, inventory):
+    """Permit only an interrupted phase 04 before any recorded VM or later phase."""
+    root = pathlib.Path(root)
+    if not root.is_absolute() or schema_version(root) != CANONICAL_SCHEMA:
+        raise ValueError('Preparation retry requires an absolute schema-2 run directory')
+    runtime = json.loads((root/'runtime.json').read_text())
+    cfg = json.loads((root/'validation-config.json').read_text())
+    state = json.loads((root/'validation-resources.json').read_text())
+    if (runtime.get('run_id') != root.name or cfg.get('run') != root.name or
+            runtime.get('inventory') != inventory or cfg.get('inventory') != inventory):
+        raise ValueError('Preparation retry run/inventory identity changed')
+    for phase in range(4):
+        if timestamp(root/'metrics'/f'phase{phase:02d}.end') is None:
+            raise ValueError('Preparation retry requires completed phases 00 through 03')
+    if timestamp(root/'metrics/phase04.start') is None or (root/'metrics/phase04.end').exists():
+        raise ValueError('Preparation retry requires an incomplete phase 04')
+    forbidden = ['total.end', 'control_plane_downtime.start', 'control_plane_downtime.end',
+                 'db_migration.start', 'db_migration.end',
+                 'dataplane_convergence.start', 'dataplane_convergence.end']
+    forbidden += [f'phase{phase:02d}.{edge}' for phase in range(5,14) for edge in ('start','end')]
+    if any((root/'metrics'/name).exists() for name in forbidden):
+        raise ValueError('Preparation retry is forbidden after OVN staging, target changes or freeze')
+    pre = state.get('pre', {})
+    pair = pre.get('measure', {})
+    if (state.get('schema_version') != 2 or state.get('historical_dual_pair') or
+            state.get('post') or pre.get('cleanup_started') or pre.get('cleaned') or
+            pre.get('existing') or pre.get('tcp') or set(pair) != {'0','1'} or
+            any(vm.get('server') or vm.get('owned') is not True or not vm.get('port')
+                for vm in pair.values())):
+        raise ValueError('Preparation retry supports first VM-create failure only; preserve later workloads')
+    if cfg.get('placement_enabled') is not True or set(cfg.get('placement', {})) != {'0','1'}:
+        raise ValueError('Preparation retry requires the original explicit placement checkpoint')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('mark', 'phase-entry', 'report-start', 'finish', 'resume-check'))
+    parser.add_argument('action', choices=('mark', 'phase-entry', 'report-start', 'finish', 'resume-check', 'preparation-retry-check'))
     parser.add_argument('root', type=pathlib.Path)
     parser.add_argument('phase', type=int, nargs='?')
     parser.add_argument('edge', choices=('start', 'end'), nargs='?')
@@ -153,8 +187,13 @@ def main():
     parser.add_argument('--timestamp-file', type=pathlib.Path)
     parser.add_argument('--freeze-start', action='store_true')
     parser.add_argument('--also', choices=('total.start', 'dataplane_convergence.start'))
+    parser.add_argument('--inventory')
     args = parser.parse_args()
-    if args.action == 'phase-entry':
+    if args.action == 'preparation-retry-check':
+        if not args.inventory:
+            parser.error('preparation-retry-check requires --inventory')
+        preparation_retry_check(args.root, args.inventory)
+    elif args.action == 'phase-entry':
         if args.phase is None:
             parser.error('phase-entry requires a canonical phase')
         if schema_version(args.root) == CANONICAL_SCHEMA:

@@ -1,0 +1,100 @@
+---
+# Restricted retry for the first VM-create failure in phase 04, using its run.
+# No bootstrap/new run, repeat backup, or destructive reset is performed.
+- name: Recover the first VM-create failure checkpoint before any target changes
+  hosts: localhost
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  vars_files:
+    - group_vars/all.yml
+  tasks:
+    - name: Require one explicit preparation checkpoint and the complete inventory
+      ansible.builtin.assert:
+        that:
+          - migration_resume_run_dir is match('^/')
+          - ansible_inventory_sources | length == 1
+          - ansible_limit | default('') | length == 0
+          - not ansible_check_mode
+
+    - name: Refuse retry if staging MTU change freeze or recorded VM creation has begun
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/scripts/phase_schema.py"
+          - preparation-retry-check
+          - "{{ migration_resume_run_dir }}"
+          - --inventory
+          - "{{ ansible_inventory_sources[0] }}"
+      changed_when: false
+
+    - name: Read the original runtime workload and prerequisite checkpoints
+      ansible.builtin.set_fact:
+        validation_retry_runtime: "{{ lookup('file', migration_resume_run_dir + '/runtime.json') | from_json }}"
+        validation_retry_config: "{{ lookup('file', migration_resume_run_dir + '/validation-config.json') | from_json }}"
+        validation_retry_prerequisites: "{{ lookup('file', migration_resume_run_dir + '/validation-prerequisites.json') | from_json }}"
+
+    - name: Verify the original inventory topology still matches this retry
+      ansible.builtin.assert:
+        that:
+          - groups['control'] | sort == validation_retry_runtime.control_hosts | sort
+          - groups['network'] | sort == validation_retry_runtime.network_hosts | sort
+          - groups['compute'] | sort == validation_retry_runtime.compute_hosts | sort
+          - validation_retry_prerequisites.image.id == validation_retry_config.image
+          - validation_retry_prerequisites.flavor.id == validation_retry_config.flavor
+
+    - name: Restore the original run paths settings and prerequisites
+      ansible.builtin.set_fact:
+        migration_run_dir: "{{ migration_resume_run_dir }}"
+        migration_run_id: "{{ validation_retry_runtime.run_id }}"
+        kolla_inventory_runtime: "{{ validation_retry_runtime.inventory }}"
+        kolla_ansible_bin_runtime: "{{ validation_retry_runtime.kolla_ansible }}"
+        kolla_globals_path: "{{ validation_retry_runtime.globals }}"
+        openrc_path: "{{ validation_retry_runtime.openrc }}"
+        ovn_cli_host_runtime: "{{ validation_retry_runtime.ovn_cli_host }}"
+        db_sync_host_runtime: "{{ validation_retry_runtime.db_sync_host }}"
+        chassis_hosts_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | list }}"
+        chassis_count_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | length }}"
+        validation_workloads_enabled: true
+        validation_retry_preparation_runtime: true
+        validation_prerequisites_runtime: "{{ validation_retry_prerequisites }}"
+        validation_pair_compute_hosts: "{{ [validation_retry_config.placement['0'].inventory_host, validation_retry_config.placement['1'].inventory_host] }}"
+        validation_pair_d_enabled: "{{ validation_retry_config.pair_d_enabled | bool }}"
+        target_geneve_mtu: "{{ validation_retry_config.target_mtu | int }}"
+        validation_allow_pre_cutover_guest_reboot: "{{ validation_retry_config.allow_pre_cutover_guest_reboot | bool }}"
+        validation_allow_post_cutover_guest_reboot: "{{ validation_retry_config.allow_post_cutover_guest_reboot | bool }}"
+        validation_post_cutover_dhcp_timeout_seconds: "{{ validation_retry_config.post_cutover_timeout | int }}"
+
+    - name: Read live Kolla source settings before repeating precheck
+      ansible.builtin.slurp:
+        src: "{{ kolla_globals_path }}"
+      register: validation_retry_globals
+
+    - name: Restore source settings for the normal source architecture guards
+      ansible.builtin.set_fact:
+        source_kolla_globals: "{{ validation_retry_globals.content | b64decode | from_yaml }}"
+
+- import_playbook: playbooks/02-precheck.yml
+
+- name: Require unchanged destination identities before reusing prepared resources
+  hosts: localhost
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Refuse to replace the saved placement or validation configuration
+      ansible.builtin.assert:
+        that:
+          - (lookup('file', migration_run_dir + '/validation-placement.json') | from_json) == validation_retry_config.placement
+          - (lookup('file', migration_run_dir + '/validation-config.json') | from_json) == validation_retry_config
+
+- import_playbook: playbooks/04-validation-workloads.yml
+- import_playbook: playbooks/05-stage-ovn-db.yml
+- import_playbook: playbooks/06-target-config.yml
+- import_playbook: playbooks/07-migrate-db.yml
+- import_playbook: playbooks/08-cutover.yml
+- import_playbook: playbooks/09-cleanup.yml
+- import_playbook: playbooks/10-restore-neutron.yml
+- import_playbook: playbooks/11-validate.yml
+- import_playbook: playbooks/12-workload-validation.yml
+- import_playbook: playbooks/13-report.yml
