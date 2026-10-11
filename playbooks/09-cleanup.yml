@@ -59,8 +59,6 @@
       args:
         executable: /bin/bash
 
-      when: not (hostvars['localhost']['ns_enabled'] | default(false) | bool)
-
     - name: Remove old OVS-agent br-int/br-ex patch pair in provider-disabled supported scope
       ansible.builtin.shell: |
         set -euo pipefail
@@ -68,8 +66,6 @@
         docker exec openvswitch_vswitchd ovs-vsctl --if-exists del-port br-ex phy-br-ex
       args:
         executable: /bin/bash
-
-      when: not (hostvars['localhost']['ns_enabled'] | default(false) | bool)
 
     - name: Verify legacy namespaces are gone without requiring local OVN metadata namespaces
       ansible.builtin.shell: |
@@ -81,22 +77,6 @@
       args:
         executable: /bin/bash
       changed_when: false
-
-      when: not (hostvars['localhost']['ns_enabled'] | default(false) | bool)
-
-
-- name: Phase 09 - Clean only checkpointed legacy namespaces after external takeover
-  hosts: localhost
-  gather_facts: false
-  become: true
-  any_errors_fatal: true
-  vars_files: [../group_vars/all.yml]
-  tasks:
-    - name: Preserve uplinks OVN ports and unrelated namespaces during N-S cleanup
-      ansible.builtin.include_tasks: ns-operation-tasks.yml
-      vars:
-        ns_action: cleanup
-      when: hostvars['localhost']['ns_enabled'] | default(false) | bool
 
     - name: Mark phase 09 end
       ansible.builtin.command:

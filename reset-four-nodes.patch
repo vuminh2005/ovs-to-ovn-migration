@@ -1,0 +1,916 @@
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,13 @@
+ # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
++
++## Four-node reset update
++
++`reset-lab-to-ovs.yml` now resets the lab with `controller`, `network1`,
++`compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
++with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
++See [four-node reset instructions](docs/reset-four-nodes.md) for destructive
++scope, commands, new UUIDs and retry. Migration workload placement and Pair D
++are not changed by this reset-focused update.
+ 
+ V2 turns the lab-validated migration into a **single-invocation migration proof of concept** for its supported scope. It discovers the Kolla inventory path from the `-i` argument, finds `kolla-ansible` from the active execution environment, parses `/etc/kolla/globals.yml`, uses standard Kolla inventory groups to find control/network/compute/OVN hosts, and reads the generated ML2/OVN config to discover the real OVN NB/SB connection strings.
+ 
+--- /dev/null
++++ b/docs/reset-four-nodes.md
+@@ -0,0 +1,119 @@
++# Reset lặp lại cụm 4 node về ML2/OVS
++
++Bản reset này được sửa từ commit `a77af56`, dành cho lab hiện tại:
++
++| Group Kolla | Host | eth0 |
++|---|---|---|
++| control | controller | 10.0.0.213/24 |
++| network | network1 | 10.0.0.160/24 |
++| compute | compute1 | 10.0.0.62/24 |
++| compute | compute2 | 10.0.0.171/24 |
++
++Dùng inventory Kolla đầy đủ tại `/root/multinode`. `inventory.example` chỉ là
++phần minh họa host, không đủ service groups để dùng deploy. Network2 phải được
++loại khỏi inventory đầy đủ; reset sẽ từ chối nếu còn host đó ở bất kỳ group nào.
++
++## Khi nào chạy
++
++Chạy sau một lần migration/demo khi muốn xóa workload và dựng lại baseline OVS.
++Có thể chạy khi cụm đang OVS hoặc OVN. Lab vừa in `OVS_4NODE_BASELINE_READY` chưa
++cần chạy reset lại ngay. Các thay đổi Pair A/B/C/D trong migration chưa thuộc
++phần sửa reset này.
++
++Reset destroy toàn bộ Kolla/OpenStack nested trên 4 node. Instance (kể cả Pair D
++tạo thủ công), network, subnet, router, security group và Glance image/flavor cũ
++sẽ mất theo state của cloud bị destroy. Image/flavor Ubuntu validation được
++chuẩn bị lại sau deploy. Không phải rollback bảo toàn workload.
++
++Giữ VM lab bên ngoài Viettel Cloud, host NIC eth0/eth1/eth2, `neutron-ext`, SSH,
++venv Kolla, Docker image cache, `/root/multinode`, `/etc/kolla/passwords.yml`,
++cache Ubuntu trên host và migration evidence. Controller không reboot;
++network1/compute1/compute2 reboot lần lượt. Mặc định
++`reset_delete_migration_backups: false`; chỉ đổi khi thực sự muốn xóa evidence cũ.
++
++## Lệnh chạy cho lần reset sau
++
++Từ thư mục chứa bản playbook đã sửa:
++
++```bash
++source /root/venvs/kolla-2024.1/bin/activate
++
++ansible-playbook -i /root/multinode reset-lab-to-ovs.yml --syntax-check
++
++ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
++    -e reset_lab_confirm=true
++```
++
++Không dùng `--limit`, `--check`, `--start-at-task` hoặc inventory trích đoạn.
++Nếu đổi đường dẫn inventory, dùng cùng đường dẫn tuyệt đối cho cả hai:
++
++```bash
++ansible-playbook -i /root/my-multinode reset-lab-to-ovs.yml \
++    -e reset_kolla_inventory=/root/my-multinode \
++    -e reset_lab_confirm=true
++```
++
++`group_vars/reset.yml` chứa cấu hình riêng của reset. Không phụ thuộc thư mục
++preparation của lần chuyển 5 → 4 node, không cần image export EW và không đổi
++inventory giữa destroy/deploy.
++
++## Trình tự và trạng thái cuối
++
++1. Kiểm tra đúng 4 host, full service groups, hostname/IP và MTU eth1 1450.
++2. Tạo snapshot riêng tại `/root/kolla-reset-snapshots/<UTC-run-id>/`, lưu globals,
++   custom config, inventory và passwords với quyền truy cập giới hạn.
++3. Dừng guest libvirt trên cả hai compute; destroy Kolla bằng cùng full inventory.
++4. Kiểm tra RabbitMQ volume và Neutron namespace còn sót; reboot tuần tự, kiểm
++   tra bridge/namespace residue. Lỗi bất kỳ host nào sẽ dừng toàn bộ playbook.
++5. Dựng lại OpenStack 2024.1/QEMU, ML2/OVS + VXLAN, centralized L3, native OVS
++   firewall; không provider/DVR/agent HA. Giữ kiểm tra RabbitMQ của baseline.
++6. Kiểm tra firewall trên cả 3 OVS chassis; rendered MTU và network VXLAN tạm
++   phải có MTU 1400. Network tạm được xóa sau kiểm tra.
++7. Kiểm tra cloud không có instance/network/subnet/router, đúng hai Nova computes
++   enabled/up và sáu Neutron agents alive/enabled.
++8. Chuẩn bị Ubuntu 24.04 bằng `scripts/validation_prerequisites.py` của baseline:
++   tải từ Canonical khi cần, xác minh SHA256SUMS, upload image
++   `ovn-validation-ubuntu-24.04`, chờ ACTIVE; tạo `ovn-validation.small`
++   (1 vCPU, 1024 MB RAM, 8 GB disk). Không khôi phục image/flavor EW.
++9. Đọc lại Glance state; kiểm tra format/size và content hash với download đã
++   xác minh. Ghi `reset-complete.json` và `migration-lab.yml`, rồi in
++   `OVS_4NODE_BASELINE_READY`.
++
++Neutron override chung là `/etc/kolla/config/neutron.conf`; ML2 và OVS agent
++overrides nằm trong `/etc/kolla/config/neutron/`. Transport MTU 1450, VXLAN
++tenant MTU 1400, target Geneve MTU 1392. Không tăng MTU của NIC outer cloud.
++
++UUID image/flavor thay đổi sau mỗi lần destroy. File `migration-lab.yml` trong
++snapshot mới ghi UUID hiện tại cùng `target_geneve_mtu: 1392`. Sau khi phần
++migration 4 node được sửa xong, dùng file của lần reset mới nhất:
++
++```bash
++ansible-playbook -i /root/multinode migrate-to-ovn.yml \
++    -e @/root/kolla-reset-snapshots/<UTC-run-id>/migration-lab.yml
++```
++
++Không dùng lại UUID hay override file của cloud đã bị destroy.
++
++## Nếu lỗi ở cuối
++
++Đọc lỗi và xử lý resource/service tương ứng. Nếu deploy, firewall và kiểm tra
++MTU đã pass, chỉ còn lỗi tải/upload image hoặc tạo flavor, có thể retry riêng
++phần prerequisites bằng snapshot của lần chạy đó:
++
++```bash
++source /root/venvs/kolla-2024.1/bin/activate
++source /etc/kolla/admin-openrc.sh
++python3 scripts/reset_validation.py finish \
++    /root/kolla-reset-snapshots/<UTC-run-id>
++```
++
++Helper đọc lại image, chờ ACTIVE và từ chối duplicate/incompatible resource.
++Mỗi lần reset toàn bộ có snapshot mới; không dùng checkpoint một lần của kit
++5 → 4 node. Các kiểm tra offline không thay thế việc chạy thử trên lab.
++
++## Nguồn
++
++- Baseline ZIP người dùng cung cấp: `a77af56d69f170f7c79694f15266eb0f0cf39754`.
++- https://docs.openstack.org/kolla-ansible/2024.1/user/operating-kolla.html
++- https://docs.openstack.org/kolla-ansible/2024.1/admin/advanced-configuration.html
++- https://cloud-images.ubuntu.com/releases/noble/release/
+--- /dev/null
++++ b/group_vars/reset.yml
+@@ -0,0 +1,24 @@
++---
++# Repeated destructive reset of the four-node nested lab.
++reset_lab_confirm: false
++reset_kolla_venv: /root/venvs/kolla-2024.1
++reset_kolla_inventory: /root/multinode
++reset_globals_path: /etc/kolla/globals.yml
++reset_config_path: /etc/kolla/config
++reset_backup_root: /root/ovs-to-ovn-backup
++reset_delete_migration_backups: false
++reset_snapshot_root: /root/kolla-reset-snapshots
++reset_tunnel_mtu: 1450
++reset_source_mtu: 1400
++reset_target_mtu: 1392
++reset_expected_ips:
++  controller: 10.0.0.213
++  network1: 10.0.0.160
++  compute1: 10.0.0.62
++  compute2: 10.0.0.171
++reset_managed_image_name: ovn-validation-ubuntu-24.04
++reset_managed_image_url: https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
++reset_managed_flavor_name: ovn-validation.small
++reset_image_cache_dir: /var/cache/ovs-to-ovn-validation
++reset_image_download_timeout: 120
++reset_image_active_timeout: 900
+--- a/inventory.example
++++ b/inventory.example
+@@ -1,13 +1,14 @@
+ # Use the normal full Kolla-Ansible multinode inventory. This excerpt only
+ # illustrates the standard groups V2 expects to already exist.
+ [control]
+-controller1
++controller ansible_host=10.0.0.213
+ 
+ [network]
+-network01
++network1 ansible_host=10.0.0.160
+ 
+ [compute]
+-compute1
++compute1 ansible_host=10.0.0.62
++compute2 ansible_host=10.0.0.171
+ 
+ # Standard Kolla inventories also define ovn-controller and ovn-database groups
+ # (often through children). V2 validates their presence before making changes.
+--- a/reset-lab-to-ovs.yml
++++ b/reset-lab-to-ovs.yml
+@@ -2,7 +2,8 @@
+ # Destructive lab reset:
+ #   post-migration OpenStack/Kolla -> clean ML2/OVS source deployment
+ #
+-# Run from lab2-controller:
++# Repeated reset on controller + network1 + compute1 + compute2.
++# Run from controller (full four-node Kolla inventory):
+ #   source /root/venvs/kolla-2024.1/bin/activate
+ #   ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
+ #     -e reset_lab_confirm=true
+@@ -22,6 +23,9 @@
+   hosts: localhost
+   gather_facts: false
+   become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
+   vars:
+     reset_lab_confirm: false
+     reset_kolla_venv: /root/venvs/kolla-2024.1
+@@ -40,6 +44,31 @@
+           This playbook destroys the current Kolla/OpenStack deployment.
+           Re-run with -e reset_lab_confirm=true.
+ 
++    - name: Require complete execution with the same four-node Kolla inventory
++      ansible.builtin.assert:
++        that:
++          - ansible_inventory_sources | length == 1
++          - reset_kolla_inventory == ansible_inventory_sources[0]
++          - ansible_limit | default('') | length == 0
++          - not ansible_check_mode
++          - groups['control'] | sort == ['controller']
++          - groups['network'] | sort == ['network1']
++          - groups['compute'] | sort == ['compute1', 'compute2']
++        fail_msg: Use one full four-node Kolla inventory; no --limit or --check.
++
++    - name: Verify all hosts and service groups in the inventory before reset
++      ansible.builtin.shell: |
++        set -euo pipefail
++        source {{ (reset_kolla_venv + '/bin/activate') | quote }}
++        python3 {{ (playbook_dir + '/scripts/reset_validation.py') | quote }} scope {{ reset_kolla_inventory | quote }}
++      args:
++        executable: /bin/bash
++      changed_when: false
++
++    - name: Publish successful scope check to following plays
++      ansible.builtin.set_fact:
++        reset_scope_verified: true
++
+     - name: Verify required local files exist
+       ansible.builtin.stat:
+         path: "{{ item }}"
+@@ -57,7 +86,7 @@
+ 
+     - name: Create one reset snapshot identifier
+       ansible.builtin.set_fact:
+-        reset_snapshot_id: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
++        reset_snapshot_id: "{{ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N') }}"
+ 
+     - name: Create reset snapshot directory
+       ansible.builtin.file:
+@@ -66,6 +95,24 @@
+         owner: root
+         group: root
+         mode: "0700"
++
++    - name: Publish this reset's snapshot path
++      ansible.builtin.set_fact:
++        reset_run_dir: "{{ reset_snapshot_root }}/{{ reset_snapshot_id }}"
++
++    - name: Preserve the full four-node Kolla inventory
++      ansible.builtin.copy:
++        src: "{{ reset_kolla_inventory }}"
++        dest: "{{ reset_run_dir }}/multinode.before"
++        remote_src: true
++        mode: '0600'
++
++    - name: Preserve Kolla passwords before reset
++      ansible.builtin.copy:
++        src: /etc/kolla/passwords.yml
++        dest: "{{ reset_run_dir }}/passwords.yml.before"
++        remote_src: true
++        mode: '0600'
+ 
+     - name: Preserve current globals.yml before reset
+       ansible.builtin.copy:
+@@ -92,11 +139,56 @@
+       changed_when: true
+ 
+ 
++- name: Verify all four lab identities and tunnel MTU before stopping guests
++  hosts: control:network:compute
++  gather_facts: false
++  become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
++  tasks:
++    - name: Require successful controller scope check
++      ansible.builtin.assert:
++        that:
++          - hostvars['localhost']['reset_scope_verified'] | default(false) | bool
++    - name: Read actual lab hostname
++      ansible.builtin.command: hostname -s
++      register: reset_actual_hostname
++      changed_when: false
++    - name: Read eth0 management address
++      ansible.builtin.command: ip -4 -o address show dev eth0
++      register: reset_management
++      changed_when: false
++    - name: Verify expected hostname and management IP
++      ansible.builtin.assert:
++        that:
++          - reset_actual_hostname.stdout | trim == inventory_hostname
++          - reset_expected_ips[inventory_hostname] + '/24' in reset_management.stdout
++    - name: Read eth1 tunnel link
++      ansible.builtin.command: ip -j -d link show eth1
++      register: reset_tunnel
++      changed_when: false
++      when: inventory_hostname in groups['network'] + groups['compute']
++    - name: Verify nested tunnel MTU before reset
++      ansible.builtin.assert:
++        that:
++          - ((reset_tunnel.stdout | from_json)[0].mtu | int) == (reset_tunnel_mtu | int)
++      when: inventory_hostname in groups['network'] + groups['compute']
++
++
+ - name: Stop running libvirt guests before Kolla destroy
+   hosts: compute
+   gather_facts: false
+   become: true
+-  tasks:
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
++  tasks:
++    - name: Require controller scope verification before stopping any guest
++      ansible.builtin.assert:
++        that:
++          - hostvars['localhost']['reset_scope_verified'] | default(false) | bool
++
+     - name: Stop all running guests only when nova_libvirt container exists
+       ansible.builtin.shell: |
+         set -euo pipefail
+@@ -119,10 +211,21 @@
+   hosts: localhost
+   gather_facts: false
+   become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
+   vars:
+     reset_kolla_venv: /root/venvs/kolla-2024.1
+     reset_kolla_inventory: /root/multinode
+   tasks:
++    - name: Verify inventory has not changed since the reset snapshot
++      ansible.builtin.shell: |
++        set -euo pipefail
++        cmp -- {{ reset_kolla_inventory | quote }} {{ (reset_run_dir + '/multinode.before') | quote }}
++      args:
++        executable: /bin/bash
++      changed_when: false
++
+     - name: Run kolla-ansible destroy
+       ansible.builtin.shell: |
+         set -euo pipefail
+@@ -140,9 +243,12 @@
+ 
+ 
+ - name: Verify Kolla runtime residue after destroy
+-  hosts: all
+-  gather_facts: false
+-  become: true
++  hosts: control:network:compute
++  gather_facts: false
++  become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
+   tasks:
+     - name: List remaining containers
+       ansible.builtin.command: docker ps -a
+@@ -186,6 +292,9 @@
+   hosts: network:compute
+   gather_facts: false
+   become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
+   tasks:
+     - name: Fail if qrouter qdhcp or ovnmeta namespaces remain
+       ansible.builtin.shell: |
+@@ -208,6 +317,9 @@
+   hosts: network:compute
+   gather_facts: false
+   become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
+   serial: 1
+   tasks:
+     - name: Reboot host and wait for it to return
+@@ -221,6 +333,9 @@
+   hosts: network:compute
+   gather_facts: false
+   become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
+   tasks:
+     - name: Show compact interface state
+       ansible.builtin.command: ip -br link
+@@ -281,6 +396,9 @@
+   hosts: localhost
+   gather_facts: false
+   become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
+   vars:
+     reset_globals_path: /etc/kolla/globals.yml
+     reset_config_path: /etc/kolla/config
+@@ -410,6 +528,8 @@
+ 
+           openstack_logging_debug: "False"
+ 
++          node_custom_config: "{{ reset_config_path }}"
++
+     - name: Remove old custom Kolla overrides
+       ansible.builtin.file:
+         path: "{{ reset_config_path }}"
+@@ -439,6 +559,29 @@
+         state: absent
+       when: reset_delete_migration_backups | bool
+ 
++    - name: Set nested physical MTU in the common Neutron override
++      ansible.builtin.copy:
++        dest: "{{ reset_config_path }}/neutron.conf"
++        owner: root
++        group: root
++        mode: '0644'
++        content: |
++          [DEFAULT]
++          global_physnet_mtu = {{ reset_tunnel_mtu }}
++
++    - name: Set tunnel path MTU and target Geneve header size
++      ansible.builtin.copy:
++        dest: "{{ reset_config_path }}/neutron/ml2_conf.ini"
++        owner: root
++        group: root
++        mode: '0644'
++        content: |
++          [ml2]
++          path_mtu = {{ reset_tunnel_mtu }}
++
++          [ml2_type_geneve]
++          max_header_size = 38
++
+     - name: Validate source globals contain no OVN migration override
+       ansible.builtin.shell: |
+         set -euo pipefail
+@@ -460,10 +603,21 @@
+   hosts: localhost
+   gather_facts: false
+   become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
+   vars:
+     reset_kolla_venv: /root/venvs/kolla-2024.1
+     reset_kolla_inventory: /root/multinode
+   tasks:
++    - name: Verify deploy uses the same full inventory as destroy
++      ansible.builtin.shell: |
++        set -euo pipefail
++        cmp -- {{ reset_kolla_inventory | quote }} {{ (reset_run_dir + '/multinode.before') | quote }}
++      args:
++        executable: /bin/bash
++      changed_when: false
++
+     - name: Bootstrap servers
+       ansible.builtin.shell: |
+         set -euo pipefail
+@@ -638,11 +792,22 @@
+   hosts: network:compute
+   gather_facts: false
+   become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
+   tasks:
+     - name: Verify neutron_openvswitch_agent is running
+       ansible.builtin.shell: |
+         set -euo pipefail
+         test -n "$(docker ps -q --filter name=^/neutron_openvswitch_agent$)"
++      args:
++        executable: /bin/bash
++      changed_when: false
++
++    - name: Verify OVS native firewall on every network and compute host
++      ansible.builtin.shell: |
++        set -euo pipefail
++        grep -Eq '^[[:space:]]*firewall_driver[[:space:]]*=[[:space:]]*openvswitch[[:space:]]*$' /etc/kolla/neutron-openvswitch-agent/openvswitch_agent.ini
+       args:
+         executable: /bin/bash
+       changed_when: false
+@@ -664,6 +829,9 @@
+   hosts: network
+   gather_facts: false
+   become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
+   tasks:
+     - name: Verify DHCP L3 and metadata agents are running
+       ansible.builtin.shell: |
+@@ -697,7 +865,48 @@
+   hosts: localhost
+   gather_facts: false
+   become: true
+-  tasks:
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/reset.yml
++  tasks:
++    - name: Verify rendered Neutron MTU overrides on controller
++      ansible.builtin.shell: |
++        set -euo pipefail
++        python3 - <<'PYCODE'
++        import configparser
++        for filename, section, key, expected in (
++            ('neutron.conf', 'DEFAULT', 'global_physnet_mtu', {{ reset_tunnel_mtu }}),
++            ('ml2_conf.ini', 'ml2', 'path_mtu', {{ reset_tunnel_mtu }}),
++            ('ml2_conf.ini', 'ml2_type_geneve', 'max_header_size', 38),
++        ):
++            parser = configparser.ConfigParser(interpolation=None, strict=False)
++            parser.read('/etc/kolla/neutron-server/' + filename)
++            assert parser.getint(section, key) == expected, (filename, section, key)
++        print('NESTED_MTU_CONFIG_VERIFIED')
++        PYCODE
++      args:
++        executable: /bin/bash
++      changed_when: false
++
++    - name: Prove source Neutron creates a VXLAN network with MTU 1400
++      ansible.builtin.shell: |
++        set -euo pipefail
++        source /etc/kolla/admin-openrc.sh
++        python3 - <<'PYCODE'
++        import json, subprocess, uuid
++        name = 'reset-mtu-smoke-' + str(uuid.uuid4())
++        net = json.loads(subprocess.check_output(['openstack','network','create',name,'-f','json'],text=True))
++        try:
++            assert net['provider:network_type'] == 'vxlan', net['provider:network_type']
++            assert int(net['mtu']) == {{ reset_source_mtu }}, net['mtu']
++            print('SOURCE_VXLAN_MTU_VERIFIED')
++        finally:
++            subprocess.run(['openstack','network','delete',net['id']],check=True)
++        PYCODE
++      args:
++        executable: /bin/bash
++      changed_when: true
++
+     - name: Show Neutron agents
+       ansible.builtin.shell: |
+         set -euo pipefail
+@@ -736,6 +945,29 @@
+           - "=== SOURCE CLOUD RESOURCES ==="
+           - "{{ reset_cloud.stdout }}"
+           - >-
+-            Reset complete: source cloud is redeployed as ML2/OVS + VXLAN
++            Source service checks passed: cloud is redeployed as ML2/OVS + VXLAN
+             with OVS native firewall. The migration repository, Kolla venv,
+             inventory, passwords.yml, Docker images and host neutron-ext are preserved.
++
++    - name: Save fresh Ubuntu prerequisite settings for this reset
++      ansible.builtin.copy:
++        dest: "{{ reset_run_dir }}/validation-prerequisites-config.json"
++        mode: '0600'
++        content: "{{ {'image': '', 'flavor': '', 'managed_image_name': reset_managed_image_name, 'managed_flavor_name': reset_managed_flavor_name, 'image_url': reset_managed_image_url, 'cache_dir': reset_image_cache_dir, 'download_timeout': reset_image_download_timeout | int, 'image_active_timeout': reset_image_active_timeout | int, 'source_mtu': reset_source_mtu | int, 'target_geneve_mtu': reset_target_mtu | int} | to_nice_json }}"
++
++    - name: Prepare Ubuntu image flavor and validate the empty four-node OVS baseline
++      ansible.builtin.shell: |
++        set -euo pipefail
++        source {{ (reset_kolla_venv + '/bin/activate') | quote }}
++        source /etc/kolla/admin-openrc.sh
++        python3 {{ (playbook_dir + '/scripts/reset_validation.py') | quote }} finish {{ reset_run_dir | quote }}
++      args:
++        executable: /bin/bash
++      register: reset_completion
++      changed_when: true
++
++    - name: Show completed reset and the new migration override file
++      ansible.builtin.debug:
++        msg:
++          - "{{ reset_completion.stdout_lines }}"
++          - "Use fresh UUIDs from {{ reset_run_dir }}/migration-lab.yml; previous image/flavor UUIDs were destroyed."
+--- /dev/null
++++ b/scripts/reset_validation.py
+@@ -0,0 +1,144 @@
++#!/usr/bin/env python3
++"""Scope and completion checks for repeatable four-node Kolla lab resets."""
++import argparse
++import hashlib
++import json
++from pathlib import Path
++import subprocess
++from datetime import datetime, timezone
++
++from workload_validation import save
++import validation_prerequisites as prerequisites
++
++EXPECTED = {'control': {'controller'}, 'network': {'network1'},
++            'compute': {'compute1', 'compute2'}}
++
++
++def run(args):
++    # Let normal CLI diagnostics reach the operator; never enable debug logging.
++    result = subprocess.run(args, stdout=subprocess.PIPE, text=True)
++    if result.returncode:
++        raise RuntimeError(f'{" ".join(args[:3])} failed (rc={result.returncode})')
++    return result.stdout
++
++
++def members(data, group, seen=None):
++    seen = set() if seen is None else seen
++    if group in seen:
++        return set()
++    seen.add(group)
++    value = data.get(group, {})
++    hosts = set(value.get('hosts', []))
++    for child in value.get('children', []):
++        hosts.update(members(data, child, seen))
++    return hosts
++
++
++def validate_inventory(data):
++    for group, expected in EXPECTED.items():
++        if members(data, group) != expected:
++            raise RuntimeError(f'Reset requires {group}={sorted(expected)}')
++    allowed = set().union(*EXPECTED.values()) | {'localhost', '127.0.0.1'}
++    extra = members(data, 'all') - allowed
++    if extra:
++        raise RuntimeError(f'Unexpected reset inventory hosts: {sorted(extra)}')
++    if not {'ovn-controller', 'ovn-database', 'neutron-ovn-metadata-agent'} <= data.keys():
++        raise RuntimeError('Use the full Kolla inventory, including OVN groups')
++
++
++def scope(inventory):
++    data = json.loads(run(['ansible-inventory', '-i', str(inventory), '--list']))
++    validate_inventory(data)
++    print('RESET_4NODE_SCOPE_VERIFIED')
++
++
++def cloud_json(*args):
++    return json.loads(run(['openstack', *args, '-f', 'json']))
++
++
++def validate_cloud():
++    for noun, extra in (('server', ['--all-projects']), ('network', []), ('subnet', []), ('router', [])):
++        if cloud_json(noun, 'list', *extra):
++            raise RuntimeError(f'Cloud must have no workload {noun} resources after reset')
++    services = [r for r in cloud_json('compute', 'service', 'list') if r.get('Binary') == 'nova-compute']
++    if len(services) != 2 or {r.get('Host') for r in services} != EXPECTED['compute']:
++        raise RuntimeError('Expected exactly compute1 and compute2 Nova services')
++    if any(r.get('Status') != 'enabled' or r.get('State') != 'up' for r in services):
++        raise RuntimeError('Both Nova computes must be enabled/up')
++    agents = cloud_json('network', 'agent', 'list')
++    expected = {('Open vSwitch agent', host) for host in ('network1', 'compute1', 'compute2')}
++    expected |= {(kind, 'network1') for kind in ('L3 agent', 'DHCP agent', 'Metadata agent')}
++    if len(agents) != 6 or {(r.get('Agent Type'), r.get('Host')) for r in agents} != expected:
++        raise RuntimeError('Expected three OVS agents and DHCP/L3/metadata only on network1')
++    if any(r.get('Alive') not in (True, ':-)', 'True') or r.get('State') not in ('UP', True, 'enabled') for r in agents):
++        raise RuntimeError('All six source Neutron agents must be alive/enabled')
++
++
++def verify_image(image, provenance):
++    if image.get('status') != 'active' or image.get('disk_format') != 'qcow2' or image.get('container_format') != 'bare':
++        raise RuntimeError(f'Validation image must be ACTIVE qcow2/bare: status={image.get("status")}, format={image.get("disk_format")}')
++    if int(image.get('size') or 0) <= 0:
++        raise RuntimeError('Validation image has no content')
++    if provenance.get('id') == image['id'] and provenance.get('cache_path'):
++        path = Path(provenance['cache_path'])
++        if prerequisites.digest(path) != provenance['sha256']:
++            raise RuntimeError('Verified Ubuntu cache checksum changed')
++        algorithm = image.get('os_hash_algo') if image.get('os_hash_value') else 'md5'
++        expected = image.get('os_hash_value') or image.get('checksum')
++        if not algorithm or not expected:
++            raise RuntimeError('Glance image has no content checksum')
++        actual = hashlib.new(algorithm)
++        with path.open('rb') as stream:
++            for block in iter(lambda: stream.read(1024 * 1024), b''):
++                actual.update(block)
++        if path.stat().st_size != int(image['size']) or actual.hexdigest().lower() != str(expected).lower():
++            raise RuntimeError('Glance content differs from verified Ubuntu download')
++
++
++def finish(root, cloud):
++    marker = root / 'reset-complete.json'
++    if marker.exists():
++        raise RuntimeError('This reset snapshot already completed; start a new reset for a new cycle')
++    validate_cloud()
++    cfg = json.loads((root / 'validation-prerequisites-config.json').read_text())
++    prior_path = root / 'validation-prerequisites.json'
++    prior = json.loads(prior_path.read_text()) if prior_path.exists() else {}
++    result = prerequisites.prepare(cloud, cfg, root)
++    image = cloud_json('image', 'show', result['image']['id'])
++    provenance = result['image'] if result['image'].get('cache_path') else prior.get('image', {})
++    verify_image(image, provenance)
++    # Preserve provenance during a retry that reuses the partially prepared image.
++    if provenance.get('id') == image['id']:
++        result['image'].update({k: v for k, v in provenance.items() if k not in ('status', 'created')})
++    save(prior_path, result)
++    validate_cloud()
++    vars_path = root / 'migration-lab.yml'
++    save(vars_path, {'validation_image': image['id'],
++                    'validation_flavor': result['flavor']['id'],
++                    'target_geneve_mtu': cfg['target_geneve_mtu']})
++    save(marker, {'status': 'OVS_4NODE_BASELINE_READY',
++                 'completed_at': datetime.now(timezone.utc).isoformat(),
++                 'source_mtu': cfg['source_mtu'], 'target_mtu': cfg['target_geneve_mtu'],
++                 'image': result['image'], 'flavor': result['flavor'],
++                 'variables': str(vars_path)})
++    print(json.dumps({'status': 'OVS_4NODE_BASELINE_READY', 'variables': str(vars_path),
++                      'image': result['image']['name'], 'flavor': result['flavor']['name']}))
++
++
++def main():
++    p = argparse.ArgumentParser()
++    p.add_argument('action', choices=('scope', 'finish'))
++    p.add_argument('path', type=Path)
++    args = p.parse_args()
++    if args.action == 'scope':
++        scope(args.path)
++    else:
++        import openstack
++        finish(args.path, openstack.connect())
++
++
++if __name__ == '__main__':
++    try:
++        main()
++    except Exception as error:
++        raise SystemExit(f'STOP: {error}')
+--- /dev/null
++++ b/tests/fixtures/reset-four-nodes.ini
+@@ -0,0 +1,21 @@
++[control]
++controller ansible_host=10.0.0.213
++[network]
++network1 ansible_host=10.0.0.160
++[compute]
++compute1 ansible_host=10.0.0.62
++compute2 ansible_host=10.0.0.171
++[deployment]
++localhost ansible_connection=local
++[baremetal:children]
++control
++network
++compute
++[ovn-controller:children]
++network
++compute
++[ovn-database:children]
++control
++[neutron-ovn-metadata-agent:children]
++network
++compute
+--- /dev/null
++++ b/tests/test_reset_four_nodes.py
+@@ -0,0 +1,158 @@
++import hashlib
++import importlib.util
++import json
++from pathlib import Path
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++import yaml
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT / 'scripts'))
++spec = importlib.util.spec_from_file_location('reset_validation_under_test', ROOT / 'scripts/reset_validation.py')
++r = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(r)
++
++
++def inventory():
++    data = {key: {'hosts': sorted(value)} for key, value in r.EXPECTED.items()}
++    data['all'] = {'children': list(r.EXPECTED) + ['deployment']}
++    data['deployment'] = {'hosts': ['localhost']}
++    for key in ('ovn-controller', 'ovn-database', 'neutron-ovn-metadata-agent'):
++        data[key] = {'children': ['control'] if key == 'ovn-database' else ['network', 'compute']}
++    return data
++
++
++class ResetScopeTests(unittest.TestCase):
++    def test_exact_four_nodes_with_full_kolla_groups(self):
++        r.validate_inventory(inventory())
++
++    def test_three_nodes_five_nodes_or_other_auxiliary_hosts_rejected(self):
++        for update in ('missing-compute2', 'network2', 'auxiliary'):
++            data = inventory()
++            if update == 'missing-compute2':
++                data['compute']['hosts'].remove('compute2')
++            elif update == 'network2':
++                data['network']['hosts'].append('network2')
++            else:
++                data['deployment']['hosts'].append('network2')
++            with self.subTest(update=update), self.assertRaises(RuntimeError):
++                r.validate_inventory(data)
++
++    def test_inventory_excerpt_without_service_groups_is_rejected(self):
++        data = inventory()
++        del data['ovn-database']
++        with self.assertRaisesRegex(RuntimeError, 'full Kolla'):
++            r.validate_inventory(data)
++
++    def test_play_guards_precede_guest_stop_and_destroy(self):
++        plays = yaml.safe_load((ROOT / 'reset-lab-to-ovs.yml').read_text())
++        self.assertTrue(all(p['any_errors_fatal'] for p in plays))
++        names = [p['name'] for p in plays]
++        self.assertLess(names.index('Verify all four lab identities and tunnel MTU before stopping guests'),
++                        names.index('Stop running libvirt guests before Kolla destroy'))
++        first = plays[0]['tasks']
++        self.assertEqual(first[0]['name'], 'Require explicit destructive reset confirmation')
++        stop = next(p for p in plays if p['hosts'] == 'compute')
++        self.assertIn('reset_scope_verified', str(stop['tasks'][0]))
++        reboot = next(p for p in plays if 'Reboot network' in p['name'])
++        self.assertEqual(reboot['hosts'], 'network:compute')
++        self.assertEqual(reboot['serial'], 1)
++
++    def test_mtu_and_native_firewall_override_paths(self):
++        plays = yaml.safe_load((ROOT / 'reset-lab-to-ovs.yml').read_text())
++        copies = [t['ansible.builtin.copy'] for p in plays for t in p.get('tasks', []) if 'ansible.builtin.copy' in t]
++        neutron = next(c for c in copies if c['dest'] == '{{ reset_config_path }}/neutron.conf')
++        self.assertIn('global_physnet_mtu = {{ reset_tunnel_mtu }}', neutron['content'])
++        self.assertFalse(any(c['dest'] == '{{ reset_config_path }}/neutron/neutron.conf' for c in copies))
++        ml2 = next(c for c in copies if c['dest'] == '{{ reset_config_path }}/neutron/ml2_conf.ini')
++        self.assertIn('path_mtu = {{ reset_tunnel_mtu }}', ml2['content'])
++        self.assertIn('max_header_size = 38', ml2['content'])
++        chassis = next(p for p in plays if p['name'] == 'Verify source ML2 OVS service containers')
++        self.assertTrue(any('firewall' in t['name'] for t in chassis['tasks']))
++
++
++class ResetCloudTests(unittest.TestCase):
++    def cloud(self, *args):
++        if args[:3] == ('compute', 'service', 'list'):
++            return [{'Binary': 'nova-compute', 'Host': host, 'Status': 'enabled', 'State': 'up'} for host in ('compute1', 'compute2')]
++        if args[:3] == ('network', 'agent', 'list'):
++            pairs = [('Open vSwitch agent', host) for host in ('network1', 'compute1', 'compute2')]
++            pairs += [(kind, 'network1') for kind in ('L3 agent', 'DHCP agent', 'Metadata agent')]
++            return [{'Agent Type': kind, 'Host': host, 'Alive': True, 'State': 'UP'} for kind, host in pairs]
++        return []
++
++    def test_empty_healthy_four_node_cloud(self):
++        with patch.object(r, 'cloud_json', side_effect=self.cloud):
++            r.validate_cloud()
++
++    def test_workload_remnant_or_unhealthy_compute_is_rejected(self):
++        with patch.object(r, 'cloud_json', return_value=[{'ID': 'leftover'}]):
++            with self.assertRaisesRegex(RuntimeError, 'no workload'):
++                r.validate_cloud()
++        def disabled(*args):
++            rows = self.cloud(*args)
++            if args[:3] == ('compute', 'service', 'list'):
++                rows[0]['Status'] = 'disabled'
++            return rows
++        with patch.object(r, 'cloud_json', side_effect=disabled):
++            with self.assertRaisesRegex(RuntimeError, 'enabled/up'):
++                r.validate_cloud()
++
++
++class ResetCompletionTests(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.tmp.cleanup)
++        self.root = Path(self.tmp.name)
++        self.cache = self.root / 'ubuntu.img'
++        self.cache.write_bytes(b'verified official image bytes')
++        self.provenance = {'id': 'new-image-id', 'name': 'ovn-validation-ubuntu-24.04',
++                           'cache_path': str(self.cache), 'sha256': hashlib.sha256(self.cache.read_bytes()).hexdigest()}
++        self.image = {'id': 'new-image-id', 'status': 'active', 'disk_format': 'qcow2',
++                      'container_format': 'bare', 'size': self.cache.stat().st_size,
++                      'os_hash_algo': 'sha512', 'os_hash_value': hashlib.sha512(self.cache.read_bytes()).hexdigest()}
++        self.result = {'image': self.provenance, 'flavor': {'id': 'new-flavor-id', 'name': 'ovn-validation.small'}}
++
++    def cfg(self, root):
++        root.mkdir()
++        r.save(root / 'validation-prerequisites-config.json', {'source_mtu': 1400, 'target_geneve_mtu': 1392})
++
++    def test_each_reset_has_independent_completion_and_new_uuid_file(self):
++        roots = [self.root / 'cycle-1', self.root / 'cycle-2']
++        with patch.object(r, 'validate_cloud'), patch.object(r.prerequisites, 'prepare', return_value=self.result), patch.object(r, 'cloud_json', return_value=self.image):
++            for root in roots:
++                self.cfg(root)
++                r.finish(root, object())
++                variables = json.loads((root / 'migration-lab.yml').read_text())
++                self.assertEqual(variables, {'validation_image': 'new-image-id', 'validation_flavor': 'new-flavor-id', 'target_geneve_mtu': 1392})
++                self.assertTrue((root / 'reset-complete.json').exists())
++            with self.assertRaisesRegex(RuntimeError, 'already completed'):
++                r.finish(roots[0], object())
++
++    def test_wrong_glance_hash_cannot_mark_success(self):
++        root = self.root / 'failed-cycle'
++        self.cfg(root)
++        with patch.object(r, 'validate_cloud'), patch.object(r.prerequisites, 'prepare', return_value=self.result), patch.object(r, 'cloud_json', return_value=dict(self.image, os_hash_value='wrong')):
++            with self.assertRaisesRegex(RuntimeError, 'Glance content differs'):
++                r.finish(root, object())
++        self.assertFalse((root / 'reset-complete.json').exists())
++
++    def test_queued_create_response_is_not_used_for_final_check(self):
++        root = self.root / 'retry-cycle'
++        self.cfg(root)
++        result = dict(self.result, image=dict(self.provenance, status='queued'))
++        with patch.object(r, 'validate_cloud'), patch.object(r.prerequisites, 'prepare', return_value=result), patch.object(r, 'cloud_json', return_value=self.image) as show:
++            r.finish(root, object())
++        show.assert_called_once_with('image', 'show', 'new-image-id')
++
++    def test_ew_image_metadata_is_not_used(self):
++        cfg = yaml.safe_load((ROOT / 'group_vars/reset.yml').read_text())
++        self.assertEqual(cfg['reset_managed_image_name'], 'ovn-validation-ubuntu-24.04')
++        self.assertEqual(cfg['reset_managed_flavor_name'], 'ovn-validation.small')
++        self.assertNotIn('ew-ubuntu', (ROOT / 'scripts/reset_validation.py').read_text())
++
++
++if __name__ == '__main__':
++    unittest.main()

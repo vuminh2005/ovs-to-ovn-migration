@@ -49,11 +49,6 @@
         content: >-
           {{ {
               'phase_marker_schema_version': 2,
-              'mtu_plan_schema_version': 1,
-              'ew_measurement_schema_version': 1,
-              'ew_workloads_enabled': ew_workloads_enabled | bool,
-              'ns_enabled': ns_enabled | bool,
-              'ns_schema_version': 1,
               'run_id': migration_run_id,
               'inventory': kolla_inventory_runtime,
               'kolla_ansible': kolla_ansible_bin_runtime,

@@ -129,10 +129,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         docker exec openvswitch_vswitchd ovs-vsctl get Open_vSwitch . external_ids:ovn-cms-options | grep -q enable-chassis-as-gw
-        if [ {{ (hostvars['localhost']['ns_enabled'] | default(false) | bool) | ternary('true','false') }} = false ]; then
-          ! ip netns list | grep -Eq '^(qrouter-|qdhcp-)'
-        fi
-        # N-S mode removes only checkpointed legacy namespaces; unrelated ones are preserved.
+        ! ip netns list | grep -Eq '^(qrouter-|qdhcp-)'
       args:
         executable: /bin/bash
       changed_when: false

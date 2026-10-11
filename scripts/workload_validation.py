@@ -13,7 +13,6 @@ import ipaddress
 import subprocess
 from dataplane_capture import Capture
 from phase_schema import pre_cutover_reboot_prohibited
-from workload_resources import image_flavor_compatibility, assert_not_ew
 import sys
 import time
 
@@ -276,9 +275,7 @@ def validation_ready(root):
         role_ready = role_ready and read_evidence(root,'existing-post-cutover-readiness.json').get('status')=='PASS'
     if cfg.get('capture_enabled'):
         role_ready = role_ready and read_evidence(root,'tenant-dataplane-probe.json').get('evidence_source')=='compute-tap-pcap'
-    from ns_measurement import report as ns_report
-    ns_ready=ns_report(root)['status'] in ('PASS','NOT TESTED')
-    return (ns_ready and role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
+    return (role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
             workload_pass(read_evidence(root, 'pre-workload-checks.json'), 'geneve') and
             workload_pass(read_evidence(root, 'post-workload-checks.json'), 'geneve') and
             read_evidence(root, 'post-ovn-bindings.json').get('status') == 'PASS' and
@@ -294,12 +291,6 @@ class Validation:
         self.cloud = openstack.connect()
         self.root = root
         self.cfg = json.loads((root/'validation-config.json').read_text())
-        assert_not_ew(root, self.cfg, 'configuration', None)
-        if self.cfg.get('mtu_schema_version') == 1:
-            plan = read_evidence(root, 'mtu-calculation.json')
-            if (self.cfg.get('source_mtu') != plan.get('validation_source_mtu') or
-                self.cfg.get('target_mtu') != plan.get('validation_target_mtu')):
-                raise RuntimeError('Validation configuration contradicts or lacks its saved MTU calculation')
         self.path = root/'validation-resources.json'
         self.state = json.loads(self.path.read_text()) if self.path.exists() else {}
         if not self.state:
@@ -330,26 +321,6 @@ class Validation:
             return s
         raise RuntimeError(f'Missing {role} pair; resources preserved; no role substitution allowed')
 
-    def expected_mtu(self, vm, source=False):
-        key = 'source_mtu' if source else 'target_mtu'
-        if self.cfg.get('mtu_schema_version') == 1:
-            value = vm.get(key)
-            if type(value) is not int or value <= 0:
-                raise RuntimeError('Missing per-network validation MTU checkpoint')
-            return value
-        # Historical config/evidence is read as written, never upgraded in place.
-        return self.cfg.get(key, 1450 if source else 1442)
-
-    def placement(self, vm, server):
-        actual = getattr(server, 'compute_host', None)
-        if not isinstance(actual, str) or not actual:
-            return 'FAIL' if self.cfg.get('placement_required') else 'NOT MEASURED'
-        vm['observed_host'] = actual
-        previous = vm.get('actual_host')
-        vm.setdefault('actual_host', actual)
-        self.commit()
-        return 'FAIL' if (previous and previous != actual) or (vm.get('expected_host') and vm['expected_host'] != actual) else 'PASS'
-
     def create(self, stage):
         c, cfg = self.cloud, self.cfg
         topology, role = ROLES[stage]
@@ -363,18 +334,6 @@ class Validation:
         prefix = cfg['prefix'] + '-' + cfg['run'] + '-' + topology
         image = c.image.find_image(cfg['image'], ignore_missing=False)
         flavor = c.compute.find_flavor(cfg['flavor'], ignore_missing=False)
-        sizing = image_flavor_compatibility(image, flavor)
-        save(self.root/'validation-image-flavor-sizing.json', sizing)
-        # Existing EW resource IDs cannot be used to attach validation router
-        # interfaces or provision guests, even if validation state is corrupted.
-        for kind in ('router','security_group'):
-            assert_not_ew(self.root,cfg,kind,s.get(kind))
-        for net in (networks[k] for k in ('0','1') if k in networks):
-            for kind in ('network','subnet'):
-                assert_not_ew(self.root,cfg,kind,net.get(kind))
-        for vm in (pair[k] for k in ('0','1') if k in pair):
-            for kind in ('server','port'):
-                assert_not_ew(self.root,cfg,kind,vm.get(kind),vm.get('name'))
         # Before any writes, verify image and flavor resolution and API availability.
         if not s.get('security_group'):
             sg = c.network.create_security_group(name=prefix)
@@ -392,15 +351,8 @@ class Validation:
             net = networks.setdefault(str(i), {})
             name = prefix + '-network-' + str(i)
             if not net.get('network'):
-                options = {'mtu': cfg['source_mtu'] if topology=='pre' else cfg['target_mtu']} if cfg.get('mtu_schema_version')==1 else {}
-                net['network'] = c.network.create_network(name=name, **options).id
+                net['network'] = c.network.create_network(name=name).id
                 self.commit()
-            if cfg.get('mtu_schema_version') == 1:
-                observed = c.network.get_network(net['network'])
-                net.setdefault('source_mtu', cfg['source_mtu'] if topology=='pre' else cfg['target_mtu'])
-                net.setdefault('target_mtu', cfg['target_mtu'])
-                if observed.mtu not in (net['source_mtu'], net['target_mtu']):
-                    raise RuntimeError('Validation network MTU changed outside its checkpointed source/target values')
             if not net.get('subnet'):
                 net['subnet'] = c.network.create_subnet(name=name, network_id=net['network'],
                     ip_version=4, cidr=cfg['cidrs'][topology][i], enable_dhcp=True).id
@@ -413,21 +365,9 @@ class Validation:
                 self.commit()
             vm = pair.setdefault(str(i), {})
             vm.update(network=net['network'], subnet=net['subnet'])
-            if cfg.get('mtu_schema_version') == 1:
-                vm.update(source_mtu=net['source_mtu'], target_mtu=net['target_mtu'])
-            requested = cfg.get('compute_hosts', {}).get(role, [])
-            if requested and (len(requested)!=2 or any(not isinstance(h,str) or not h or ':' in h for h in requested)):
-                raise RuntimeError('Validation placement must configure exactly two valid Nova compute hosts per role')
-            expected_host = requested[i] if requested else None
-            if 'expected_host' in vm and vm['expected_host'] != expected_host:
-                raise RuntimeError('Checkpointed placement request changed; refusing replacement/rebase')
-            vm['expected_host'] = expected_host
             name = prefix + '-' + role + str(i) if modern else prefix + '-' + str(i+1)
             vm.setdefault('record_vm', role+str(i) if modern else stage+str(i))
             vm.setdefault('name', name)
-            assert_not_ew(self.root, cfg, 'server', vm.get('server'), vm['name'])
-            assert_not_ew(self.root, cfg, 'port', vm.get('port'), vm['name'])
-            self.commit()  # placement/MTU intent precedes any server creation
             if not vm.get('port'):
                 if vm.get('server'):
                     raise RuntimeError('Checkpointed server has no explicit owned port; refusing duplicate/replacement port')
@@ -449,12 +389,7 @@ class Validation:
             if vm.get('server'):
                 # Missing checkpointed IDs fail closed; never silently replace
                 # a VM whose identity is part of the preservation evidence.
-                server = self.wait_active(vm['server'])
-                if modern and (server.id != vm['server'] or any(value!='PASS' for value in self.identity_evidence(vm).values()) or
-                               server.metadata.get('ovn_migration_run')!=cfg['run'] or server.metadata.get('ovn_validation_role')!=role):
-                    raise RuntimeError('Recovered validation server/port/IP/ownership changed; refusing replacement')
-                if self.placement(vm, server)=='FAIL':
-                    raise RuntimeError('Validation compute placement changed/incorrect; checkpointed server preserved, no replacement')
+                self.wait_active(vm['server'])
                 continue
             guest = (pathlib.Path(__file__).parent/'guest_probe.py').read_text()
             config = dict(run=cfg['run'], vm=vm['record_vm'], peer=pair[str(1-i)]['ip'],
@@ -479,13 +414,10 @@ class Validation:
             server = matches[0] if matches else c.compute.create_server(name=vm['name'],
                 image_id=image.id, flavor_id=flavor.id, networks=[{'port': vm['port']}],
                 metadata={'ovn_migration_run': cfg['run'], 'ovn_validation_role': role},
-                user_data=base64.b64encode(user_data.encode()).decode(),
-                **({'availability_zone': cfg.get('availability_zone','nova')+':'+vm['expected_host']} if vm['expected_host'] else {}))
+                user_data=base64.b64encode(user_data.encode()).decode())
             vm['server'] = server.id
             self.commit()
-            server = self.wait_active(server.id)
-            if self.placement(vm, server)=='FAIL':
-                raise RuntimeError('Validation compute placement incorrect/unavailable; resources preserved, no replacement')
+            self.wait_active(server.id)
 
     def wait_active(self, server_id):
         server = self.cloud.compute.get_server(server_id)
@@ -576,16 +508,11 @@ class Validation:
                                   port_uuid_preserved='PASS' if getattr(port,'id',None)==vm['port'] and port.device_id==vm['server'] else 'FAIL',
                                   fixed_ip_preserved='PASS' if port.fixed_ips==vm['fixed_ips'] else 'FAIL')
             checks[str(i)].update(guest_checks(rows[str(i)], anchors[str(i)], self.cfg['interval']))
-            placement = self.placement(vm, server)
-            checks[str(i)].update(placement=placement, expected_host=vm.get('expected_host'), actual_host=getattr(server,'compute_host',None))
-            if placement=='FAIL':
-                identity=False
-                checks[str(i)]['identity']='FAIL'
             network = self.cloud.network.get_network(vm['network'])
             checks[str(i)]['network_type'] = network.provider_network_type
             checks[str(i)]['dhcp_availability'] = checks[str(i)]['dhcp']
             health = latest_health(rows[str(i)], anchors[str(i)], self.cfg['interval'])
-            expected_mtu = self.expected_mtu(vm, source=bool(self.cfg.get('initial')))
+            expected_mtu = self.cfg.get('source_mtu',1450) if self.cfg.get('initial') else self.cfg.get('target_mtu',1442)
             checks[str(i)]['mtu'] = 'PASS' if health and health.get('mtu') == expected_mtu and network.mtu==expected_mtu else 'FAIL'
             baseline = (read_evidence(self.root, 'existing-post-cutover-baseline.json') or read_evidence(self.root, 'existing-migration-baseline.json')) if stage == 'pre' and not self.cfg.get('initial') else {}
             if self.state.get('schema_version') == 2 and stage == 'pre' and not self.cfg.get('initial'):
@@ -600,7 +527,7 @@ class Validation:
                 ports = list(self.cloud.network.ports(network_id=vm['network'], device_owner='network:distributed'))
                 expected_ip = metadata_port_ip(ports, vm['subnet'])
                 health = latest_health(rows[str(i)], anchors[str(i)], self.cfg['interval'])
-                target_mtu = self.expected_mtu(vm)
+                target_mtu = self.cfg.get('target_mtu', 1442)
                 checks[str(i)]['dhcp_convergence'] = dhcp_convergence(health, target_mtu, expected_ip)
                 if network.mtu != target_mtu:
                     checks[str(i)]['dhcp_convergence'] = 'FAIL'
@@ -650,7 +577,6 @@ class Validation:
             identity = (server.id == vm['server'] and port.id == vm['port'] and
                         port.device_id == vm['server'] and port.fixed_ips == vm['fixed_ips'] and
                         (not old or all(vm[k] == old.get(k) for k in ('server','port','fixed_ips'))))
-            if self.placement(vm, server)=='FAIL': identity=False
             checks[key] = dict(identity='PASS' if identity else 'FAIL',
                 active='PASS' if server.status == 'ACTIVE' else 'FAIL',
                 bound='PASS' if port.status == 'ACTIVE' and port.binding_host_id and port.binding_vif_type not in ('unbound','binding_failed') else 'FAIL',
@@ -751,11 +677,10 @@ class Validation:
                                 health.get('dhcp_ack_count',0) >= 2 and same_boot and
                                 guest_checks(rows[key], baseline[key], self.cfg['interval'])['connectivity']=='PASS')
                     if target:
-                        target_mtu = self.expected_mtu(self.pair('pre')[key])
                         network = self.cloud.network.get_network(self.pair('pre')[key]['network'])
                         common = good
                         source_network = self.state.get('schema_version')!=2 or network.provider_network_type=='vxlan'
-                        good = good and source_network and network.mtu == target_mtu and health.get('mtu') == network.mtu
+                        good = good and source_network and network.mtu == self.cfg.get('target_mtu',1442) and health.get('mtu') == network.mtu
                     else:
                         # Source OVS metadata and MTU remain valid here; OVN
                         # metadata next-hop checks belong to post-migration.
@@ -763,7 +688,7 @@ class Validation:
                     evidence[key] = {'status':'PASS' if good else 'UNAVAILABLE', 'health':health,
                                      'same_boot':same_boot, **flags}
                     if target:
-                        eligible = bool(common and source_network and network.mtu==target_mtu and
+                        eligible = bool(common and source_network and network.mtu==self.cfg.get('target_mtu',1442) and
                             health.get('mtu') is not None and health['mtu']!=network.mtu and health.get('metadata') is True and
                             health.get('mtu_configuration')=='dhcp_mtu_enabled' and
                             'configured_static_mtu' in health and health['configured_static_mtu'] is None and health.get('dhcp_use_mtu') is True)
@@ -785,7 +710,7 @@ class Validation:
                             journal['guests'][key] = dict(row, original_boot=initial[key]['boot'],
                                 server=vm['server'], port=vm['port'], fixed_ips=vm['fixed_ips'],
                                 guest_mtu_before=row['health'].get('mtu') if row['health'] else None,
-                                target_mtu=self.expected_mtu(vm), reboot_requested=False)
+                                target_mtu=self.cfg.get('target_mtu',1442), reboot_requested=False)
                         save(self.root/'existing-mtu-remediation.json', journal)
                         if all(r.get('classification') in ('PASS','REBOOT_REQUIRED') for r in evidence.values()):
                             self.remediate(journal)
@@ -804,7 +729,7 @@ class Validation:
         baseline = self.baseline('pre',rows)
         details = {k:dict(row, original_boot=baseline[k]['boot'],post_remediation_boot=baseline[k]['boot'],
                          guest_mtu_before=row['health']['mtu'], guest_mtu_after=row['health']['mtu'],
-                         target_mtu=self.expected_mtu(self.pair('pre')[k]), **self.identity_evidence(self.pair('pre')[k])) for k,row in evidence.items()}
+                         target_mtu=self.cfg.get('target_mtu',1442), **self.identity_evidence(self.pair('pre')[k])) for k,row in evidence.items()}
         identity_ok = all(row[k]=='PASS' for row in details.values() for k in
                           ('server_uuid_preservation','port_uuid_preservation','fixed_ip_preservation'))
         save(self.root/'existing-mtu-remediation.json', {'automatic_mtu_convergence':'PASS',
@@ -826,8 +751,6 @@ class Validation:
         if pre_cutover_reboot_prohibited(self.root):
             raise RuntimeError('Pair-B reboot prohibited after DB freeze/cutover checkpoint')
         vm = self.pair('pre')[key]
-        assert_not_ew(self.root, self.cfg, 'server', vm['server'], vm.get('name'))
-        assert_not_ew(self.root, self.cfg, 'port', vm['port'])
         if vm.get('owned') is not True or any(vm['server']==v['server'] or vm['port']==v['port'] for v in self.pair('measure').values()):
             raise RuntimeError('Reboot requires distinct validation-owned Pair-B UUIDs; Pair A is protected')
         if any(vm.get(k)!=entry.get(k) for k in ('server','port','fixed_ips')):
@@ -835,7 +758,6 @@ class Validation:
         if require_ready and self.cloud.network.get_network(vm['network']).provider_network_type!='vxlan':
             raise RuntimeError('Pair-B reboot prohibited after OVN activation; source VXLAN required')
         server = self.cloud.compute.get_server(vm['server'])
-        assert_not_ew(self.root, self.cfg, 'server', server.id, getattr(server,'name',None))
         port = self.cloud.network.get_port(vm['port'])
         entry.update(server_uuid_preservation='PASS' if server.id==entry['server'] else 'FAIL',
                      port_uuid_preservation='PASS' if port.id==entry['port'] and port.device_id==entry['server'] else 'FAIL',
@@ -948,8 +870,8 @@ class Validation:
                     port.fixed_ips==expected[key]['fixed_ips'] and server.status=='ACTIVE' and port.status=='ACTIVE' and
                     port.binding_host_id and port.binding_vif_type not in ('unbound','binding_failed') and
                     current and current['boot']==expected[key]['boot'] and health and health.get('dhcp') is True and
-                    health.get('metadata') is True and health.get('mtu')==self.expected_mtu(vm) and
-                    network.mtu==self.expected_mtu(vm) and network.provider_network_type=='vxlan' and
+                    health.get('metadata') is True and health.get('mtu')==self.cfg.get('target_mtu',1442) and
+                    network.mtu==self.cfg.get('target_mtu',1442) and network.provider_network_type=='vxlan' and
                     guest_checks(rows[key],anchors[key],self.cfg['interval'])['connectivity']=='PASS')
                 ready[key]={'status':'PASS' if good else 'FAIL','health':health,'boot':current}
             if all(r['status']=='PASS' for r in ready.values()):
@@ -981,7 +903,7 @@ class Validation:
         metadata_ip=metadata_port_ip(ports,vm['subnet'])
         raw=self.ovn_evidence(key)
         subnet=self.cloud.network.get_subnet(vm['subnet'])
-        return ovn_dhcp_health(raw,vm,subnet,metadata_ip,dict(self.cfg,target_mtu=self.expected_mtu(vm)))
+        return ovn_dhcp_health(raw,vm,subnet,metadata_ip,self.cfg)
 
     def post_owner(self, key, entry, request=False):
         if self.state.get('schema_version')!=2 or key not in ('0','1'):
@@ -989,8 +911,6 @@ class Validation:
         if request and self.cfg.get('allow_post_cutover_guest_reboot') is not True:
             raise RuntimeError('Post-cutover guest reboot disabled; convergence failed; resources preserved')
         vm=self.pair('pre')[key]
-        assert_not_ew(self.root, self.cfg, 'server', vm['server'], vm.get('name'))
-        assert_not_ew(self.root, self.cfg, 'port', vm['port'])
         excluded=[p for stage,role in (('pre','measure'),('post','fresh')) for p in self.state.get(stage,{}).get(role,{}).values()]
         if (vm.get('owned') is not True or any(vm.get(k)!=entry.get(k) for k in ('server','port','fixed_ips')) or
             any(vm['server']==p.get('server') or vm['port']==p.get('port') for p in excluded)):
@@ -998,7 +918,6 @@ class Validation:
         identity=self.identity_evidence(vm)
         entry.update(identity)
         server=self.cloud.compute.get_server(vm['server'])
-        assert_not_ew(self.root, self.cfg, 'server', server.id, getattr(server,'name',None))
         network=self.cloud.network.get_network(vm['network'])
         if (any(v!='PASS' for v in identity.values()) or network.provider_network_type!='geneve' or
             server.metadata.get('ovn_migration_run')!=self.cfg['run'] or server.metadata.get('ovn_validation_role')!='existing' or
@@ -1081,7 +1000,7 @@ class Validation:
                     remediation_action='none',guests={k:dict(e,server=expected[k]['server'],port=expected[k]['port'],
                         fixed_ips=expected[k]['fixed_ips'],original_boot=expected[k]['boot'],
                         metadata_gateway_before=(e.get('health') or {}).get('metadata_gateway'),
-                        guest_mtu_before=(e.get('health') or {}).get('mtu'),target_mtu=self.expected_mtu(self.pair('pre')[k]),reboot_requested=False) for k,e in evidence.items()})
+                        guest_mtu_before=(e.get('health') or {}).get('mtu'),target_mtu=self.cfg.get('target_mtu',1442),reboot_requested=False) for k,e in evidence.items()})
                 save(self.root/'existing-post-cutover-remediation.json',journal)
                 if all(e['classification'] in ('PASS','POST_CUTOVER_REBOOT_REQUIRED') for e in evidence.values()):
                     self.post_remediate(journal)
@@ -1107,7 +1026,7 @@ class Validation:
             server=self.cloud.compute.get_server(entry['server'])
             good=bool(anchor and current and current['boot']==anchor['boot'] and health and
                 all(flags.values()) and health.get('dhcp_ack_count',0)>=2 and health.get('dhcp') is True and
-                health.get('mtu')==self.expected_mtu(self.pair('pre')[key]) and health.get('metadata') is True and
+                health.get('mtu')==self.cfg.get('target_mtu',1442) and health.get('metadata') is True and
                 health.get('metadata_gateway')==ovn.get('metadata_ip') and ovn.get('status')=='PASS' and
                 server.status=='ACTIVE' and guest_checks(rows[key],anchor,self.cfg['interval'])['connectivity']=='PASS')
             entry.update(observed_boot=current,health=health,ovn=ovn,guest_mtu_after=(health or {}).get('mtu'),
@@ -1166,7 +1085,6 @@ class Validation:
         # Journal a completed operation before moving to the next owned UUID.
         # Only exact IDs in this stage of validation-resources.json are used.
         def remove(kind, resource_id, operation):
-            assert_not_ew(self.root, self.cfg, kind, resource_id)
             token = {'kind': kind, 'id': resource_id}
             if token not in evidence['deleted']:
                 operation()
@@ -1179,28 +1097,6 @@ class Validation:
             self.commit()
             roles = ('measure','existing') if stage=='pre' else ('fresh',)
             vms = [vm for role in roles for vm in s.get(role,{}).values()] if 'networks' in s else [s[k] for k in ('0','1')]
-            # Preflight the whole stage before deleting anything. The EW catalog
-            # is separate from validation state and can never convey ownership.
-            for vm in vms:
-                assert_not_ew(self.root,self.cfg,'server',vm['server'],vm.get('name'))
-                assert_not_ew(self.root,self.cfg,'port',vm['port'])
-                if {'kind':'server','id':vm['server']} not in evidence['deleted']:
-                    server=self.cloud.compute.find_server(vm['server'])
-                    if server is not None:
-                        assert_not_ew(self.root,self.cfg,'server',server.id,getattr(server,'name',None))
-            for net in (s.get('networks') or {k:s[k] for k in ('0','1')}).values():
-                assert_not_ew(self.root,self.cfg,'network',net['network'])
-                assert_not_ew(self.root,self.cfg,'subnet',net['subnet'])
-                if self.cfg.get('ew_workload_config') and {'kind':'network','id':net['network']} not in evidence['deleted']:
-                    live=self.cloud.network.find_network(net['network'],ignore_missing=True)
-                    if live is not None:
-                        assert_not_ew(self.root,self.cfg,'network',net['network'],getattr(live,'name',None))
-            assert_not_ew(self.root,self.cfg,'router',s['router'])
-            assert_not_ew(self.root,self.cfg,'security_group',s['security_group'])
-            if self.cfg.get('ew_workload_config') and {'kind':'router','id':s['router']} not in evidence['deleted']:
-                live=self.cloud.network.find_router(s['router'],ignore_missing=True)
-                if live is not None:
-                    assert_not_ew(self.root,self.cfg,'router',s['router'],getattr(live,'name',None))
             for vm in vms:
                 def delete_server():
                     self.cloud.compute.delete_server(vm['server'], ignore_missing=True)

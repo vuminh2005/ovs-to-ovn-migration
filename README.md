@@ -1,15 +1,17 @@
 # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
 
+## Four-node reset update
+
+`reset-lab-to-ovs.yml` now resets the lab with `controller`, `network1`,
+`compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
+with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
+See [four-node reset instructions](docs/reset-four-nodes.md) for destructive
+scope, commands, new UUIDs and retry. Migration workload placement and Pair D
+are not changed by this reset-focused update.
+
 V2 turns the lab-validated migration into a **single-invocation migration proof of concept** for its supported scope. It discovers the Kolla inventory path from the `-i` argument, finds `kolla-ansible` from the active execution environment, parses `/etc/kolla/globals.yml`, uses standard Kolla inventory groups to find control/network/compute/OVN hosts, and reads the generated ML2/OVN config to discover the real OVN NB/SB connection strings.
 
 ## Run
-
-For **Work Item 2 (Việc 2)**, [the reviewed reset/EW rebuild workflow](docs-reset-ew.md)
-provides preflight, an explicitly confirmed destructive generation, continuation
-and final acceptance. `reset-ew-lab.yml` rebuilds OVS, runs EW apply/verify and a
-second unchanged apply. It does not start baseline or migration. The compatibility
-entrypoint `reset-lab-to-ovs.yml` now uses the same guards. Reset/fresh provisioning
-remain pending operator-run lab validation; the pre-reset audit is historical.
 
 From the Kolla deployment host, with `ansible-playbook` and `kolla-ansible` available in the current environment:
 
@@ -31,7 +33,7 @@ KOLLA_OPENRC=/custom/admin-openrc.sh \
 ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
-## Supported default scope in v2
+## Supported scope in v2
 
 V2 intentionally auto-detects and **fails before downtime** if the cloud is outside the paths already validated in the lab:
 
@@ -54,28 +56,6 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
 
 This is a deliberate safety property. V2 does **not** claim that FIP/provider/DVR/HA migration is supported merely because the generic OVN components can run.
 
-## Work Item 3: opt-in North–South scope
-
-The disabled-by-default `ns_enabled` extension supports a bounded, explicitly
-verified existing flat/VLAN external network with centralized SNAT and optional
-exact FIP ingress. It adds independent continuous HTTP/optional established TCP
-observations, external-aware takeover/cleanup and separate report acceptance.
-It does not claim lab validation, HA/failover or session preservation.
-
-Read [the scope, input schema, audit and staged operator checklist](docs-north-south.md)
-and [the required-input template](examples/ns-inputs.yml). `ns-inspect.yml` provides
-read-only source inspection before separately authorized preparation/migration.
-No uplink addresses are inferred and no external resources are provisioned.
-Tenant-only runs retain the restrictions above; reset is not a prerequisite.
-Pair A/B/C, EW/TCP and computed tenant MTU gates remain required. External flat/VLAN
-MTUs are preserved. The six-Work-Item plan and Work Items 1/2 acceptance limitations
-remain unchanged.
-
-**Work Item 4 (Việc 4)** is [source-path preparation on the existing OVS lab](docs-north-south-preparation.md).
-Start with its read-only discovery batch; allocation-dependent configuration stays
-blocked until the uplinks, upstream permissions and controlled endpoints are confirmed.
-Preparation is separate from Work Item 5 calibration and Work Item 6 migration.
-
 ## What is now auto-discovered
 
 V1 required several environment values. V2 derives them automatically:
@@ -88,7 +68,7 @@ V1 required several environment values. V2 derives them automatically:
 - DB sync host: first control node
 - OVN NB/SB endpoints: parsed from generated `/etc/kolla/neutron-server/ml2_conf.ini`
 - source VM Neutron port UUIDs: OpenStack API snapshot
-- existing network MTUs: OpenStack API; original/target pairs use effective Neutron, installed Geneve template and chassis underlay constraints
+- existing network MTUs: OpenStack API; each VXLAN network is reduced by the configured VXLAN->Geneve overhead delta
 - Port_Binding timeout: calculated from existing compute-port count and capped safely
 
 The deployment host no longer has to be the same machine as the OpenStack controller. Kolla orchestration runs where Ansible is invoked, while Docker/systemd/DB operations run on the appropriate inventory hosts.
@@ -142,14 +122,6 @@ If absent, it is created. Optional `validation_image`/`validation_flavor` overri
 (or their existing environment variables) can select existing resources. A missing
 explicit flavor fails clearly; clear that override to use automatic preparation.
 The default credentials need Glance upload and Nova flavor-create permissions.
-
-Image sizing checks `min_disk`, `min_ram` and virtual disk size when Glance exposes
-it (including custom properties). A new verified QCOW2 download also supplies its
-virtual size from the header; compressed image file size is never treated as root
-disk size. Missing virtual-size metadata is recorded UNAVAILABLE. A netfix image
-requiring 10 GB cannot use the managed 8 GB flavor; select compatible existing
-prerequisites, for example `validation_image=ew-ubuntu-24.04-netfix` and
-`validation_flavor=ew.2c2g`. This does not transfer ownership of the EW workloads.
 
 `validation-prerequisites.json` records resolved image/flavor UUIDs, names, and
 preparation details. Workload configuration automatically consumes these UUIDs.
@@ -413,269 +385,7 @@ VM/network/router/port UUIDs and counts are not hard-coded. The automation snaps
 
 ## Important MTU boundary
 
-New runs do not assume source 1450 / target 1442. Phase 02 reads compact effective
-settings from the running neutron-server on every controller, IPv4/MTU evidence
-from every network/compute tunnel interface, and the installed Kolla ML2 template's
-literal Geneve `max_header_size`. Set `mtu_kolla_ml2_template_path` if that template
-is outside the discovered Kolla environment. Missing evidence, disagreements or
-configured overlay limits exceeding the physical tunnel-interface limit fail
-before provisioning/migration. IPv6 tunnel support is not added.
-
-The model follows Neutron Caracal's
-[tunnel driver](https://github.com/openstack/neutron/blob/24.0.0/neutron/plugins/ml2/drivers/type_tunnel.py)
-and [Geneve driver](https://github.com/openstack/neutron/blob/24.0.0/neutron/plugins/ml2/drivers/type_geneve.py):
-take the minimum of global physical MTU, positive path MTU and chassis interface
-MTUs, then subtract the IPv4 header (20) and type-driver header (VXLAN 30, Geneve
-the installed value). With global/path/interface MTU 1450 and Geneve header 38,
-validation networks use **1400 → 1392**, and fresh Geneve networks use **1392**.
-These are calculated limits, not new hard-coded defaults.
-New OVN MTU plans require Geneve `max_header_size >= 38`; smaller values are
-rejected during calculation, before network updates, and during target
-verification. Larger valid values remain supported; no value is silently clamped.
-
-Each existing network keeps its own source MTU. Its target is the minimum of its
-original MTU minus the computed header delta and the Geneve limit. For example,
-existing EW networks at 1400 become 1392; a deliberately lower 1360 network becomes
-1352. Validation-owned networks are created explicitly at their calculated limits;
-they are not confused with the EW networks. Source/target MTUs are checkpointed
-per validation network and VM.
-
-Artifacts are `mtu-inputs.json`, `mtu-calculation.json`, `network-mtu-plan.json`,
-`network-mtu-migration.tsv`, `mtu-target-configs.json` and
-`mtu-target-config-verification.json`. The TSV is written before network updates;
-retries use the original/target pair even after a lost API response. Unexpected
-live MTU drift or conflicting journal entries fail rather than subtracting twice.
-Every generated controller target must match global/path MTU, IPv4 overlay, the
-Geneve header and ML2/OVN settings before freeze. After Pair B readiness, Phase 07
-starts a distinct collection attempt and rereads the host-side generated
-`/etc/kolla/neutron-server/neutron.conf` and `ml2_conf.ini` on every controller.
-It does not inspect the running source OVS container for target settings.
-`mtu-pre-freeze-collection.json` records the attempt token, expected controller
-identities and request timestamp; `mtu-pre-freeze-target-configs.json` records
-each controller's settings and UTC collection timestamp. Verification is saved
-separately in `mtu-pre-freeze-target-config-verification.json`; Phase 06 evidence
-is retained. Missing/unreadable controllers, stale attempt tokens or mismatches
-block the freeze marker and all Neutron stop tasks, even when validation guests
-are disabled. These reads are sequential preparation, not an atomic lock against
-external configuration edits after collection.
-`mtu_plan_schema_version: 1` in new runtime
-metadata enables this contract; historical runs retain their saved configuration,
-TSV values and old evidence requirements without schema upgrades.
-
-Validation cannot safely rewrite arbitrary guest configuration. Only owned Pair B
-can enter its existing opt-in remediation paths. EW guests are never automatically
-rebooted, rebuilt or deleted by validation. DHCP client/static MTU behavior in
-those external workloads remains a separate readiness concern.
-
-## East-West topology and validation placement (Step 5)
-
-`group_vars/all.yml` defines `ew_workload_config` with the six existing VM names,
-IPs, networks, compute hosts, gateway-free router, netfix image/flavor names and
-HTTP/PostgreSQL/RabbitMQ endpoints. It contains no credentials or baseline output.
-The general POC keeps `ew_workloads_enabled: false`; enable it explicitly for the
-confirmed EW lab. Phase 02 then resolves each exact resource name uniquely, checks
-placement/IP/image/flavor/router scope and persists `ew-resources.json`. Ambiguous
-names or changed UUIDs cannot silently rebase the checkpoint. The catalog is
-external/non-owned and is separate from `validation-resources.json`.
-
-| VM | Fixed IP | Compute | Network |
-| --- | --- | --- | --- |
-| ew-app | 192.168.101.11 | compute1 | ew-net-a |
-| ew-client-a1 | 192.168.101.12 | compute1 | ew-net-a |
-| ew-client-a2 | 192.168.101.13 | compute2 | ew-net-a |
-| ew-queue | 192.168.102.11 | compute1 | ew-net-b |
-| ew-db | 192.168.102.12 | compute2 | ew-net-b |
-| ew-client-b | 192.168.102.13 | compute2 | ew-net-b |
-
-Work Item 1 adds a separate [persistent EW provisioning workflow](docs-ew-provisioning.md):
-`ew-provision.yml` inspects by default, `apply` provisions before measurement,
-and `ew-migrate.yml` imports provisioning → baseline → the existing migration.
-The confirmed netfix image, tenant subnet/gateway/pool settings and original
-unrestricted tenant security rules are configured in `group_vars/all.yml`.
-Reviewed live evidence now supplies reconstructed PostgreSQL 16/RabbitMQ 3.12
-check/apply adapters in `workloads/ew-bootstrap/adapter.py`. Original bootstrap
-scripts remain unresolved; their absence does not block these reconstructed
-implementations. The operator reports successful controller bootstrap checks,
-credential recovery, inspect, application verification and two applies on the
-existing lab; the second apply returned `changed=false` with UUIDs, six guest
-boots and three original task receipts preserved. These are reported lab results,
-not checks repeated by this repository audit. Fresh provisioning remains unverified.
-The same handover documents a single read-only `ew-collect-bootstrap.yml` batch
-to recover live DB/broker configuration through the existing trusted namespace
-transport. Recovered settings are explicitly distinct from original bootstrap
-source. It also documents check-only adapter validation and separately invoked
-private credential recovery; neither runs as part of migration downtime.
-
-The [pre-reset audit](docs-pre-reset-audit.md) distinguishes these existing paths
-from planned reset integration and documents state/SSH trust generation requirements.
-The six extension Work Items (Việc), listed in the audit, remain separate from
-the numbered migration phases. Work Items 2–6 are not claimed complete by
-provisioning on the existing lab. `ew-migrate.yml` currently starts with
-provisioning, not reset.
-
-EW server/port/network/subnet/router/security-group UUIDs are explicitly excluded
-from validation cleanup and reboot; configured EW names are protected even when
-catalog discovery is disabled. Provisioning never deletes/rebuilds existing EW
-resources or rotates their credentials. Enabling either
-Pair-B reboot option never opts EW workloads into remediation.
-
-`validation_compute_hosts.fresh` defaults to `[compute1, compute2]`: Pair C requests
-`nova:compute1` and `nova:compute2` and verifies actual Nova compute hosts after
-ACTIVE. `validation_availability_zone` is configurable. Admin Nova host-placement
-and compute-host visibility permissions are required. Pair A/B default to free
-scheduling (`measure`/`existing` empty lists), but their actual hosts are recorded.
-Expected/actual/observed hosts are stored alongside UUID/port/IP checkpoints.
-Changed requested placement, actual host or identity fails without replacement VMs.
-Override these explicit host lists for another inventory.
-
-MTU inputs must cover the requested placement hosts, so configured validation
-compute hosts must also appear in the migration inventory's compute group.
-
-The original EW application source is retained unchanged: PostgreSQL outbox,
-task-ID retries, commit-before-ACK, hash and `process_count=1` checks. Migration
-does not execute its setup script or restart its API/worker services. The imported
-metrics implementation now provides bounded baseline/migration lifecycle and
-independent measurements; see [EW measurement details](workloads/ew-workload-metrics/README.md).
-
-Prepare an operator-local variables file containing **paths to existing** trusted
-SSH keys and known-hosts files, not key contents. The inventory supplies host
-addresses/users/keys; `ew_host_access` can override them explicitly. Guests require
-existing SSH access, noninteractive sudo, Python 3, ping and systemd. Namespace
-hosts require existing sudo/root access, `ip`, `nc` and verified SSH host keys.
-No package installation, new port, network/security rule, guest agent or FIP is
-used to create access. Example variable names (replace paths with existing files):
-
-```yaml
-ew_workloads_enabled: true
-ew_guest_ssh_key: /path/to/existing/guest-key
-ew_guest_known_hosts: /path/to/verified/guest-known-hosts
-ew_host_known_hosts: /path/to/verified/host-known-hosts
-# ew_host_ssh_key: /path/to/existing/host-key  # if inventory does not supply it
-```
-
-Finite source baseline, using read-only discovery plus guest measurement services:
-
-```bash
-ansible-playbook -i /root/multinode ew-baseline.yml -e @/path/to/ew-access.yml
-```
-
-Migration measurement is integrated into the existing entrypoint:
-
-```bash
-ansible-playbook -i /root/multinode migrate-to-ovn.yml -e @/path/to/ew-access.yml
-```
-
-These commands are documented for later lab testing; neither was executed against
-the lab during implementation. Baseline discovery imports bootstrap/precheck only;
-it does not run backup/genconfig/migration/cutover or create new tenant resources.
-Measurement services run on three existing clients and ew-app (dependency probes).
-
-Phase 04 checks six guest/cloud identities, boots, exact ports/IPs/placement and
-source MTUs, performs real task readiness, starts guest runners and establishes
-probe/API-observer coverage before phase 05. Phase 07 requires **fresh** EW identity,
-target network/guest MTU and E2E readiness, then performs the final fresh target
-configuration gate before freeze. If existing EW guests have not applied 1392,
-the operator must arrange separate guest DHCP/MTU preparation; migration never
-changes their networking, reboots them or opts them into Pair-B remediation.
-Runners span cutover/restoration and Pair-B/C validation. Phase 12 observes a
-bounded recovered period with fresh success sequences before ending the existing
-Pair-A capture. Phase 13 stops/drains/collects EW evidence before final reporting.
-
-Source SSH resolves the exact catalog router namespace on inventory hosts. Post-OVN
-SSH discovers the exact network's existing ovnmeta namespace, verifies its MAC/IP
-against a unique `network:distributed` port for the subnet, tests namespace access,
-and verifies the actual guest UUID/IP/MAC/boot. This is consistent with the
-[Caracal metadata agent's namespace provisioning](https://github.com/openstack/neutron/blob/24.0.0/neutron/agent/ovn/metadata/agent.py).
-No namespace is assumed present on every host. An explicitly configured existing
-direct address can be keyed by server UUID in `ew_guest_direct_access`. Failed
-SSH/collection means missing evidence, not inferred application downtime.
-
-`migration-report.json` adds `east_west_workload` with separate baseline/migration
-acceptance, per-actor raw coverage, each probe's sampled failure windows, task
-counts/rates/latency/integrity/reconciliation/recovery, collection state and the
-Neutron API observer. Disabled EW is `NOT TESTED`; required missing evidence is
-`UNAVAILABLE` and prevents migration validation success. Actual observed failures
-are separate from missing samples/crashes/unresolved tasks. A migration may pass
-with recovered transient outages or SLO misses, all reported; baseline acceptance
-requires no required probe/HTTP/SLO failures. Pair-A PCAP exclusively supplies the
-existing packet loss/outage fields. The old control-plane duration remains the
-**orchestration freeze interval**, separate from sampled Neutron API availability.
-
-This batch is locally tested only. Verify source and post-OVN transport, guest DMI
-UUID visibility, sudo/systemd behavior, real application processing, journal access,
-EW MTU preparation, API observer coverage and recovery budgets in the lab before
-judging migration readiness. Step 5 is not lab-validated by these offline tests.
-
-### Same-run EW MTU preparation
-
-With EW enabled, phase 04 still validates source guest MTU **1400** and starts
-measurements. Phase 06 reduces network MTUs using the original/target journal,
-verifies generated target configuration, then shows the current run directory and
-pauses **before phase 07**. Keep that Ansible process running; do not start another
-migration. `ew-mtu-preparation.json` preserves the run, journal and original guest
-boots. This wait is included in phase-06/total elapsed time, never the freeze timer.
-
-In a separate terminal, use the displayed directory and existing verified access:
-
-```bash
-source workloads/ew-workload-metrics/ssh.sh
-export EW_RUN_DIR=/the/displayed/current/run-directory
-cat "$EW_RUN_DIR/network-mtu-plan.json"
-ew_ssh ew-app source ip -j address
-```
-
-After **separate operator authorization**, prepare all six existing EW guests
-(`ew-app`, `ew-client-a1`, `ew-client-a2`, `ew-client-b`, `ew-queue`, `ew-db`). Identify
-each interface from its checkpointed fixed IP. For networkd-managed guests, an
-operator may request `sudo networkctl renew <interface>` through `ew_ssh`. If the
-guest receives the new DHCP MTU but does not apply it, separately authorized
-`sudo ip link set dev <interface> mtu <that-network's-target-MTU>` provides an
-explicit guest-side preparation step. For the confirmed lab that target is 1392.
-These are operator operations, never automatic migration hooks. Do not reboot,
-restart application/measurement units, or set 1392 before phase 04. Verify each
-interface and DHCP/routing remain usable, then type `continue` at the original
-prompt. The acknowledgement is **not PASS**: phase 07 still checks every boot,
-identity, target MTU and E2E task, Pair-B readiness and the final fresh generated
-target files before freeze. An unattended prompt cannot acknowledge preparation.
-
-Measurements retain finite lifetimes, so complete preparation before they expire.
-Do not interrupt/relaunch the full entrypoint or reinterpret an already reduced
-network as its original source. `ew_mtu_preparation_pause: false` is available only
-when separately arranged preparation fits that same run; it does not bypass gates.
-
-### Dedicated mentor TCP experiment
-
-Migration EW runs also use `ew-app` as echo server and `ew-client-b` as routed,
-different-compute client, with configurable `ew_tcp_experiment_ports: [18080, 18081]`.
-Both ports must already be permitted by guest/network security
-policy **before migration**; no rules are created or changed. Disable independently
-with `ew_tcp_experiment_enabled: false` if this experiment is not selected.
-
-The first listener binds before measurement readiness. The client continuously
-attempts both ports and validates run/nonce/server-boot echo responses; second-port
-refusals before the activation request are labelled separately. After **all** Neutron workers
-stop, and before DB migration, an explicit hook activates the second listener
-using checkpointed source SSH only, with no Neutron API call. Actual bind plus
-fresh validated client echoes must be observed; a request alone cannot pass.
-Source host identities and namespace access are saved before freeze; the activation
-hook does not initialize OpenStack or rediscover inventory.
-The bounded loops belong to the existing exact measurement units and continue
-through cutover. They stop with those units during collection and never operate
-application services. Raw bind/echo events retain run and guest boot identity.
-
-`east_west_tcp_experiment` reports each port's attempts, validated echoes, failures,
-sampled recovery windows and activation evidence separately from
-`east_west_workload` and Pair-A packet metrics. Missing, late, failed activation or
-incomplete evidence cannot report PASS. Baseline-only/historical runs without this
-experiment remain NOT TESTED. Phase 12 checkpoints `tcp_recovery` before application
-checks: ordered controller freeze/DB/takeover/restoration markers, both endpoints'
-preserved identity/boot, Geneve networks and journaled target guest/network MTUs,
-and a post-OVN client sequence fence. Each port must have `stable_samples`
-consecutive validated echoes after that fence; source-only or missing target
-evidence is UNAVAILABLE. Application reconciliation/E2E failure does not invalidate
-otherwise complete TCP evidence or remove its measured failure windows.
-Verify port permissions, freeze-time source SSH and
-post-OVN echoes in the lab; these paths have only offline coverage so far.
+V2 updates the Neutron MTU of existing VXLAN networks by subtracting the validated VXLAN-to-Geneve overhead delta. It cannot safely log into arbitrary guests and rewrite static interface configuration. DHCP-managed guests should obtain the advertised MTU according to their DHCP client behavior; statically configured guests remain an operator responsibility and should be handled before the cutover.
 
 ## Output used to judge success
 
@@ -744,7 +454,7 @@ Run from the deployment host with the Kolla environment activated:
 ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
-This is a POC; offline checks do not establish readiness for the next Kolla lab run.
+This is a POC, with static verification only until tested on your Kolla lab.
 There is no production rollback framework. Partial creation checkpoints are
 saved after each API response; a process crash between resource creation and
 checkpoint persistence can leave an orphan requiring manual inspection of this
@@ -805,7 +515,7 @@ The root guest service passively observes guest DHCP renewal REQUESTs and their
 matching ACKs with an Ethernet packet socket filtered to IPv4 DHCP. Initial preparation requires at least two guest renewal REQUEST/ACK exchanges
 with sane effective T1/T2 values, including a renewal observed after the initial
 preparation anchor, a usable lease, fresh packet success, working OVS metadata
-and the same boot. The calculated source VXLAN MTU and the existing OVS metadata
+and the same boot. Source VXLAN MTU (normally 1450) and the existing OVS metadata
 route are valid in phase 04; target MTU and OVN metadata next-hop are not checked
 at this stage. This proves the
 owned guests are renewing rather than merely having Neutron-assigned addresses.
@@ -840,13 +550,13 @@ The guard
 runs before `07-migrate-db.yml` freezes Neutron or changes the database. It writes
 `dhcp-precutover-preparation.json`; failure includes a reason and stops the run.
 Defaults are `validation_dhcp_t1_seconds: 30`, `validation_dhcp_t2_seconds: 60`,
-`validation_dhcp_convergence_timeout: 180`. Source/target validation MTUs are
-resolved from the saved effective-config/underlay calculation. There are no long
-fixed sleeps and no required `target_geneve_mtu` override for new runs.
+`validation_dhcp_convergence_timeout: 180`, and `target_geneve_mtu: 1442`.
+For a different underlay MTU, configure the validation target to match the existing
+per-network VXLAN-minus-overhead MTU calculation. There are no long fixed sleeps.
 
 After migration, DHCP availability means a DHCP lease, expected guest IP, usable
 interface and basic default routing. DHCP convergence additionally requires the
-guest interface MTU and Neutron network MTU to equal the checkpointed per-network target MTU, and its selected
+guest interface MTU and Neutron network MTU to equal the configured target MTU, and its selected
 route to 169.254.169.254 to use the fixed IP of the actual `network:distributed`
 port on the correct network/subnet. Missing or ambiguous port evidence yields
 UNAVAILABLE. No address offset or .2/.3 assumption is used. These checks and the
@@ -1008,21 +718,3 @@ remediation retains SUCCESS with its explicit fields. Any unresolved validation
 failure reports MIGRATED_VALIDATION_INCOMPLETE, preserves evidence/resources and
 never rolls back. Pair-A capture counts every actual Pair-A loss during either
 remediation; Pair-B packets never enter that metric.
-
-## Standalone cold checkpoint and restore
-
-[Cold checkpoint maintenance commands and limitations](docs-lab-checkpoint.md)
-are separate from migration and the destructive reset. `lab-checkpoint.yml`
-provides read-only plan/verify/restore-plan, explicit cold creation, coordinated
-restore-apply, and post-reboot restore-finish. It preserves complete scoped Docker
-storage, Kolla credentials/configuration and EW disks/backing cache on the same
-five hosts. Maintenance changes guest boot IDs and requires a fresh EW baseline;
-never resume an old migration/capture run after restoration. No real checkpoint
-or restore has been integration-tested by this implementation.
-
-Checkpoint recovery also supports an explicit, seal/journal-bound offline scope
-declaration when Neutron is unavailable. Host/libvirt scope is verified; API-only
-scope remains an operator attestation. After all five restores/reboots,
-`restore-finish` reconciles source service starts and retries temporary health
-failures without replaying data replacement. See the
-[recovery commands and trust limits](docs-lab-checkpoint.md#explicit-api-independent-recovery).

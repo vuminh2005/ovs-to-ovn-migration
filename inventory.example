@@ -1,13 +1,14 @@
 # Use the normal full Kolla-Ansible multinode inventory. This excerpt only
 # illustrates the standard groups V2 expects to already exist.
 [control]
-controller1
+controller ansible_host=10.0.0.213
 
 [network]
-network01
+network1 ansible_host=10.0.0.160
 
 [compute]
-compute1
+compute1 ansible_host=10.0.0.62
+compute2 ansible_host=10.0.0.171
 
 # Standard Kolla inventories also define ovn-controller and ovn-database groups
 # (often through children). V2 validates their presence before making changes.

@@ -16,24 +16,6 @@
       run_once: true
       changed_when: false
 
-    - name: Stop drain and collect EW measurements without deleting external workload resources
-      ansible.builtin.shell: |
-        set -euo pipefail
-        source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/ew_workload.py') | quote }} collect {{ migration_run_dir | quote }} --transport-phase ovn
-      args:
-        executable: /bin/bash
-      register: ew_collection_result
-      failed_when: false  # collection failure is not inferred application downtime; final report remains honest
-      when: ew_workloads_enabled | bool
-
-    - name: Collect independent N-S raw evidence without stopping failed measurements
-      ansible.builtin.include_tasks: ns-operation-tasks.yml
-      vars:
-        ns_action: collect
-        ns_failure_is_evidence: true
-      when: hostvars['localhost']['ns_enabled'] | default(false) | bool
-
     - name: Build JSON and human-readable migration report
       ansible.builtin.shell: |
         set -euo pipefail
@@ -71,13 +53,6 @@
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
-
-    - name: Stop only exact N-S observers after complete required acceptance and persisted reports
-      ansible.builtin.include_tasks: ns-operation-tasks.yml
-      vars:
-        ns_action: finalize
-        ns_failure_is_evidence: true
-      when: hostvars['localhost']['ns_enabled'] | default(false) | bool
 
     - name: Mark phase 13 and total end after finalization and capture cleanup
       ansible.builtin.command:

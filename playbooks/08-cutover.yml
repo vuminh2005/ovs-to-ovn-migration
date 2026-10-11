@@ -65,19 +65,6 @@
         executable: /bin/bash
       loop: "{{ legacy_compute_units }}"
 
-- name: Phase 08 - Retire proven source external attachments after legacy-agent shutdown
-  hosts: localhost
-  gather_facts: false
-  become: true
-  any_errors_fatal: true
-  vars_files: [../group_vars/all.yml]
-  tasks:
-    - name: Detach exact legacy qg qr DHCP and OVS-agent patch ports before OVN activation
-      ansible.builtin.include_tasks: ns-operation-tasks.yml
-      vars:
-        ns_action: retire
-      when: hostvars['localhost']['ns_enabled'] | default(false) | bool
-
 - name: Phase 08 - Normalize br-int for OVN takeover
   hosts: network:compute
   gather_facts: false
@@ -174,19 +161,6 @@
       ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/dataplane_convergence.end
       run_once: true
       changed_when: false
-
-- name: Phase 08 - Require centralized OVN external gateway takeover before later cleanup
-  hosts: localhost
-  gather_facts: false
-  become: true
-  any_errors_fatal: true
-  vars_files: [../group_vars/all.yml]
-  tasks:
-    - name: Verify exact LR gateway SNAT FIP localnet mappings and chassisredirect binding
-      ansible.builtin.include_tasks: ns-operation-tasks.yml
-      vars:
-        ns_action: takeover
-      when: hostvars['localhost']['ns_enabled'] | default(false) | bool
 
 - name: Phase 08 - Verify chassis-side services and finish cutover
   hosts: network:compute

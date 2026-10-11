@@ -1,0 +1,24 @@
+---
+# Repeated destructive reset of the four-node nested lab.
+reset_lab_confirm: false
+reset_kolla_venv: /root/venvs/kolla-2024.1
+reset_kolla_inventory: /root/multinode
+reset_globals_path: /etc/kolla/globals.yml
+reset_config_path: /etc/kolla/config
+reset_backup_root: /root/ovs-to-ovn-backup
+reset_delete_migration_backups: false
+reset_snapshot_root: /root/kolla-reset-snapshots
+reset_tunnel_mtu: 1450
+reset_source_mtu: 1400
+reset_target_mtu: 1392
+reset_expected_ips:
+  controller: 10.0.0.213
+  network1: 10.0.0.160
+  compute1: 10.0.0.62
+  compute2: 10.0.0.171
+reset_managed_image_name: ovn-validation-ubuntu-24.04
+reset_managed_image_url: https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img
+reset_managed_flavor_name: ovn-validation.small
+reset_image_cache_dir: /var/cache/ovs-to-ovn-validation
+reset_image_download_timeout: 120
+reset_image_active_timeout: 900

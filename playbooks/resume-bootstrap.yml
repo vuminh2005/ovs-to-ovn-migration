@@ -52,18 +52,9 @@
 
     - name: Publish recovered OVN connections and workload mode
       ansible.builtin.set_fact:
-        ns_enabled: "{{ (resume_runtime.content | b64decode | from_json).get('ns_enabled', false) }}"
         ovn_nb_connection_runtime: "{{ resume_connections.stdout_lines[0] }}"
         ovn_sb_connection_runtime: "{{ resume_connections.stdout_lines[1] }}"
         validation_workloads_enabled: "{{ lookup('fileglob', migration_run_dir + '/validation-resources.json') | length > 0 }}"
-        ew_workloads_enabled: "{{ (resume_runtime.content | b64decode | from_json).get('ew_workloads_enabled', false) or (lookup('fileglob', migration_run_dir + '/ew-measurement-config.json') | length > 0) }}"
-
-    - name: Refuse N-S mode overrides that would change checkpoint cleanup semantics
-      ansible.builtin.assert:
-        that:
-          - "(ns_enabled | bool) == ((resume_runtime.content | b64decode | from_json).get('ns_enabled', false) | bool)"
-          - "not (ns_enabled | bool) or (resume_runtime.content | b64decode | from_json).get('ns_schema_version') == 1"
-        fail_msg: Resume must retain the recorded N-S mode/schema; overrides cannot enable broad tenant-only cleanup.
 
 - name: Verify live late-phase takeover before cleanup resume
   hosts: network:compute

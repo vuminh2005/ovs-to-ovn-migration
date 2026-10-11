@@ -51,7 +51,7 @@ class Scenario:
         network.get_network.side_effect=lambda uuid:self.networks[uuid]
         network.security_group_rules.return_value=[NS(direction='ingress',protocol='icmp')]
         network.ports.side_effect=self.port_list
-        image.find_image.return_value=NS(id='image'); compute.find_flavor.return_value=NS(id='flavor',disk=8,ram=1024)
+        image.find_image.return_value=NS(id='image'); compute.find_flavor.return_value=NS(id='flavor')
         self.obj.cloud=NS(compute=compute,network=network,image=image)
         self.obj.collect=self.collect
         self.obj.commit()
@@ -516,10 +516,7 @@ class ThreePairsTests(unittest.TestCase):
         self.assertIn('precutover-ready',first['ansible.builtin.shell'])
         self.assertNotIn('failed_when',first)
         self.assertTrue(plays[0]['any_errors_fatal'])
-        tasks=[t for play in plays for t in play['tasks']]
-        freeze=next(i for i,t in enumerate(tasks) if '--freeze-start' in t.get('ansible.builtin.command',{}).get('argv',[]))
-        self.assertGreater(freeze, tasks.index(first))
-        self.assertEqual(tasks[freeze-1]['ansible.builtin.command']['argv'][2],'ready')
+        self.assertIn('--freeze-start',plays[0]['tasks'][2]['ansible.builtin.command']['argv'])
         self.assertEqual(plays[1]['hosts'],'control')
 
 

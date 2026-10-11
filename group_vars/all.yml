@@ -19,10 +19,11 @@ target_neutron_plugin_agent: ovn
 target_tenant_network_type: geneve
 neutron_type_drivers_target: "flat,vlan,vxlan,geneve"
 
-# Empty discovers the installed template beside the kolla-ansible executable.
-# MTUs and the VXLAN/Geneve delta are calculated from effective config and
-# every chassis tunnel interface; no 1450/1442 validation default is assumed.
-mtu_kolla_ml2_template_path: ''
+# VXLAN -> Geneve adds 8 bytes in the tested Neutron/Kolla configuration
+# (VXLAN network MTU 1450 -> Geneve-safe 1442 on a 1500 underlay).
+# Existing VXLAN networks are reduced individually by this delta; there is no
+# hard-coded 1442 requirement, so jumbo-MTU clouds are handled proportionally.
+mtu_delta_vxlan_to_geneve: 8
 
 # Kolla systemd units.
 neutron_server_unit: kolla-neutron_server-container.service
@@ -54,7 +55,7 @@ binding_poll_interval_seconds: 5
 # required and no permanent tenant resource is left behind.
 validation_ephemeral_network: true
 
-# Validation guest ICMP interval; Pair A supplies the tenant PCAP measurement.
+# Guest VM1 tenant ICMP interval.
 dataplane_probe_interval_seconds: 0.2
 
 # Optional resume target. Leave empty to auto-pick the newest migration run.
@@ -73,8 +74,8 @@ validation_post_cidrs: ['10.232.0.0/24', '10.232.1.0/24']
 validation_timeout_seconds: 300
 validation_probe_lifetime_seconds: 14400
 validation_console_poll_seconds: 2
-# Secondary guest packet/health diagnostics. Nova may retain fewer lines;
-# Pair-A packet metrics use compute PCAP coverage, independently of console tails.
+# ~65 minutes of VM1 packet/health records at the default 5 packets/s.
+# Nova may retain fewer lines: missing anchored sequences remain UNAVAILABLE.
 validation_console_tail_lines: 20000
 
 # Empty image/flavor overrides select automatically prepared reusable defaults.
@@ -102,153 +103,4 @@ validation_allow_post_cutover_guest_reboot: false
 validation_post_cutover_dhcp_timeout_seconds: 180
 # Persistent compute-local evidence, retained until successful final report.
 validation_capture_directory: /var/lib/ovn-migration-validation
-
-# Admin Nova availability-zone:host placement requests, checked after ACTIVE.
-# Empty Pair-A/B lists allow scheduling, but actual compute hosts are recorded.
-validation_availability_zone: nova
-validation_compute_hosts:
-  measure: []
-  existing: []
-  fresh: [compute1, compute2]
-
-# Existing East-West application resources are NEVER validation-owned. Enable
-# strict runtime discovery for an EW migration run; the general POC can still
-# run without requiring this separate application topology.
-ew_workloads_enabled: false
-# Work Item 1: persistent EW provisioning, separate from validation ownership.
-# Inspect is read-only with respect to the cloud; apply must be requested.
-ew_provision_action: inspect
-# Optional controller-only summary for the Work Item 2 generation journal.
-ew_provision_result_file: ''
-ew_provision_state_dir: /var/lib/ovs-to-ovn-ew-provisioning
-ew_provision_timeout_seconds: 900
-ew_provision_availability_zone: nova
-# Optional complete JSON override. Defaults below are confirmed creation-log
-# values, checked against live resources when this playbook is explicitly run.
-ew_provision_spec_file: ''
-ew_provision_secret_files: {}
-# Reconstructed from reviewed live evidence; original scripts remain unresolved.
-ew_provision_bootstrap_sources:
-  ew-db:
-    path: "{{ playbook_dir }}/workloads/ew-bootstrap/adapter.py"
-    sha256: 39ab4c721383f1798a0903b4b99a5fd81920bcfd31aaa4252ce0af1474e26f9c
-    interpreter: python3
-  ew-queue:
-    path: "{{ playbook_dir }}/workloads/ew-bootstrap/adapter.py"
-    sha256: 39ab4c721383f1798a0903b4b99a5fd81920bcfd31aaa4252ce0af1474e26f9c
-    interpreter: python3
-ew_bootstrap_reference_file: /root/ew-bootstrap-live-evidence.json
-ew_provision_private_dir: /root/ew-private
-ew_provision_spec:
-  image:
-    path: /root/ew-image-build/ew-ubuntu-24.04-netfix.qcow2
-    sha256: 822f3f2e3c988c7560609cdf0469f708ff3f7c6ab678d3268c8809b8b93501a8
-    sha256_file: /root/ew-image-build/ew-ubuntu-24.04-netfix.qcow2.sha256
-    visibility: private
-    min_disk: 10
-    min_ram: 2048
-    properties: {os_distro: ubuntu, os_version: '24.04'}
-  networks:
-    ew-net-a:
-      subnet: ew-subnet-a
-      cidr: 192.168.101.0/24
-      gateway_ip: 192.168.101.1
-      allocation_pools: [{start: 192.168.101.100, end: 192.168.101.199}]
-      dns_nameservers: []
-      host_routes: []
-    ew-net-b:
-      subnet: ew-subnet-b
-      cidr: 192.168.102.0/24
-      gateway_ip: 192.168.102.1
-      allocation_pools: [{start: 192.168.102.100, end: 192.168.102.199}]
-      dns_nameservers: []
-      host_routes: []
-  security_group: ew-sg
-  keypair: ew-key
-  keypair_public_key: /root/.ssh/ew-lab.pub
-  # Private local password paths, recovered separately; no inline secrets.
-  # Reviewed reconstructed DB/broker adapters are the default bootstrap inputs.
-  secrets: "{{ ew_provision_secret_files }}"
-  bootstrap: "{{ ew_provision_bootstrap_sources }}"
-# Existing SSH access only: explicitly provide trusted keys/known-hosts paths.
-# Host connection addresses/users/keys normally come from the Kolla inventory.
-ew_guest_ssh_user: ubuntu
-ew_guest_ssh_key: ''
-ew_guest_known_hosts: ''
-ew_host_ssh_key: ''
-ew_host_known_hosts: ''
-ew_host_access: {}
-ew_guest_direct_access: {}  # optional verified address keyed by exact server UUID
-ew_namespace_hosts: []  # default network + compute inventory hosts
-
-# Work Item 2: independent reset/rebuild; never starts baseline or migration.
-reset_action: preflight  # preflight / apply / continue / reconcile / accept
-reset_generation: ''  # explicit durable ID; reuse it only for continuation
-reset_lab_confirm: false
-reset_generation_root: /var/lib/ovs-to-ovn-reset
-reset_kolla_venv: /root/venvs/kolla-2024.1
-reset_kolla_inventory: "{{ ansible_inventory_sources[0] }}"
-reset_globals_path: "{{ kolla_globals_path }}"
-reset_config_path: /etc/kolla/config
-reset_passwords_path: /etc/kolla/passwords.yml
-reset_backup_root: "{{ migration_backup_root }}"
-reset_delete_migration_backups: false  # rejected: prior evidence must survive
-reset_snapshot_root: /root/kolla-reset-snapshots
-# Separately reviewed source OVS files; never use current OVN globals or a
-# reduced-network migration checkpoint as a new source baseline.
-reset_source_globals: /root/ew-private/source-kolla/globals.yml
-reset_source_config: /root/ew-private/source-kolla/config
-reset_access_file: /root/ew-access.yml
-reset_credentials_file: /root/ew-private/ew-provision-inputs.yml
-reset_expected_underlay_mtu: 1450
-reset_required_retained_paths: []  # controller, REQUIRED additional artifacts
-reset_host_protected_paths: {}  # inventory host -> REQUIRED additional paths
-ew_baseline_seconds: 120
-ew_maximum_lifetime_seconds: 3600
-ew_drain_seconds: 30
-ew_transport_timeout_seconds: 20
-ew_collection_timeout_seconds: 300
-ew_readiness_timeout_seconds: 120
-ew_recovery_observation_seconds: 30
-ew_probe_interval_seconds: 1
-ew_api_probe_interval_seconds: 2
-ew_max_jobs_per_second: 1
-ew_task_slo_seconds: 10
-ew_stable_samples: 5
-ew_maximum_collection_bytes: 67108864
-ew_tcp_experiment_enabled: true  # migration only, requires ew_workloads_enabled
-ew_tcp_experiment_ports: [18080, 18081]  # must already be permitted; no SG changes
-ew_mtu_preparation_pause: true  # same-run operator checkpoint after phase-06 network MTU update
-ew_workload_config:
-  image: ew-ubuntu-24.04-netfix
-  flavor: ew.2c2g
-  router: ew-router
-  servers:
-    - {name: ew-app, ip: 192.168.101.11, compute_host: compute1, network: ew-net-a}
-    - {name: ew-client-a1, ip: 192.168.101.12, compute_host: compute1, network: ew-net-a}
-    - {name: ew-client-a2, ip: 192.168.101.13, compute_host: compute2, network: ew-net-a}
-    - {name: ew-queue, ip: 192.168.102.11, compute_host: compute1, network: ew-net-b}
-    - {name: ew-db, ip: 192.168.102.12, compute_host: compute2, network: ew-net-b}
-    - {name: ew-client-b, ip: 192.168.102.13, compute_host: compute2, network: ew-net-b}
-  endpoints:
-    api: {host: 192.168.101.11, port: 8080}
-    postgresql: {host: 192.168.102.12, port: 5432}
-    rabbitmq: {host: 192.168.102.11, port: 5672}
-
-# Work Item 3: existing, verified centralized external topology only. No addresses
-# or resource UUIDs are guessed. See docs-north-south.md and examples/ns-inputs.yml.
-ns_enabled: false
-ns_config: {}  # required schema_version=1 topology and controlled endpoints when enabled
-# Independent transport configuration; reuse strict EW namespace access without
-# changing EW ownership, guest trust or measurement actors. No guest packages installed.
-ns_transport:
-  inventory: "{{ kolla_inventory_runtime }}"
-  namespace_hosts: "{{ groups['network'] + groups['compute'] }}"
-  guest_user: "{{ ew_guest_ssh_user }}"
-  guest_key: "{{ ew_guest_ssh_key }}"
-  guest_known_hosts: "{{ ew_guest_known_hosts }}"
-  host_key: "{{ ew_host_ssh_key }}"
-  host_known_hosts: "{{ ew_host_known_hosts }}"
-  host_access: "{{ ew_host_access }}"
-  direct_access: "{{ ew_guest_direct_access }}"
-  transport_timeout: "{{ ew_transport_timeout_seconds }}"
+target_geneve_mtu: 1442
