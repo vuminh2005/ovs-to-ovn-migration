@@ -116,11 +116,19 @@ Checkpoint đã sang bước sau hoặc đã có VM được ghi nhận sẽ b�
 
 ## Báo cáo, cleanup và resume
 
-Playbook in chính xác thư mục `/root/ovs-to-ovn-backup/<run-id>` ở cuối:
+Playbook in kết quả, run ID và đường dẫn hai report ở cuối. Mở bản text:
 
 ```bash
 cat '/root/ovs-to-ovn-backup/<run-id>/migration-report.txt'
 ```
+
+Bản text có các nhóm ngăn cách rõ: thời gian migration, tài nguyên/mạng,
+workload A/B/C/D, cleanup và vị trí report. Pair B vẫn hiện automatic convergence
+và remediation trước/sau cutover. Pair D hiện kết quả của ba luồng TCP và thời
+gian lỗi probe dài nhất đã phục hồi; D bị tắt chỉ hiện `DISABLED`.
+Thời gian làm tròn 3 chữ số thập phân, tỷ lệ mất gói 4 chữ số thập phân.
+JSON giữ đầy đủ key, độ chính xác, phase timing, counter và evidence hiện có,
+sắp thứ tự theo các nhóm tương ứng. Các điều kiện PASS/FAIL và cleanup giữ nguyên.
 
 Thay `<run-id>` bằng giá trị vừa in. Không chọn tùy tiện run cũ. Evidence bổ sung:
 

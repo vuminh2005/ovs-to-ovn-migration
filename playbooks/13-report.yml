@@ -75,10 +75,7 @@
 
     - name: Show final report locations
       ansible.builtin.debug:
-        msg:
-          - "{{ migration_report_output.stdout }}"
-          - "JSON report: {{ migration_run_dir }}/migration-report.json"
-          - "Text report: {{ migration_run_dir }}/migration-report.txt"
+        msg: "{{ migration_report_output.stdout_lines }}"
 
     - name: Return an honest failure after persisting validation report without rollback
       ansible.builtin.shell: |

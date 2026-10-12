@@ -265,8 +265,8 @@ class PostCutoverTests(unittest.TestCase):
         self.assertEqual(report['dataplane_probe']['status'],'NOT TESTED')
         self.assertEqual(report['result'],'MIGRATED_VALIDATION_INCOMPLETE')
         text=(self.root/'migration-report.txt').read_text()
-        self.assertIn('Packet loss: UNAVAILABLE',text)
-        self.assertIn('Actual dataplane outage: UNAVAILABLE',text)
+        self.assertRegex(text,r'Packet loss\s+: UNAVAILABLE')
+        self.assertRegex(text,r'Longest packet outage\s+: UNAVAILABLE')
 
 
 if __name__=='__main__': unittest.main()

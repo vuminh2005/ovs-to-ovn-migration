@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json, pathlib, sys
 from workload_validation import validation_ready
+from report_format import ordered_report, render_text, terminal_summary
 from phase_schema import phase_measurements, schema_version, timestamp, TOTAL_SCOPES, PHASE_SCOPE
 root = pathlib.Path(sys.argv[1])
 m = root/'metrics'
@@ -168,60 +169,7 @@ if report['result']=='SUCCESS' and post_remediation.get('remediation_action')=='
     report['result']='SUCCESS_WITH_REMEDIATION'
     report['existing_workload_migration']['status']='PASS AFTER REMEDIATION'
 report['limitations'][0]='Pair-A metrics require a continuous drop-free compute-tap PCAP, endpoints and request cadence; gaps or unrecovered loss yield UNAVAILABLE. Console packet history is secondary only. PortBinding convergence remains separate.'
-(root/'migration-report.json').write_text(json.dumps(report,indent=2,sort_keys=True))
-lines=[
-  f"RESULT: {report['result']}",
-  f"Run: {report['run_id']}",
-  'Total duration: ' + (str(report['total_duration_seconds']) + ' s' if report['total_duration_seconds'] is not None else 'UNAVAILABLE'),
-  f"Total timing scope: {report['total_duration_scope']}",
-  f"Control-plane downtime: {report['control_plane_downtime_seconds']} s",
-  f"DB migration: {report['db_migration_seconds']} s",
-  f"Dataplane Port_Binding convergence: {report['dataplane_convergence_seconds']} s",
-  'Dataplane continuity:',
-  'Measurement workload: ' + report['dataplane_continuity']['measurement_workload'],
-  'Measurement type: small-packet routed tenant dataplane',
-  'Authoritative evidence: compute-tap PCAP',
-  'Packet loss: ' + (str(report['dataplane_probe'].get('packet_loss_percent')) + ' %' if report['dataplane_probe']['status']=='PASS' else 'UNAVAILABLE'),
-  'Actual dataplane outage: ' + (str(report['dataplane_probe'].get('actual_dataplane_outage_seconds')) + ' s' if report['dataplane_probe']['status']=='PASS' else 'UNAVAILABLE'),
-  'Pair-A boot continuity: ' + report['dataplane_continuity']['pair_a_boot_continuity'],
-  "Resource preservation: " + ("PASS" if consistency and all(v.get('unchanged') for v in consistency.values()) else "FAIL"),
-  "New Geneve network smoke test: " + ("PASS" if smoke and smoke.get('network_type')=='geneve' else "NOT RUN/FAIL"),
-]
-lines += ['Existing workload migration (Pair B):',
-          ('Initial Pair-B validation under ML2/OVS: ' if modern else 'Initial VM1/VM2 validation under ML2/OVS: ') + report['initial_ovs_workload_validation'],
-          'Automatic guest MTU convergence: ' + report['automatic_mtu_convergence'],
-          'Pre-cutover remediation required: ' + ('YES' if report['remediation_required'] is True else 'NO' if report['remediation_required'] is False else 'UNAVAILABLE'),
-          'Remediation: ' + report['remediation_action'],
-          'Pre-cutover MTU readiness: ' + report['pre_cutover_mtu_readiness'],
-          'Automatic post-cutover DHCP convergence: ' + report['automatic_post_cutover_dhcp_convergence'],
-          'Post-cutover remediation required: ' + ('YES' if report['post_cutover_remediation_required'] is True else 'NO' if report['post_cutover_remediation_required'] is False else 'UNAVAILABLE'),
-          'Post-cutover remediation: ' + report['post_cutover_remediation_action'],
-          'Post-cutover DHCP readiness: ' + report['post_cutover_dhcp_ready'],
-          'Post-cutover metadata route readiness: ' + report['post_cutover_metadata_route_ready'],
-          'Post-cutover metadata readiness: ' + report['post_cutover_metadata_ready'],
-          'Existing workload migration: ' + report['existing_workload_migration']['status'],
-          'Pair-B resource preservation: ' + report['existing_workload_identity_preservation'],
-          'Pair-B DHCP renewal/delivery: ' + report['existing_workload_migration']['dhcp_renewal_delivery'],
-          'Pair-B post-migration MTU: ' + report['existing_workload_mtu'],
-          'Pair-B metadata: ' + report['existing_workload_metadata'],
-          'Pair-B routed connectivity: ' + report['existing_workload_post_migration_connectivity'],
-          'Pair-B migration boot continuity: ' + report['existing_workload_boot_continuity'],
-          'Fresh OVN provisioning (Pair C): ' + report['fresh_ovn_provisioning']['status'],
-          'Pair-C Geneve networks: ' + report['new_ovn_workload_geneve'],
-          'Pair-C DHCP: ' + report['new_ovn_workload_dhcp'],
-          'Pair-C MTU: ' + report['new_ovn_workload_mtu'],
-          'Pair-C metadata: ' + report['new_ovn_workload_metadata'],
-          'Pair-C routed connectivity: ' + report['new_ovn_workload_connectivity'],
-          'Pair-C OVN binding: ' + report['new_ovn_workload_bindings'],
-          'Individual check fields:']
-lines += [k + ': ' + v for k,v in report.items() if k.startswith(('existing_', 'new_ovn_')) and isinstance(v,str)]
-lines += ['Cross-compute placement: ' + report['workload_placement']['status'],
-          'Pair D TCP: ' + report['pair_d_tcp']['status'],
-          'Pair D TCP streams: ' + json.dumps(report['pair_d_tcp'].get('streams', {}), sort_keys=True)]
-lines += ['Tenant dataplane probe: ' + json.dumps(report['dataplane_probe'], sort_keys=True)]
-lines += [f'Phase marker schema: {phase_version}', f'Phase timing scope: {PHASE_SCOPE}', 'Canonical phase timings:']
-lines += [f"Phase {row['number']} {row['name']} ({row['filename']}): " +
-          (f"{row['duration_seconds']} s" if row['availability']=='MEASURED' else row['availability'])
-          for row in phase_rows]
-(root/'migration-report.txt').write_text('\n'.join(lines)+'\n')
-print('\n'.join(lines))
+report = ordered_report(report)
+(root/'migration-report.json').write_text(json.dumps(report, indent=2) + '\n')
+(root/'migration-report.txt').write_text(render_text(report, root, modern=modern))
+print(terminal_summary(report, root))

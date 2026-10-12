@@ -95,8 +95,8 @@ class ReviewEdges(unittest.TestCase):
             report=v.read_evidence(root,'migration-report.json'); text=(root/'migration-report.txt').read_text()
             self.assertEqual(report['result'],'MIGRATED_VALIDATION_INCOMPLETE')
             self.assertEqual(report['dataplane_probe']['status'],'PASS')
-            self.assertIn('Packet loss: 3 %',text)
-            self.assertIn('Actual dataplane outage: 0.6 s',text)
+            self.assertRegex(text,r'Packet loss\s+: 3\.0000%')
+            self.assertRegex(text,r'Longest packet outage\s+: 0\.600 s')
 
     def test_real_frame_decoder_ignores_wrong_guest_and_nak(self):
         def frame(ip='10.0.0.2',message=5):

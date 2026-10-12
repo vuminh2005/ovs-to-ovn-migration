@@ -323,8 +323,8 @@ class ReportTests(unittest.TestCase):
             text=(root/'migration-report.txt').read_text()
             self.assertNotIn('deployment-host',text)
             self.assertNotIn('estimated_outage_seconds',json.dumps(report))
-            self.assertIn('Packet loss: UNAVAILABLE',text)
-            self.assertIn('Actual dataplane outage: UNAVAILABLE',text)
+            self.assertRegex(text,r'Packet loss\s+: UNAVAILABLE')
+            self.assertRegex(text,r'Longest packet outage\s+: UNAVAILABLE')
             self.assertEqual(report['existing_workload_metadata'],'NOT TESTED')
             self.assertEqual(report['result'],'MIGRATED_VALIDATION_INCOMPLETE')
 
@@ -349,7 +349,9 @@ class ReportTests(unittest.TestCase):
             self.assertNotIn('existing_ovs_workload_validation',report)
             self.assertEqual(report['existing_workload_post_migration_validation'],'PASS')
             self.assertEqual(report['initial_ovs_workload_validation'],'PASS')
-            self.assertIn('Initial VM1/VM2 validation under ML2/OVS: PASS', (root/'migration-report.txt').read_text())
+            text=(root/'migration-report.txt').read_text()
+            self.assertIn('Legacy VM1/VM2 migration',text)
+            self.assertRegex(text,r'Initial validation on OVS\s+: PASS')
 
 
 if __name__=='__main__':

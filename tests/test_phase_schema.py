@@ -189,8 +189,10 @@ class PhaseSchemaTests(unittest.TestCase):
         self.assertEqual(report['phase_timings'][5]['start_marker'],'phase03.start')
         self.assertEqual(report['phase_timings'][5]['duration_seconds'],4)
         text=(self.root/'migration-report.txt').read_text()
-        self.assertIn('Phase 03 validation prerequisites (03-validation-prerequisites.yml): NOT MEASURED',text)
-        self.assertIn('Phase 13 report/finalization (13-report.yml): INCOMPLETE',text)
+        self.assertEqual(report['phase_timings'][13]['availability'],'INCOMPLETE')
+        self.assertNotIn('Phase 03',text)
+        self.assertNotIn('Phase 13',text)
+        self.assertIn('Legacy total duration',text)
 
     def test_new_reports_cover_all_fourteen_phases_and_keep_dedicated_metrics(self):
         self.version(2)
@@ -213,7 +215,7 @@ class PhaseSchemaTests(unittest.TestCase):
         self.assertIsNone(report['total_duration_seconds'])
         self.assertEqual(report['phase_timings'][13]['availability'],'INCOMPLETE')
         self.assertIsNone(report['phase_durations_seconds']['phase_13'])
-        self.assertIn('Total duration: UNAVAILABLE', (self.root/'migration-report.txt').read_text())
+        self.assertRegex((self.root/'migration-report.txt').read_text(),r'Total run duration\s+: UNAVAILABLE')
 
 
 class OrchestrationPhaseTests(unittest.TestCase):

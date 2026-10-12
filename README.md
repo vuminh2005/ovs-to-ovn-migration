@@ -172,7 +172,7 @@ Every run creates a unique directory such as:
 /root/ovs-to-ovn-backup/20260930-161200/
 ```
 
-It contains `migration-report.json` and `migration-report.txt` with:
+It contains `migration-report.json` with all timing, validation and evidence fields:
 
 - overall migration duration, with an explicit schema-specific timing scope
 - control-plane downtime: from neutron-server freeze until the first successful Neutron API request after restore
@@ -183,6 +183,21 @@ It contains `migration-report.json` and `migration-report.txt` with:
 - resource counts before migration
 - resource identity preservation for networks, subnets, routers, servers and compute ports
 - result of a temporary post-migration Geneve network smoke test
+
+`migration-report.txt` is the concise human-readable view. Separators distinguish
+migration timing, resource/network validation, workload A/B/C/D validation,
+validation-resource cleanup, and report locations. It shows the four main timers,
+Pair-A PCAP loss/outage, selected functional checks, Pair-B automatic convergence
+and remediation, and the three Pair-D TCP stream results/recovered failure times.
+Repeated check fields, raw JSON objects, phase timings and diagnostic counters
+remain in JSON. Text rounds seconds to three decimals and packet-loss percent to
+four decimals; JSON preserves the original precision and all existing keys.
+JSON keys are ordered by run, timing, resources/network, A/B/C/D, cleanup and
+diagnostics rather than alphabetically; existing nested evidence is preserved.
+
+The final terminal output contains only result, run ID and the two report paths.
+Read the text report with `cat /root/ovs-to-ovn-backup/<run-id>/migration-report.txt`.
+Report formatting does not change measurements, validation gates or cleanup.
 
 ### Versioned phase timing and checkpoints
 
@@ -210,8 +225,8 @@ historical start exists; no end or duration is fabricated. Resuming an old run
 writes only that run's historical marker paths for stages actually executed,
 without upgrading runtime metadata or renaming historical artifacts.
 
-Both reports display all canonical phases 00–13 with their names, filenames,
-duration and availability. JSON retains `phase_durations_seconds` with canonical
+JSON displays all canonical phases 00–13 with their names, filenames,
+duration and availability. It retains `phase_durations_seconds` with canonical
 keys and nullable durations, and adds `phase_timings`, `phase_marker_schema_version`,
 `phase_marker_schema_source`, `phase_timing_scope`, and `total_duration_scope`.
 **MEASURED** describes elapsed time, not validation success. Missing ends are
