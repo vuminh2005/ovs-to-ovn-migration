@@ -8,7 +8,7 @@ root = pathlib.Path(sys.argv[2])
 c = openstack.connect()
 if sys.argv[1] == 'before':
     rows = [dict(network_uuid=n.id, network_type_before=n.provider_network_type,
-                 segmentation_id_before=n.provider_segmentation_id) for n in c.network.networks()]
+                 segmentation_id_before=n.provider_segmentation_id, physical_network_before=n.provider_physical_network, mtu_before=n.mtu) for n in c.network.networks()]
     (root/'network-segments.before.json').write_text(json.dumps(rows, indent=2))
 else:
     rows = json.loads((root/'network-segments.before.json').read_text())
@@ -22,10 +22,15 @@ else:
                    segmentation_id_after=n.provider_segmentation_id,
                    ovn_logical_switch_exists='neutron-'+n.id in names,
                    observed_chassis_tunnel_encapsulation=sorted(types))
-        row['status'] = 'PASS' if (row['network_type_before']=='vxlan' and
+        converted = (row['network_type_before']=='vxlan' and
             row['network_type_after']=='geneve' and
             str(row['segmentation_id_before'])==str(row['segmentation_id_after']) and
-            row['ovn_logical_switch_exists'] and types == {'geneve'}) else 'FAIL'
+            row['ovn_logical_switch_exists'] and types == {'geneve'})
+        flat_preserved = (row['network_type_before']=='flat' and n.provider_network_type=='flat' and
+            n.provider_physical_network==row.get('physical_network_before') and n.mtu==row.get('mtu_before') and
+            str(n.provider_segmentation_id)==str(row['segmentation_id_before']) and row['ovn_logical_switch_exists'])
+        row['status'] = 'PASS' if converted or flat_preserved else 'FAIL'
+        row['scope'] = 'flat-preservation' if row['network_type_before']=='flat' else 'vxlan-to-geneve'
     (root/'existing-network-semantics.json').write_text(json.dumps(dict(
         status='PASS' if all(r['status']=='PASS' for r in rows) else 'FAIL', networks=rows,
         upstream='https://github.com/openstack/neutron/blob/24.0.0/neutron/plugins/ml2/drivers/ovn/db_migration.py'), indent=2))

@@ -69,12 +69,12 @@ class PresentationTests(unittest.TestCase):
         report = self.report(pair_d_tcp={'status': 'DISABLED', 'streams': {
             'held': {'status': 'PASS', 'longest_recovered_failure_seconds': 0}}})
         text = render_text(report, pathlib.Path('/run'), modern=True)
-        tcp = text.split('PAIR D -')[1].split('4. VALIDATION RESOURCE CLEANUP')[0]
+        tcp = text.split('EW TCP -')[1].split('NORTH-SOUTH -')[0]
         self.assertRegex(tcp, r'Result\s+: DISABLED')
         self.assertNotIn('PASS', tcp)
         self.assertNotIn('Existing TCP session', tcp)
-        self.assertIn('Existing workloads (A/B)', text)
-        self.assertNotIn('Existing workloads (A/B/D)', text)
+        self.assertIn('Existing ICMP / DHCP workloads', text)
+        self.assertNotIn('Existing ICMP / DHCP / TCP workloads', text)
 
     def test_open_tcp_failure_is_visible_beside_previous_recovered_duration(self):
         report = self.report(pair_d_tcp={'status': 'FAIL', 'streams': {

@@ -404,7 +404,7 @@ class Capture:
             server=self.v.cloud.compute.get_server(vm['server']); port=self.v.cloud.network.get_port(vm['port'])
             if (server.id!=vm['server'] or port.id!=vm['port'] or port.device_id!=vm['server'] or port.fixed_ips!=vm['fixed_ips'] or
                 server.status!='ACTIVE' or server.metadata.get('ovn_migration_run')!=self.v.cfg['run'] or
-                server.metadata.get('ovn_validation_role')!='measure'):
+                server.metadata.get('ovn_validation_role')!=self.v.cfg.get('capture_role', 'measure')):
                 raise RuntimeError('Pair-A capture identity changed')
             host=port.binding_host_id
             if self.v.cfg.get('placement_enabled'):

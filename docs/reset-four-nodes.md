@@ -17,19 +17,23 @@ loại khỏi inventory đầy đủ; reset sẽ từ chối nếu còn host đ�
 
 Chạy sau một lần migration/demo khi muốn xóa workload và dựng lại baseline OVS.
 Có thể chạy khi cụm đang OVS hoặc OVN. Lab vừa in `OVS_4NODE_BASELINE_READY` chưa
-cần chạy reset lại ngay. Các thay đổi Pair A/B/C/D trong migration chưa thuộc
-phần sửa reset này.
+cần chạy reset lại ngay. Hướng dẫn mở rộng EW/N-S mới nằm trong `ns-ew-matrix.md`.
 
 Reset destroy toàn bộ Kolla/OpenStack nested trên 4 node. Instance (kể cả Pair D
 tạo thủ công), network, subnet, router, security group và Glance image/flavor cũ
 sẽ mất theo state của cloud bị destroy. Image/flavor Ubuntu validation được
 chuẩn bị lại sau deploy. Không phải rollback bảo toàn workload.
 
-Giữ VM lab bên ngoài Viettel Cloud, host NIC eth0/eth1/eth2, `neutron-ext`, SSH,
+Giữ VM lab bên ngoài Viettel Cloud, host NIC eth0/eth1/eth2, uplink Linux bridge/veth N-S, SSH,
 venv Kolla, Docker image cache, `/root/multinode`, `/etc/kolla/passwords.yml`,
 cache Ubuntu trên host và migration evidence. Controller không reboot;
 network1/compute1/compute2 reboot lần lượt. Mặc định
 `reset_delete_migration_backups: false`; chỉ đổi khi thực sự muốn xóa evidence cũ.
+
+Network1 giữ IP `10.1.0.90/24` và MAC của eth1 trên `br-underlay`;
+Netplan và service veth tạo lại `ns-uplink ↔ ns-ex` qua reboot. Tunnel trên
+network1 dùng `br-underlay`, hai compute dùng `eth1`. Sau deploy reset đặt
+quota **instances=20**, giữ quota cores/RAM và kiểm tra lại.
 
 ## Lệnh chạy cho lần reset sau
 

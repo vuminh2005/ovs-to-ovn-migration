@@ -17,7 +17,7 @@
 #   /etc/kolla/passwords.yml
 #   Docker images
 #   SSH keys / users / hostnames
-#   neutron-ext
+#   persistent br-underlay and ns-uplink/ns-ex on network1
 
 - name: Guard destructive reset and save controller-side configuration snapshot
   hosts: localhost
@@ -26,6 +26,7 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   vars:
     reset_lab_confirm: false
     reset_kolla_venv: /root/venvs/kolla-2024.1
@@ -146,6 +147,7 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   tasks:
     - name: Require successful controller scope check
       ansible.builtin.assert:
@@ -175,6 +177,19 @@
           - ((reset_tunnel.stdout | from_json)[0].mtu | int) == (reset_tunnel_mtu | int)
       when: inventory_hostname in groups['network'] + groups['compute']
 
+    - name: Install read-only underlay identity helper before destructive reset
+      ansible.builtin.copy:
+        src: scripts/ns_underlay.py
+        dest: /root/ns-underlay-check.py
+        mode: '0700'
+      when: inventory_hostname in groups['network']
+
+    - name: Require exact underlay IP MAC and MTU before stopping workloads
+      ansible.builtin.command:
+        argv: [python3, /root/ns-underlay-check.py, inspect, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int} | to_json }}"]
+      when: inventory_hostname in groups['network']
+      changed_when: false
+
 
 - name: Stop running libvirt guests before Kolla destroy
   hosts: compute
@@ -183,6 +198,7 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   tasks:
     - name: Require controller scope verification before stopping any guest
       ansible.builtin.assert:
@@ -214,6 +230,7 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   vars:
     reset_kolla_venv: /root/venvs/kolla-2024.1
     reset_kolla_inventory: /root/multinode
@@ -249,6 +266,7 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   tasks:
     - name: List remaining containers
       ansible.builtin.command: docker ps -a
@@ -295,6 +313,7 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   tasks:
     - name: Fail if qrouter qdhcp or ovnmeta namespaces remain
       ansible.builtin.shell: |
@@ -320,8 +339,14 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   serial: 1
   tasks:
+    - name: Persist Linux bridge and veth before rebooting network1
+      ansible.builtin.command:
+        argv: [python3, /root/ns-underlay-check.py, apply, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int} | to_json }}"]
+      when: inventory_hostname in groups['network']
+
     - name: Reboot host and wait for it to return
       ansible.builtin.reboot:
         reboot_timeout: 900
@@ -336,6 +361,7 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   tasks:
     - name: Show compact interface state
       ansible.builtin.command: ip -br link
@@ -353,8 +379,8 @@
         - eth1
       changed_when: false
 
-    - name: Verify network host retains neutron-ext
-      ansible.builtin.command: ip link show neutron-ext
+    - name: Verify network host retains persistent NS external interface
+      ansible.builtin.command: ip link show ns-ex
       when: inventory_hostname in groups.get('network', [])
       changed_when: false
 
@@ -399,6 +425,7 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   vars:
     reset_globals_path: /etc/kolla/globals.yml
     reset_config_path: /etc/kolla/config
@@ -440,13 +467,14 @@
           network_interface: "eth0"
           api_interface: "eth0"
 
-          tunnel_interface: "eth1"
+          tunnel_interface: "{% raw %}{{ 'br-underlay' if inventory_hostname in groups['network'] else 'eth1' }}{% endraw %}"
 
           ###############################################################################
           # Neutron external networking
           ###############################################################################
 
-          neutron_external_interface: "neutron-ext"
+          neutron_external_interface: "{% raw %}{{ 'ns-ex' if inventory_hostname in groups['network'] else 'neutron-ext' }}{% endraw %}"
+          neutron_physical_networks: "{{ ns_physnet }}"
           neutron_bridge_name: "br-ex"
 
           enable_neutron_provider_networks: "no"
@@ -606,6 +634,7 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   vars:
     reset_kolla_venv: /root/venvs/kolla-2024.1
     reset_kolla_inventory: /root/multinode
@@ -795,6 +824,7 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   tasks:
     - name: Verify neutron_openvswitch_agent is running
       ansible.builtin.shell: |
@@ -832,6 +862,7 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   tasks:
     - name: Verify DHCP L3 and metadata agents are running
       ansible.builtin.shell: |
@@ -868,7 +899,28 @@
   any_errors_fatal: true
   vars_files:
     - group_vars/reset.yml
+    - group_vars/ns-lab.yml
   tasks:
+    - name: Verify persistent uplink and effective source Kolla bridge mapping
+      ansible.builtin.command:
+        argv: [python3, /root/ns-underlay-check.py, deployed, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int, 'physnet': ns_physnet, 'ovn': false} | to_json }}"]
+      delegate_to: network1
+      changed_when: false
+
+    - name: Set only instance quota to 20 in the authenticated workload project
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ (reset_kolla_venv + '/bin/activate') | quote }}
+        source /etc/kolla/admin-openrc.sh
+        python3 - {{ (playbook_dir + '/scripts') | quote }} {{ reset_run_dir | quote }} <<'PYCODE'
+        import sys, pathlib, openstack
+        sys.path.insert(0, sys.argv[1])
+        from extended_validation import quota20
+        quota20(openstack.connect(), pathlib.Path(sys.argv[2]))
+        PYCODE
+      args:
+        executable: /bin/bash
+
     - name: Verify rendered Neutron MTU overrides on controller
       ansible.builtin.shell: |
         set -euo pipefail
@@ -947,7 +999,7 @@
           - >-
             Source service checks passed: cloud is redeployed as ML2/OVS + VXLAN
             with OVS native firewall. The migration repository, Kolla venv,
-            inventory, passwords.yml, Docker images and host neutron-ext are preserved.
+            inventory, passwords.yml, Docker images and persistent NS underlay are preserved.
 
     - name: Save fresh Ubuntu prerequisite settings for this reset
       ansible.builtin.copy:
@@ -970,4 +1022,4 @@
       ansible.builtin.debug:
         msg:
           - "{{ reset_completion.stdout_lines }}"
-          - "Run ansible-playbook -i {{ ansible_inventory_sources[0] }} migrate-to-ovn.yml; the A/B/C/D defaults discover managed image/flavor names. Fresh UUID evidence is in {{ reset_run_dir }}/migration-lab.yml."
+          - "Run ansible-playbook -i {{ ansible_inventory_sources[0] }} migrate-to-ovn.yml; the EW/NS defaults discover managed image/flavor names. Fresh UUID evidence is in {{ reset_run_dir }}/migration-lab.yml."

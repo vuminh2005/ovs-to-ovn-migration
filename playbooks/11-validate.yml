@@ -124,6 +124,7 @@
   become: true
   vars_files:
     - ../group_vars/all.yml
+    - ../group_vars/ns-lab.yml
   tasks:
     - name: Assert network chassis has gateway CMS option and no old namespaces
       ansible.builtin.shell: |
@@ -133,6 +134,12 @@
       args:
         executable: /bin/bash
       changed_when: false
+
+    - name: Verify shared underlay and target OVN physnet gateway mapping
+      ansible.builtin.command:
+        argv: [python3, /root/ns-underlay-check.py, deployed, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int, 'physnet': ns_physnet, 'ovn': true} | to_json }}"]
+      changed_when: false
+      when: validation_ns_enabled | bool
 
 - name: Phase 11 - Validate OVN metadata agents
   hosts: neutron-ovn-metadata-agent

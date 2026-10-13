@@ -35,7 +35,7 @@ report={
   'new_network_smoke':smoke,
   'limitations':[
      'Tenant packet evidence is required; PortBinding convergence is separate.',
-     'v2 intentionally fails on provider/external networks, floating IPs, router external gateways, DVR and Neutron agent HA because those paths are not yet validated.',
+     'Supported N-S scope is the owned flat physnet1 uplink with centralized SNAT/FIP to the on-link controller endpoint. DVR, HA, arbitrary provider workloads and Internet are outside this test.',
      'Guest static MTU cannot be changed automatically; existing VXLAN network MTUs are reduced by the configured VXLAN-to-Geneve delta.'
   ]
 }
@@ -73,12 +73,19 @@ report['workload_placement'] = evidence('workload-placement.json') or {'status':
 report['pair_d_tcp'] = (evidence('pair-d-tcp.json') or {'status': 'UNAVAILABLE'}) if cfg.get('pair_d_enabled') else {'status': 'DISABLED', 'enabled': False}
 report['pair_d_tcp']['baseline'] = evidence('pair-d-baseline.json')
 report['pair_d_tcp']['trigger'] = evidence('pair-d-trigger.json')
-report['limitations'].append('Pair D measures small application TCP echoes and new connections, with client monotonic timing; it is not a throughput or large-packet MTU benchmark.')
+report['limitations'].append('EW TCP measures small application TCP echoes and new connections, with client monotonic timing; it is not a throughput or large-packet MTU benchmark.')
 report['new_ovn_workload_bindings']=(evidence('post-ovn-bindings.json') or {}).get('status','NOT TESTED')
 report['dataplane_probe']=evidence('tenant-dataplane-probe.json') or {'status':'NOT TESTED'}
 if report['dataplane_probe'].get('status')=='PASS' and (report['dataplane_probe'].get('measurement_workload')!='Pair A' or report['dataplane_probe'].get('evidence_source')!='compute-tap-pcap'):
     report['historical_dataplane_probe']=report['dataplane_probe']
     report['dataplane_probe']={'status':'NOT TESTED', 'reason':'Historical console probe cannot serve as authoritative compute-PCAP measurement'}
+matrix = evidence('ew-matrix-results.json') or {'status': 'UNAVAILABLE', 'flows': {}}
+report['ew_connectivity_matrix'] = {'status': matrix['status'] if cfg.get('ew_matrix_enabled') else 'PARTIAL',
+    'flows': dict({'ew_different_compute_different_subnet': report['dataplane_probe']}, **matrix.get('flows', {}))}
+report['north_south'] = (evidence('ns-results.json') or {'status':'UNAVAILABLE'}) if cfg.get('ns', {}).get('enabled') else {'status':'DISABLED'}
+report['extended_cleanup'] = (evidence('extended-cleanup.json') or {}).get('status', 'NOT TESTED') if cfg.get('ew_matrix_enabled') or cfg.get('ns', {}).get('enabled') else 'DISABLED'
+report['workload_capacity'] = evidence('workload-capacity.json')
+report['instance_quota'] = evidence('quota-instances.json')
 state = evidence('validation-resources.json') or {}
 modern = state.get('schema_version') == 2 and not state.get('historical_dual_pair')
 automatic = evidence('existing-mtu-automatic.json') or {}
@@ -168,7 +175,9 @@ if orchestration.get('semantics_rc',0) or orchestration.get('workload_rc',0):
 if report['result']=='SUCCESS' and post_remediation.get('remediation_action')=='soft reboot' and post_remediation.get('status')=='PASS':
     report['result']='SUCCESS_WITH_REMEDIATION'
     report['existing_workload_migration']['status']='PASS AFTER REMEDIATION'
-report['limitations'][0]='Pair-A metrics require a continuous drop-free compute-tap PCAP, endpoints and request cadence; gaps or unrecovered loss yield UNAVAILABLE. Console packet history is secondary only. PortBinding convergence remains separate.'
+report['limitations'][0]='ICMP metrics require a continuous drop-free compute-tap PCAP, endpoints and request cadence; gaps or unrecovered loss yield UNAVAILABLE. Console packet history is secondary only. PortBinding convergence remains separate.'
+if report['result'] in ('SUCCESS', 'SUCCESS_WITH_REMEDIATION') and report['extended_cleanup'] not in ('PASS', 'DISABLED'):
+    report['result']='MIGRATED_VALIDATION_INCOMPLETE'
 report = ordered_report(report)
 (root/'migration-report.json').write_text(json.dumps(report, indent=2) + '\n')
 (root/'migration-report.txt').write_text(render_text(report, root, modern=modern))

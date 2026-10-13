@@ -60,6 +60,8 @@
         validation_prerequisites_runtime: "{{ validation_retry_prerequisites }}"
         validation_pair_compute_hosts: "{{ [validation_retry_config.placement['0'].inventory_host, validation_retry_config.placement['1'].inventory_host] }}"
         validation_pair_d_enabled: "{{ validation_retry_config.pair_d_enabled | bool }}"
+        validation_ns_enabled: "{{ validation_retry_config.get('ns', {}).get('enabled', false) | bool }}"
+        validation_ew_matrix_enabled: "{{ validation_retry_config.get('ew_matrix_enabled', false) | bool }}"
         target_geneve_mtu: "{{ validation_retry_config.target_mtu | int }}"
         validation_allow_pre_cutover_guest_reboot: "{{ validation_retry_config.allow_pre_cutover_guest_reboot | bool }}"
         validation_allow_post_cutover_guest_reboot: "{{ validation_retry_config.allow_post_cutover_guest_reboot | bool }}"

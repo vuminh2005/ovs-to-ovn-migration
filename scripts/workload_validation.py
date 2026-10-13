@@ -279,6 +279,10 @@ def validation_ready(root):
         role_ready = role_ready and read_evidence(root,'existing-post-cutover-readiness.json').get('status')=='PASS'
     if cfg.get('capture_enabled'):
         role_ready = role_ready and read_evidence(root,'tenant-dataplane-probe.json').get('evidence_source')=='compute-tap-pcap'
+    if cfg.get('ew_matrix_enabled'):
+        role_ready = role_ready and read_evidence(root, 'ew-matrix-results.json').get('status') == 'PASS'
+    if cfg.get('ns', {}).get('enabled'):
+        role_ready = role_ready and read_evidence(root, 'ns-results.json').get('status') == 'PASS'
     return (role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
             workload_pass(read_evidence(root, 'pre-workload-checks.json'), 'geneve') and
             workload_pass(read_evidence(root, 'post-workload-checks.json'), 'geneve') and
@@ -427,9 +431,11 @@ class Validation:
                 vm['placement'] = target
                 self.commit()
             vm.update(network=net['network'], subnet=net['subnet'])
-            name = prefix + '-' + role + str(i) if modern else prefix + '-' + str(i+1)
+            public_role = {'measure':'ew-cross-compute-cross-subnet', 'existing':'existing-dhcp-metadata', 'fresh':'fresh-ovn', 'tcp':'ew-tcp-continuity'}[role]
+            name = prefix + '-' + public_role + '-' + str(i) if modern else prefix + '-' + str(i+1)
             vm.setdefault('record_vm', role+str(i) if modern else stage+str(i))
-            vm.setdefault('name', name)
+            # Preserve checkpointed names during a retry of an older run.
+            name = vm.setdefault('name', name)
             if not vm.get('port'):
                 if vm.get('server'):
                     raise RuntimeError('Checkpointed server has no explicit owned port; refusing duplicate/replacement port')
@@ -440,6 +446,9 @@ class Validation:
                                                                              security_group_ids=[sg])
                 vm.update(port=port.id, fixed_ips=port.fixed_ips, ip=port.fixed_ips[0]['ip_address'], owned=True)
                 self.commit()
+        if stage == 'measure' and cfg.get('ew_matrix_enabled'):
+            from extended_validation import Extended
+            Extended(self).prepare_matrix_ports()
         if stage == 'pre':
             for i in range(2):
                 vm = pair[str(i)]
@@ -467,6 +476,11 @@ class Validation:
                              dict(path='/etc/migration-probe.json', content=json.dumps(config), permissions='0600'),
                              dict(path='/etc/systemd/system/migration-probe.service', content='[Unit]\nAfter=network-online.target\n[Service]\nExecStart=/usr/bin/python3 /usr/local/bin/migration-probe.py\n[Install]\nWantedBy=multi-user.target\n')],
                 runcmd=[['python3', '-c', launcher], ['systemctl', 'enable', '--now', 'migration-probe']]))
+            if stage == 'measure' and cfg.get('ew_matrix_enabled'):
+                from extended_validation import Extended
+                data = __import__('yaml').safe_load(user_data)
+                Extended(self).decorate_measure(data, str(i))
+                user_data = '#cloud-config\n'+__import__('yaml').safe_dump(data)
             if stage == 'tcp':
                 data = __import__('yaml').safe_load(user_data)
                 data['write_files'].extend([
@@ -1230,6 +1244,9 @@ class Validation:
     def finalize(self):
         if not validation_ready(self.root):
             return False
+        if getattr(self, 'cfg', {}).get('ew_matrix_enabled') or getattr(self, 'cfg', {}).get('ns', {}).get('enabled'):
+            from extended_validation import Extended
+            Extended(self).cleanup()
         self.cleanup('post')
         self.cleanup('pre')
         return True
@@ -1245,6 +1262,10 @@ def main():
     v = Validation(args.root)
     from tcp_validation import PairD
     pair_d = PairD(v)
+    extended = None
+    if v.cfg.get('ew_matrix_enabled') or v.cfg.get('ns', {}).get('enabled'):
+        from extended_validation import Extended
+        extended = Extended(v)
     if args.action == 'collect':
         running = True
         def stop(*_):
@@ -1256,12 +1277,28 @@ def main():
                 v.collect('measure')
                 if pair_d.enabled:
                     v.collect('tcp')
+                if extended and extended.ns:
+                    extended.console_rows(extended.state['ns']['vms']['0'], 'OVN_NS_JSON ')
             except Exception as exc:
                 with (v.root/'console-collector-errors.log').open('a') as f:
                     f.write(str(exc)+'\n')
             time.sleep(v.cfg['console_interval'])
     elif args.action == 'capture-finish':
-        return int(Capture(v).finish()['status'] != 'PASS')
+        primary_error = None
+        try:
+            primary = Capture(v).finish()
+        except Exception as exc:
+            primary_error = exc
+            primary = {'status': 'UNAVAILABLE'}
+        if extended:
+            try:
+                extended.matrix_finish()
+            except Exception as exc:
+                if not read_evidence(v.root, 'ew-matrix-results.json'):
+                    save(v.root/'ew-matrix-results.json', dict(status='UNAVAILABLE', reason=str(exc)))
+        if primary_error:
+            raise primary_error
+        return int(primary['status'] != 'PASS')
     elif args.action == 'capture-cleanup':
         report = read_evidence(v.root,'migration-report.json')
         if report.get('result') in ('SUCCESS','SUCCESS_WITH_REMEDIATION') and validation_ready(v.root):
@@ -1269,6 +1306,12 @@ def main():
             cp = capture.checkpoint()
             if cp and cp.get('status') == 'STOPPED':
                 capture.transport('remove',cp)
+            if extended and extended.matrix:
+                for name, pair in extended.flows().items():
+                    cap = extended.capture(name, pair)
+                    cp = cap.checkpoint()
+                    if cp and cp.get('status') == 'STOPPED':
+                        cap.transport('remove', cp)
         return 0
     elif args.action == 'd-arm':
         pair_d.arm()
@@ -1282,13 +1325,26 @@ def main():
             v.audit_placement(['measure', 'pre'] + (['tcp'] if pair_d.enabled else []))
         pair_d.wait(freeze=True)
         pair_d.control_precheck()
+        if extended:
+            extended.matrix_ready()
+            extended.ns_wait()
     elif args.action == 'finalize':
         v.finalize()
     elif args.action == 'pre':
         v.cfg['initial'] = True
+        if extended:
+            extended.capacity()
         v.create('measure')
+        if extended:
+            # Ports were prepared before cloud-init payloads were generated.
+            extended = Extended(v)
+            extended.create_matrix()
         v.wait_measure(initial=True)
         v.checkpoint_start()
+        if extended:
+            extended.matrix_start()
+            extended.create_ns()
+            extended.ns_wait()
         v.create('pre')
         rows = v.wait('pre')
         if not read_evidence(v.root,'existing-initial-baseline.json'):
@@ -1329,6 +1385,14 @@ def main():
                 v.audit_placement(['measure', 'pre', 'post'] + (['tcp'] if pair_d.enabled else []))
         except Exception as exc:
             failures.append(str(exc))
+        if extended:
+            try:
+                extended.ns_wait(post=True)
+            except Exception as exc:
+                result = read_evidence(v.root, 'ns-results.json')
+                result.update(status='FAIL', reason=str(exc))
+                save(v.root/'ns-results.json', result)
+                failures.append(str(exc))
         if getattr(v,'state',{}).get('schema_version')==2 and not v.state.get('historical_dual_pair'):
             try:
                 # Keep Pair A running throughout B/C validation, and confirm

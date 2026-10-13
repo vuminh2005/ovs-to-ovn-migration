@@ -1,0 +1,28 @@
+Validation — 2026-10-13
+Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
+
+346 unittest cases: PASS, no skipped tests.
+Includes real localhost TCP normal, same-socket timeout/recovery,
+closed held socket without reconnect, unexpected source rejection;
+SDK resource lifecycle, lost FIP reply recovery, UUID/ownership/mapping,
+EW placement matrix, independent capture roots, quota-only update and Netplan.
+
+Dependencies used for offline verification:
+  OpenStackSDK 4.21.0
+  Ansible-core 2.17.14
+  Python 3.12
+
+6 Ansible syntax entrypoints: PASS
+  migrate-to-ovn.yml
+  reset-lab-to-ovs.yml
+  resume-after-cleanup.yml
+  retry-validation-preparation.yml
+  playbooks/dataplane-capture-tasks.yml
+  playbooks/pair-d-trigger-tasks.yml
+All Python AST / YAML parse: PASS
+Kolla globals double rendering for network1/compute1/compute2: PASS
+Diff whitespace check: PASS
+
+No live lab reset, deploy, cloud API request or migration was executed.
+A live migration is required to establish outage and held-session results.
+Mentor-managed outer policy is checked through baseline traffic, not modified.

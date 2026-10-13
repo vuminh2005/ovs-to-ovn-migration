@@ -1,0 +1,2605 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..41c33c8
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,3 @@
++
++__pycache__/
++*.pyc
+diff --git a/README.md b/README.md
+index af78e70..0003d9a 100644
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,15 @@
+ # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
+ 
+-## Cross-compute A/B/C/D update
++## Bản mở rộng N-S và ma trận EW (13/10/2026)
++
++Hướng dẫn hiện hành: [docs/ns-ew-matrix.md](docs/ns-ew-matrix.md).
++Bản này bổ sung reset uplink bền vững, quota instance 20, hai VM cho ba luồng
++ICMP bổ sung và hai VM cho TCP SNAT/FIP. Mặc định tối đa **12 VM, 6 mỗi compute**.
++Tên VM mới và tiêu đề báo cáo mô tả phép đo; các khóa evidence A/B/C/D cũ được
++để lại làm alias kỹ thuật nhằm giữ tương thích với report/checkpoint cũ.
++Không có thao tác lab nào được chạy khi tạo bản cập nhật này.
++
++## Cross-compute A/B/C/D update (thiết kế nền)
+ 
+ Every pair now places member 1 on `compute1` and member 2 on `compute2`.
+ Precheck resolves inventory aliases to real Nova hosts, hypervisors and OVS
+@@ -14,7 +23,7 @@ Pair-A PCAP delegation uses this verified compute mapping.
+ Pair D is enabled automatically by default (`validation_pair_d_enabled: true`).
+ A/B/D share the pre-migration two-network routed topology. C still creates its
+ own two Geneve networks/subnets and router after migration. With D enabled the
+-run creates eight VMs, four networks/subnets and two routers in total.
++base workload creates eight VMs, four networks/subnets and two routers. The enabled EW/NS extension raises the total to twelve VMs, six networks/subnets and three routers.
+ See [A/B/C/D lab instructions](docs/abcd-validation.md) for TCP semantics,
+ checkpoints, cleanup and the current nested-lab commands.
+ 
+@@ -24,8 +33,7 @@ checkpoints, cleanup and the current nested-lab commands.
+ `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
+ with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
+ See [four-node reset instructions](docs/reset-four-nodes.md) for destructive
+-scope, commands, new UUIDs and retry. This A/B/C/D update leaves reset operations
+-unchanged.
++scope, commands, new UUIDs and retry. The latest extension also persists the NS uplink and instance quota during reset.
+ 
+ V2 turns the lab-validated migration into a **single-invocation migration proof of concept** for its supported scope. It discovers the Kolla inventory path from the `-i` argument, finds `kolla-ansible` from the active execution environment, parses `/etc/kolla/globals.yml`, uses standard Kolla inventory groups to find control/network/compute/OVN hosts, and reads the generated ML2/OVN config to discover the real OVN NB/SB connection strings.
+ 
+@@ -80,14 +88,14 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
+ - DVR off
+ - Neutron agent HA off
+ - provider networks off
+-- no external/provider network
+-- no Floating IPs
+-- no router external gateway
++- pre-existing external/FIP topology is rejected before workload provisioning
++- the run then creates one owned flat physnet1 external network with SNAT .4 and FIP .5
++- target external flat/MTU/gateway/FIP preservation is audited separately
+ - target ML2/OVN + Geneve
+ - native OVN DHCP
+ - OVN metadata agent
+ 
+-This is a deliberate safety property. V2 does **not** claim that FIP/provider/DVR/HA migration is supported merely because the generic OVN components can run.
++This is a deliberate safety property. Only the owned, centralized SNAT/FIP test path is enabled. Arbitrary existing provider/FIP topologies, DVR and HA remain outside scope. The migration measurements still require a live lab run; offline tests cannot establish their outcomes.
+ 
+ ## What is now auto-discovered
+ 
+diff --git a/VALIDATION.txt b/VALIDATION.txt
+new file mode 100644
+index 0000000..bcf55b7
+--- /dev/null
++++ b/VALIDATION.txt
+@@ -0,0 +1,28 @@
++Validation — 2026-10-13
++Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
++
++346 unittest cases: PASS, no skipped tests.
++Includes real localhost TCP normal, same-socket timeout/recovery,
++closed held socket without reconnect, unexpected source rejection;
++SDK resource lifecycle, lost FIP reply recovery, UUID/ownership/mapping,
++EW placement matrix, independent capture roots, quota-only update and Netplan.
++
++Dependencies used for offline verification:
++  OpenStackSDK 4.21.0
++  Ansible-core 2.17.14
++  Python 3.12
++
++6 Ansible syntax entrypoints: PASS
++  migrate-to-ovn.yml
++  reset-lab-to-ovs.yml
++  resume-after-cleanup.yml
++  retry-validation-preparation.yml
++  playbooks/dataplane-capture-tasks.yml
++  playbooks/pair-d-trigger-tasks.yml
++All Python AST / YAML parse: PASS
++Kolla globals double rendering for network1/compute1/compute2: PASS
++Diff whitespace check: PASS
++
++No live lab reset, deploy, cloud API request or migration was executed.
++A live migration is required to establish outage and held-session results.
++Mentor-managed outer policy is checked through baseline traffic, not modified.
+diff --git a/docs/ns-ew-matrix.md b/docs/ns-ew-matrix.md
+new file mode 100644
+index 0000000..6a28e80
+--- /dev/null
++++ b/docs/ns-ew-matrix.md
+@@ -0,0 +1,191 @@
++# Mở rộng EW và N-S — hướng dẫn hiện hành
++
++Bản nền là `playbook(1).zip` người dùng gửi ngày 13/10/2026. Workspace không
++có patch/checkpoint sửa dở của lần yêu cầu bị lỗi. Các file review và patch reset
++cũ trong ZIP là tài liệu lịch sử, không phải patch cần áp dụng lại.
++
++## Thay đổi đã thực hiện
++
++1. Reset dựng uplink N-S bền vững trên network1, trước reboot/deploy.
++2. Quota project đang xác thực là `instances=20`; cores/RAM được đọc trước và
++   sau, chỉ request thay đổi instances. Pre-provision tính cả hai VM tạo sau
++   migration và kiểm tra quota cores/RAM, RAM/disk còn cấp phát trên từng compute.
++3. Thêm đúng hai VM để hoàn thiện ba tình huống ICMP còn thiếu; dùng chung hai
++   VM đo liên tục, không dùng VM DHCP/MTU có thể reboot.
++4. Thêm topology N-S sở hữu bởi từng run: một tenant network/subnet, router,
++   external flat network/subnet, hai VM, gateway `.4` và FIP `.5`.
++5. SNAT outbound và FIP inbound đều chạy TCP held/new trước, trong và sau
++   migration. Phiên held đã mở không reconnect. Báo cáo kiểm tra guest boot,
++   probe process, listener, connection, nguồn NAT và UUID/mapping tài nguyên.
++6. Tên VM mới và tiêu đề report dùng mô tả nhiệm vụ. Các khóa/checkpoint A/B/C/D
++   cũ vẫn là alias kỹ thuật để không phá lịch sử metric và recovery.
++
++## Topology và số lượng
++
++| Tên phép đo | Nguồn → đích | Compute | Subnet |
++|---|---|---|---|
++| `ew_different_compute_different_subnet` | VM đo 0 → VM đo 1 | khác | khác |
++| `ew_same_compute_different_subnet` | VM đo 0 → VM matrix 0 | cùng compute1 | khác |
++| `ew_different_compute_same_subnet` | VM matrix 0 → VM đo 1 | khác | cùng network/subnet 1 |
++| `ew_same_compute_same_subnet` | VM đo 1 → VM matrix 1 | cùng compute2 | cùng network/subnet 1 |
++| Existing DHCP/MTU/metadata | hai VM có guard remediation | khác | khác |
++| Fresh OVN provisioning | hai VM chỉ tạo sau cutover | khác | khác |
++| EW TCP continuity | hai VM TCP của thiết kế nền | khác | khác |
++| NS SNAT outbound | VM outbound → controller | VM trên compute1 | qua router `.4` |
++| NS FIP inbound | controller → `.5` → VM inbound | VM trên compute2 | DNAT vào tenant |
++
++Hai VM matrix cùng network/subnet với VM đo 1: matrix 0 trên compute1,
++matrix 1 trên compute2. Không tạo network/router riêng cho ba luồng ICMP bổ sung.
++Placement dùng cùng resolver inventory → Nova host/hypervisor → Neutron binding
++host và API Nova 2.74 như bản nền.
++
++| Nhóm | compute1 | compute2 |
++|---|---:|---:|
++| ICMP liên tục + existing DHCP + EW TCP | 3 | 3 |
++| Matrix bổ sung | 1 | 1 |
++| N-S | 1 | 1 |
++| Fresh OVN, tạo sau migration | 1 | 1 |
++| **Tối đa** | **6** | **6** |
++
++Trước cutover có 10 VM, sau khi tạo workload mới có 12 VM. Khi mọi kiểm tra
++đạt, cleanup xóa tài nguyên của run; khi không đạt, giữ tài nguyên để điều tra.
++Giữa các reset tạo UUID/MAC guest mới; trong một run giữ nguyên VM/port/network.
++Địa chỉ `.4/.5` luôn là hai địa chỉ external đã được cấp cho bài lab.
++
++## Uplink và cấu hình
++
++Các địa chỉ nằm trong `group_vars/ns-lab.yml`, theo baseline đã kiểm chứng:
++
++| Thành phần | Giá trị |
++|---|---|
++| Network1 underlay | `10.1.0.90/24`, MTU 1450 |
++| Controller endpoint | `10.1.0.187` |
++| External subnet/gateway | `10.1.0.0/24`, gateway `10.1.0.1` |
++| Router SNAT / Floating IP | `10.1.0.4` / `10.1.0.5` |
++| Physnet / external type | `physnet1` / `flat` |
++| Tenant subnet | `10.233.0.0/24` |
++| VM outbound / inbound | `10.233.0.11` / `10.233.0.20` |
++| TCP port | `18180`, riêng với port 18080 của baseline thủ công |
++
++Reset kiểm tra IP/MAC/MTU trước khi dừng guest. Network1 giữ MAC của eth1 và
++chuyển IP underlay sang `br-underlay`; `eth1` là member của Linux bridge.
++Cặp `ns-uplink ↔ ns-ex` nối Linux bridge tới `br-ex`, do Kolla cắm `ns-ex` vào OVS.
++Netplan giữ cấu hình eth0 và các NIC khác; snapshot đầy đủ Netplan được lưu dưới
++`/var/lib/ns-underlay/<timestamp>/`. Cloud-init được chặn tái sinh cấu hình NIC
++cũ, còn Netplan hiện tại của eth0 được giữ. Service `ns-underlay-veth.service`
++tạo lại veth sau boot.
++
++Globals Kolla dùng biểu thức theo host: tunnel network1 là `br-underlay`, tunnel
++compute1/compute2 là `eth1`; external network1 là `ns-ex`. Precheck render globals
++theo từng host và kiểm tra cấu hình OVS `local_ip`/`bridge_mappings` thực tế.
++Sau cutover kiểm tra `ovn-bridge-mappings` và gateway chassis.
++
++External flat MTU 1450 được bảo toàn. Phase 06 chỉ giảm MTU network VXLAN thêm
++8 byte; phase 12 audit VXLAN → Geneve và flat → flat riêng.
++
++**Outer policy vẫn do mentor quản lý trên cloud bên ngoài.** Playbook này không
++có credentials/API của cloud outer để sửa policy đó. Sau mỗi lần dựng, baseline
++SNAT/FIP thực tế phải đạt trước freeze. Nếu policy whitelist MAC không còn phù
++hợp, playbook dừng trước migration; `ns-outer-policy.json` ghi gateway port/MAC
++và `.4/.5` để mentor đối chiếu. Việc đổi UUID/MAC inner không bị che bằng cách
++reboot hay tự tạo lại VM đo.
++
++## Metric và mốc đo
++
++- ICMP gốc giữ nguyên công thức PCAP. Ba luồng mới có capture trên tap nguồn
++  riêng, thư mục riêng và bộ lọc nguồn/đích riêng. Bộ đọc vẫn kiểm tra ICMP
++  identifier/sequence, request cadence, capture drop/lifetime và loss cuối chưa
++  phục hồi. Capture thiếu chứng cứ trả `UNAVAILABLE`, không suy ra downtime 0.
++- Cửa sổ các luồng ICMP được neo vào request/reply thành công trước các bước
++  thay đổi migration, kết thúc bằng request/reply phục hồi mới sau validation.
++  Mỗi stream có anchor riêng, không khẳng định timestamp bắt đầu/kết thúc các
++  stream bằng nhau tuyệt đối. Capture nguồn đo liên tục gốc được khởi động trước
++  các workload khác như bản nền. Cả bộ luồng cùng chạy xuyên MTU preparation,
++  freeze, DB migration, cutover và validation.
++- N-S lấy snapshot fresh khi hai stream đã ổn định, giữ cùng held session qua
++  migration, rồi lấy snapshot fresh sau cutover và validation workload mới.
++  Counter sau trừ counter baseline; các failure burst trước baseline bị loại.
++  Thời gian gián đoạn ứng dụng tính trên clock monotonic của từng client, từ
++  attempt lỗi đầu tiên tới echo phục hồi. Không so clock giữa guest/controller.
++- TCP held chỉ thử kết nối lại trong quá trình tìm listener ban đầu. Khi socket
++  đầu tiên đã kết nối, đóng socket là lỗi phiên cuối cùng, không mở socket thay
++  thế. TCP new vẫn mở connection độc lập mỗi attempt.
++- Held có thể mất qua migration NAT. Report khi đó ghi FAIL, giữ kết quả new,
++  thời gian lỗi cuối chưa phục hồi và terminal error. Không gán PASS bằng reconnect.
++- Bài này đo packet nhỏ/TCP echo. Không phải throughput, large-packet MTU hay
++  truy cập Internet. Endpoint ngoài tenant là controller trên underlay của lab.
++
++## Triển khai và chạy
++
++Đưa ZIP mới vào `/root` trên controller. ZIP có thư mục gốc
++`ovs-to-ovn-migration-ns`, để giữ bản code trước đó:
++
++```bash
++python3 -m zipfile -e /root/playbook-ns-ew-matrix.zip /root
++cd /root/ovs-to-ovn-migration-ns
++source /root/venvs/kolla-2024.1/bin/activate
++
++ansible-playbook -i /root/multinode reset-lab-to-ovs.yml --syntax-check
++ansible-playbook -i /root/multinode migrate-to-ovn.yml --syntax-check
++```
++
++Lab hiện tại là OVN, do đó reset trước. Reset xóa workload inner hiện tại và
++dựng lại nguồn OVS; các migration backup cũ được giữ mặc định. Evidence baseline
++N-S đã được người dùng lưu ngoài lab.
++
++```bash
++ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
++    -e reset_lab_confirm=true
++```
++
++Chỉ tiếp tục khi reset kết thúc `OVS_4NODE_BASELINE_READY`, không còn task lỗi:
++
++```bash
++source /etc/kolla/admin-openrc.sh
++ansible-playbook -i /root/multinode migrate-to-ovn.yml
++```
++
++Một terminal controller là đủ; probe/capture chạy nền. Không cần copy script
++qua SSH jump ns-in/ns-out hay mở listener thủ công.
++
++Không dùng checkpoint của run A/B/C/D cũ để bổ sung stream mới giữa migration.
++Các stream mới phải chạy từ đầu một run OVS mới. Retry preparation cũ giữ config
++features đã lưu; retry không tự bật N-S/EW cho một run không có baseline.
++
++## Evidence và cleanup
++
++Evidence giữ trong migration run directory, gồm:
++
++- `ew-matrix-results.json`: ba luồng ICMP bổ sung.
++- `flows/<tên-luồng>/`: raw PCAP, log tcpdump, process identity, measurement anchors.
++- `ns-baseline.json`, `ns-precutover.json`, `ns-results.json`: TCP/NAT/resource evidence.
++- `extended-resources.json`: UUID/role/placement và local process identity.
++- `ns/`: log listener SNAT và cumulative summaries client FIP trên controller.
++- `ns-outer-policy.json`: thông tin gateway phục vụ kiểm tra policy outer.
++- `quota-instances.json`, `workload-capacity.json`: quota và dự toán cấp phát.
++- `migration-report.txt/.json`: kết quả chung với tên mô tả phép đo.
++
++Collector dùng Nova console cho NS guest, không phụ thuộc SSH/ProxyJump đang
++được đo. Guest chỉ được xóa sau khi đã lấy snapshot cumulative cuối. Cleanup
++xóa VM/port matrix trước topology chia sẻ, xóa N-S theo UUID/run ownership và
++dừng đúng local PID/start-time/boot được ghi. Cleanup của topology nền vẫn chỉ
++chạy sau khi toàn bộ phép đo bật trong run đạt. Raw PCAP đã lấy về controller
++được giữ; chỉ bản remote được xóa sau report thành công.
++
++## Kiểm tra đã thực hiện và giới hạn
++
++Unit/integration offline dùng OpenStackSDK 4.21.0 và Ansible-core 2.17.14.
++Có TCP thật localhost cho normal, timeout-phục hồi cùng socket, socket đóng
++không reconnect và sai nguồn; có kiểm tra bằng resource SDK cho provisioning
++N-S, retry mất reply, mapping/MTU/ownership, ma trận compute/subnet và quota.
++Kết quả kiểm tra cụ thể nằm trong `VALIDATION.txt` ở thư mục gốc ZIP.
++
++**Chưa chạy reset/deploy/migration trên lab thật.** Bản code này cung cấp workflow
++và kiểm tra offline; không phải bằng chứng N-S đã giữ phiên qua migration.
++
++Nguồn API/cấu hình đã đối chiếu:
++
++- https://docs.openstack.org/kolla-ansible/2024.1/reference/networking/neutron.html
++- https://docs.openstack.org/openstacksdk/latest/user/proxies/compute.html
++- https://docs.openstack.org/openstacksdk/latest/user/resources/compute/v2/limits.html
++- https://docs.openstack.org/openstacksdk/latest/user/resources/network/v2/floating_ip.html
+diff --git a/docs/reset-four-nodes.md b/docs/reset-four-nodes.md
+index d671414..2d26964 100644
+--- a/docs/reset-four-nodes.md
++++ b/docs/reset-four-nodes.md
+@@ -17,20 +17,24 @@ loại khỏi inventory đầy đủ; reset sẽ từ chối nếu còn host đ
+ 
+ Chạy sau một lần migration/demo khi muốn xóa workload và dựng lại baseline OVS.
+ Có thể chạy khi cụm đang OVS hoặc OVN. Lab vừa in `OVS_4NODE_BASELINE_READY` chưa
+-cần chạy reset lại ngay. Các thay đổi Pair A/B/C/D trong migration chưa thuộc
+-phần sửa reset này.
++cần chạy reset lại ngay. Hướng dẫn mở rộng EW/N-S mới nằm trong `ns-ew-matrix.md`.
+ 
+ Reset destroy toàn bộ Kolla/OpenStack nested trên 4 node. Instance (kể cả Pair D
+ tạo thủ công), network, subnet, router, security group và Glance image/flavor cũ
+ sẽ mất theo state của cloud bị destroy. Image/flavor Ubuntu validation được
+ chuẩn bị lại sau deploy. Không phải rollback bảo toàn workload.
+ 
+-Giữ VM lab bên ngoài Viettel Cloud, host NIC eth0/eth1/eth2, `neutron-ext`, SSH,
++Giữ VM lab bên ngoài Viettel Cloud, host NIC eth0/eth1/eth2, uplink Linux bridge/veth N-S, SSH,
+ venv Kolla, Docker image cache, `/root/multinode`, `/etc/kolla/passwords.yml`,
+ cache Ubuntu trên host và migration evidence. Controller không reboot;
+ network1/compute1/compute2 reboot lần lượt. Mặc định
+ `reset_delete_migration_backups: false`; chỉ đổi khi thực sự muốn xóa evidence cũ.
+ 
++Network1 giữ IP `10.1.0.90/24` và MAC của eth1 trên `br-underlay`;
++Netplan và service veth tạo lại `ns-uplink ↔ ns-ex` qua reboot. Tunnel trên
++network1 dùng `br-underlay`, hai compute dùng `eth1`. Sau deploy reset đặt
++quota **instances=20**, giữ quota cores/RAM và kiểm tra lại.
++
+ ## Lệnh chạy cho lần reset sau
+ 
+ Từ thư mục chứa bản playbook đã sửa:
+diff --git a/group_vars/all.yml b/group_vars/all.yml
+index 2834e9f..50212a9 100644
+--- a/group_vars/all.yml
++++ b/group_vars/all.yml
+@@ -117,3 +117,6 @@ validation_post_cutover_dhcp_timeout_seconds: 180
+ validation_capture_directory: /var/lib/ovn-migration-validation
+ # Nested lab: eth1 MTU 1450, VXLAN tenant MTU 1400 -> Geneve MTU 1392.
+ target_geneve_mtu: 1392
++
++# NS lab defaults are in group_vars/ns-lab.yml.
++validation_ns_enabled: "{{ ns_enabled }}"
+diff --git a/group_vars/ns-lab.yml b/group_vars/ns-lab.yml
+new file mode 100644
+index 0000000..c6f3ba3
+--- /dev/null
++++ b/group_vars/ns-lab.yml
+@@ -0,0 +1,17 @@
++---
++# Addresses approved for this nested lab; this is an on-link endpoint, not Internet.
++ns_enabled: true
++ns_underlay_ip: 10.1.0.90/24
++ns_underlay_mtu: 1450
++ns_endpoint_ip: 10.1.0.187
++ns_external_cidr: 10.1.0.0/24
++ns_external_gateway: 10.1.0.1
++ns_router_ip: 10.1.0.4
++ns_floating_ip: 10.1.0.5
++ns_physnet: physnet1
++ns_tenant_cidr: 10.233.0.0/24
++ns_outbound_ip: 10.233.0.11
++ns_inbound_ip: 10.233.0.20
++# Dedicated port, independent of the manually started baseline services.
++ns_tcp_port: 18180
++validation_ew_matrix_enabled: true
+diff --git a/playbooks/02-precheck.yml b/playbooks/02-precheck.yml
+index 667547e..4b849b4 100644
+--- a/playbooks/02-precheck.yml
++++ b/playbooks/02-precheck.yml
+@@ -6,6 +6,7 @@
+   become: true
+   vars_files:
+     - ../group_vars/all.yml
++    - ../group_vars/ns-lab.yml
+   tasks:
+     - name: Mark phase 02 start
+       ansible.builtin.command:
+@@ -61,13 +62,13 @@
+         executable: /bin/bash
+       changed_when: false
+ 
+-    - name: Fail if external/provider/FIP topology is present in unsupported v2 scope
++    - name: Require fresh source topology before creating owned N-S validation resources
+       ansible.builtin.shell: |
+         set -euo pipefail
+         source {{ openrc_path }}
+         for id in $(openstack network list -f value -c ID); do
+           ext=$(openstack network show "$id" -f value -c router:external)
+-          case "${ext,,}" in true|yes|1) echo "External network $id detected" >&2; exit 1;; esac
++          case "${ext,,}" in true|yes|1) echo "Existing external network $id detected; reset before owned N-S test" >&2; exit 1;; esac
+         done
+         test "$(openstack floating ip list -f value -c ID | wc -l)" -eq 0
+         for id in $(openstack router list -f value -c ID); do
+@@ -101,6 +102,9 @@
+   become: true
+   vars_files:
+     - ../group_vars/all.yml
++    - ../group_vars/ns-lab.yml
++  vars:
++    validation_effective_tunnel_interface: "{{ ('br-underlay' if inventory_hostname in groups['network'] else 'eth1') if validation_ns_enabled | bool else hostvars['localhost']['source_kolla_globals'].tunnel_interface }}"
+   tasks:
+     - name: Assert Ubuntu 24.04 on migration hosts
+       ansible.builtin.assert:
+@@ -111,16 +115,25 @@
+     - name: Verify configured tunnel interface exists and has IPv4 on network/compute chassis
+       ansible.builtin.shell: |
+         set -euo pipefail
+-        iface='{{ hostvars['localhost']['source_kolla_globals'].tunnel_interface }}'
++        iface='{{ validation_effective_tunnel_interface }}'
+         ip -4 -o addr show dev "$iface" | grep -q ' inet '
+       args:
+         executable: /bin/bash
+       when: inventory_hostname in (groups['network'] + groups['compute'])
+       changed_when: false
+ 
++    - name: Resolve source globals per host and verify effective tunnel interface
++      ansible.builtin.assert:
++        that:
++          - (lookup('template', hostvars['localhost']['kolla_globals_path']) | from_yaml).tunnel_interface == validation_effective_tunnel_interface
++          - inventory_hostname not in groups['network'] or (lookup('template', hostvars['localhost']['kolla_globals_path']) | from_yaml).neutron_external_interface == 'ns-ex'
++      when:
++        - validation_ns_enabled | bool
++        - inventory_hostname in (groups['network'] + groups['compute'])
++
+     - name: Read effective tunnel interface MTU and IPv4 address
+       ansible.builtin.command:
+-        argv: [ip, -j, -4, addr, show, dev, "{{ hostvars['localhost']['source_kolla_globals'].tunnel_interface }}"]
++        argv: [ip, -j, -4, addr, show, dev, "{{ validation_effective_tunnel_interface }}"]
+       register: validation_tunnel_interface
+       changed_when: false
+       when:
+@@ -164,10 +177,13 @@
+   become: true
+   vars_files:
+     - ../group_vars/all.yml
++    - ../group_vars/ns-lab.yml
++  vars:
++    validation_effective_tunnel_interface: "{{ ('br-underlay' if inventory_hostname in groups['network'] else 'eth1') if validation_ns_enabled | bool else hostvars['localhost']['source_kolla_globals'].tunnel_interface }}"
+   tasks:
+     - name: Verify full mesh tunnel transport with no fragmentation
+       ansible.builtin.command:
+-        argv: [ping, -I, "{{ hostvars['localhost']['source_kolla_globals'].tunnel_interface }}", -M, do,
++        argv: [ping, -I, "{{ validation_effective_tunnel_interface }}", -M, do,
+                -s, "{{ (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int) + 50 - 28 }}",
+                -c, '3', -W, '2', "{{ hostvars[item]['validation_tunnel_ip'] }}"]
+       loop: "{{ ((groups['network'] + groups['compute']) | unique | list) | difference([inventory_hostname]) }}"
+@@ -187,6 +203,7 @@
+   become: true
+   vars_files:
+     - ../group_vars/all.yml
++    - ../group_vars/ns-lab.yml
+   tasks:
+     - name: Require two distinct compute targets and supported automatic D topology
+       ansible.builtin.assert:
+@@ -225,6 +242,54 @@
+       when: validation_workloads_enabled | bool
+       changed_when: false
+ 
++- name: Phase 02 - Verify persistent NS uplink before any validation workload is created
++  hosts: network
++  gather_facts: false
++  become: true
++  any_errors_fatal: true
++  vars_files:
++    - ../group_vars/all.yml
++    - ../group_vars/ns-lab.yml
++  tasks:
++    - name: Install uplink inspection helper
++      ansible.builtin.copy:
++        src: ../scripts/ns_underlay.py
++        dest: /root/ns-underlay-check.py
++        mode: '0700'
++      when: validation_ns_enabled | bool
++    - name: Verify IP MAC veth br-ex and OVS physnet mapping
++      ansible.builtin.command:
++        argv: [python3, /root/ns-underlay-check.py, deployed, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int, 'physnet': ns_physnet, 'ovn': false} | to_json }}"]
++      changed_when: false
++      when: validation_ns_enabled | bool
++    - name: Verify controller endpoint underlay reachability
++      ansible.builtin.command:
++        argv: [ping, -I, br-underlay, -c, '3', -W, '2', "{{ ns_endpoint_ip }}"]
++      changed_when: false
++      when: validation_ns_enabled | bool
++
++- name: Phase 02 - Verify NS endpoint source address belongs to this controller
++  hosts: localhost
++  gather_facts: false
++  become: true
++  any_errors_fatal: true
++  vars_files:
++    - ../group_vars/all.yml
++    - ../group_vars/ns-lab.yml
++  tasks:
++    - name: Require controller underlay endpoint address before provisioning
++      ansible.builtin.shell: |
++        set -euo pipefail
++        python3 - {{ ns_endpoint_ip | quote }} <<'PYCODE'
++        import json, subprocess, sys
++        rows=json.loads(subprocess.check_output(['ip','-j','-4','addr','show'], text=True))
++        assert sum(a.get('local')==sys.argv[1] for r in rows for a in r['addr_info'])==1, 'NS endpoint address missing/ambiguous'
++        PYCODE
++      args:
++        executable: /bin/bash
++      changed_when: false
++      when: validation_ns_enabled | bool
++
+ - name: Phase 02 - Verify DB sync utility on first control host
+   hosts: control
+   any_errors_fatal: true
+@@ -232,6 +297,7 @@
+   become: true
+   vars_files:
+     - ../group_vars/all.yml
++    - ../group_vars/ns-lab.yml
+   tasks:
+     - name: Verify migration utility and migrate mode
+       ansible.builtin.shell: |
+diff --git a/playbooks/04-validation-workloads.yml b/playbooks/04-validation-workloads.yml
+index d5a76a8..7e2e7a4 100644
+--- a/playbooks/04-validation-workloads.yml
++++ b/playbooks/04-validation-workloads.yml
+@@ -6,6 +6,7 @@
+   become: true
+   vars_files:
+     - ../group_vars/all.yml
++    - ../group_vars/ns-lab.yml
+   tasks:
+     - name: Mark phase 04 start
+       ansible.builtin.command:
+@@ -46,12 +47,12 @@
+       ansible.builtin.copy:
+         dest: "{{ migration_run_dir }}/validation-config.json"
+         mode: '0600'
+-        content: "{{ {'run': migration_run_id, 'placement_enabled': true, 'placement': validation_placement_runtime, 'pair_d_enabled': validation_pair_d_enabled | bool, 'pair_d_network_host': groups['network'][0], 'tcp_old_port': validation_tcp_old_port | int, 'tcp_new_port': validation_tcp_new_port | int, 'tcp_control_port': validation_tcp_control_port | int, 'tcp_interval': validation_tcp_interval_seconds | float, 'tcp_timeout': validation_tcp_timeout_seconds | float, 'image': validation_prerequisites_runtime.image.id, 'flavor': validation_prerequisites_runtime.flavor.id, 'prefix': validation_name_prefix, 'cidrs': {'pre': validation_pre_cidrs, 'post': validation_post_cidrs}, 'interval': dataplane_probe_interval_seconds | float, 'lifetime': validation_probe_lifetime_seconds | int, 'timeout': validation_timeout_seconds | int, 'console_interval': validation_console_poll_seconds | float, 'console_tail_lines': validation_console_tail_lines | int, 'dhcp_t1': validation_dhcp_t1_seconds | int, 'dhcp_t2': validation_dhcp_t2_seconds | int, 'dhcp_renewal_tolerance': validation_dhcp_renewal_tolerance_seconds | float, 'dhcp_timeout': validation_dhcp_convergence_timeout | int, 'target_mtu': target_geneve_mtu | int, 'source_mtu': (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int), 'allow_pre_cutover_guest_reboot': validation_allow_pre_cutover_guest_reboot | bool, 'allow_post_cutover_guest_reboot': validation_allow_post_cutover_guest_reboot | bool, 'post_cutover_timeout': validation_post_cutover_dhcp_timeout_seconds | int, 'post_cutover_dhcp_enabled': true, 'capture_enabled': true, 'capture_directory': validation_capture_directory, 'inventory': kolla_inventory_runtime, 'ovn_cli_host': ovn_cli_host_runtime} | to_nice_json }}"
++        content: "{{ {'run': migration_run_id, 'ew_matrix_enabled': validation_ew_matrix_enabled | bool, 'ns': {'enabled': validation_ns_enabled | bool, 'endpoint_ip': ns_endpoint_ip, 'external_cidr': ns_external_cidr, 'external_gateway': ns_external_gateway, 'snat_ip': ns_router_ip, 'fip_ip': ns_floating_ip, 'physnet': ns_physnet, 'mtu': ns_underlay_mtu | int, 'tenant_cidr': ns_tenant_cidr, 'outbound_ip': ns_outbound_ip, 'inbound_ip': ns_inbound_ip, 'port': ns_tcp_port | int}, 'placement_enabled': true, 'placement': validation_placement_runtime, 'pair_d_enabled': validation_pair_d_enabled | bool, 'pair_d_network_host': groups['network'][0], 'tcp_old_port': validation_tcp_old_port | int, 'tcp_new_port': validation_tcp_new_port | int, 'tcp_control_port': validation_tcp_control_port | int, 'tcp_interval': validation_tcp_interval_seconds | float, 'tcp_timeout': validation_tcp_timeout_seconds | float, 'image': validation_prerequisites_runtime.image.id, 'flavor': validation_prerequisites_runtime.flavor.id, 'prefix': validation_name_prefix, 'cidrs': {'pre': validation_pre_cidrs, 'post': validation_post_cidrs}, 'interval': dataplane_probe_interval_seconds | float, 'lifetime': validation_probe_lifetime_seconds | int, 'timeout': validation_timeout_seconds | int, 'console_interval': validation_console_poll_seconds | float, 'console_tail_lines': validation_console_tail_lines | int, 'dhcp_t1': validation_dhcp_t1_seconds | int, 'dhcp_t2': validation_dhcp_t2_seconds | int, 'dhcp_renewal_tolerance': validation_dhcp_renewal_tolerance_seconds | float, 'dhcp_timeout': validation_dhcp_convergence_timeout | int, 'target_mtu': target_geneve_mtu | int, 'source_mtu': (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int), 'allow_pre_cutover_guest_reboot': validation_allow_pre_cutover_guest_reboot | bool, 'allow_post_cutover_guest_reboot': validation_allow_post_cutover_guest_reboot | bool, 'post_cutover_timeout': validation_post_cutover_dhcp_timeout_seconds | int, 'post_cutover_dhcp_enabled': true, 'capture_enabled': true, 'capture_directory': validation_capture_directory, 'inventory': kolla_inventory_runtime, 'ovn_cli_host': ovn_cli_host_runtime} | to_nice_json }}"
+       when:
+         - validation_workloads_enabled | bool
+         - not (validation_retry_preparation_runtime | default(false) | bool)
+ 
+-    - name: Start Pair A measurement prepare Pair B and automatically start enabled Pair D
++    - name: Start EW matrix and NS continuity probes prepare DHCP workload and EW TCP
+       ansible.builtin.shell: |
+         set -euo pipefail
+         source {{ openrc_path | quote }}
+diff --git a/playbooks/11-validate.yml b/playbooks/11-validate.yml
+index 8072d2a..5e2b508 100644
+--- a/playbooks/11-validate.yml
++++ b/playbooks/11-validate.yml
+@@ -124,6 +124,7 @@
+   become: true
+   vars_files:
+     - ../group_vars/all.yml
++    - ../group_vars/ns-lab.yml
+   tasks:
+     - name: Assert network chassis has gateway CMS option and no old namespaces
+       ansible.builtin.shell: |
+@@ -134,6 +135,12 @@
+         executable: /bin/bash
+       changed_when: false
+ 
++    - name: Verify shared underlay and target OVN physnet gateway mapping
++      ansible.builtin.command:
++        argv: [python3, /root/ns-underlay-check.py, deployed, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int, 'physnet': ns_physnet, 'ovn': true} | to_json }}"]
++      changed_when: false
++      when: validation_ns_enabled | bool
++
+ - name: Phase 11 - Validate OVN metadata agents
+   hosts: neutron-ovn-metadata-agent
+   gather_facts: false
+diff --git a/playbooks/12-workload-validation.yml b/playbooks/12-workload-validation.yml
+index 56122cb..7a4945f 100644
+--- a/playbooks/12-workload-validation.yml
++++ b/playbooks/12-workload-validation.yml
+@@ -78,7 +78,7 @@
+         executable: /bin/bash
+       when: validation_workloads_enabled | bool
+ 
+-    - name: Recover Pair A validate B/D and provision fresh Pair C
++    - name: Validate surviving EW and NS workloads and provision fresh OVN workloads
+       ansible.builtin.shell: |
+         set -euo pipefail
+         source {{ openrc_path | quote }}
+diff --git a/reset-lab-to-ovs.yml b/reset-lab-to-ovs.yml
+index a50ffc5..38d94e9 100644
+--- a/reset-lab-to-ovs.yml
++++ b/reset-lab-to-ovs.yml
+@@ -17,7 +17,7 @@
+ #   /etc/kolla/passwords.yml
+ #   Docker images
+ #   SSH keys / users / hostnames
+-#   neutron-ext
++#   persistent br-underlay and ns-uplink/ns-ex on network1
+ 
+ - name: Guard destructive reset and save controller-side configuration snapshot
+   hosts: localhost
+@@ -26,6 +26,7 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   vars:
+     reset_lab_confirm: false
+     reset_kolla_venv: /root/venvs/kolla-2024.1
+@@ -146,6 +147,7 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   tasks:
+     - name: Require successful controller scope check
+       ansible.builtin.assert:
+@@ -175,6 +177,19 @@
+           - ((reset_tunnel.stdout | from_json)[0].mtu | int) == (reset_tunnel_mtu | int)
+       when: inventory_hostname in groups['network'] + groups['compute']
+ 
++    - name: Install read-only underlay identity helper before destructive reset
++      ansible.builtin.copy:
++        src: scripts/ns_underlay.py
++        dest: /root/ns-underlay-check.py
++        mode: '0700'
++      when: inventory_hostname in groups['network']
++
++    - name: Require exact underlay IP MAC and MTU before stopping workloads
++      ansible.builtin.command:
++        argv: [python3, /root/ns-underlay-check.py, inspect, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int} | to_json }}"]
++      when: inventory_hostname in groups['network']
++      changed_when: false
++
+ 
+ - name: Stop running libvirt guests before Kolla destroy
+   hosts: compute
+@@ -183,6 +198,7 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   tasks:
+     - name: Require controller scope verification before stopping any guest
+       ansible.builtin.assert:
+@@ -214,6 +230,7 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   vars:
+     reset_kolla_venv: /root/venvs/kolla-2024.1
+     reset_kolla_inventory: /root/multinode
+@@ -249,6 +266,7 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   tasks:
+     - name: List remaining containers
+       ansible.builtin.command: docker ps -a
+@@ -295,6 +313,7 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   tasks:
+     - name: Fail if qrouter qdhcp or ovnmeta namespaces remain
+       ansible.builtin.shell: |
+@@ -320,8 +339,14 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   serial: 1
+   tasks:
++    - name: Persist Linux bridge and veth before rebooting network1
++      ansible.builtin.command:
++        argv: [python3, /root/ns-underlay-check.py, apply, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int} | to_json }}"]
++      when: inventory_hostname in groups['network']
++
+     - name: Reboot host and wait for it to return
+       ansible.builtin.reboot:
+         reboot_timeout: 900
+@@ -336,6 +361,7 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   tasks:
+     - name: Show compact interface state
+       ansible.builtin.command: ip -br link
+@@ -353,8 +379,8 @@
+         - eth1
+       changed_when: false
+ 
+-    - name: Verify network host retains neutron-ext
+-      ansible.builtin.command: ip link show neutron-ext
++    - name: Verify network host retains persistent NS external interface
++      ansible.builtin.command: ip link show ns-ex
+       when: inventory_hostname in groups.get('network', [])
+       changed_when: false
+ 
+@@ -399,6 +425,7 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   vars:
+     reset_globals_path: /etc/kolla/globals.yml
+     reset_config_path: /etc/kolla/config
+@@ -440,13 +467,14 @@
+           network_interface: "eth0"
+           api_interface: "eth0"
+ 
+-          tunnel_interface: "eth1"
++          tunnel_interface: "{% raw %}{{ 'br-underlay' if inventory_hostname in groups['network'] else 'eth1' }}{% endraw %}"
+ 
+           ###############################################################################
+           # Neutron external networking
+           ###############################################################################
+ 
+-          neutron_external_interface: "neutron-ext"
++          neutron_external_interface: "{% raw %}{{ 'ns-ex' if inventory_hostname in groups['network'] else 'neutron-ext' }}{% endraw %}"
++          neutron_physical_networks: "{{ ns_physnet }}"
+           neutron_bridge_name: "br-ex"
+ 
+           enable_neutron_provider_networks: "no"
+@@ -606,6 +634,7 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   vars:
+     reset_kolla_venv: /root/venvs/kolla-2024.1
+     reset_kolla_inventory: /root/multinode
+@@ -795,6 +824,7 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   tasks:
+     - name: Verify neutron_openvswitch_agent is running
+       ansible.builtin.shell: |
+@@ -832,6 +862,7 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   tasks:
+     - name: Verify DHCP L3 and metadata agents are running
+       ansible.builtin.shell: |
+@@ -868,7 +899,28 @@
+   any_errors_fatal: true
+   vars_files:
+     - group_vars/reset.yml
++    - group_vars/ns-lab.yml
+   tasks:
++    - name: Verify persistent uplink and effective source Kolla bridge mapping
++      ansible.builtin.command:
++        argv: [python3, /root/ns-underlay-check.py, deployed, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int, 'physnet': ns_physnet, 'ovn': false} | to_json }}"]
++      delegate_to: network1
++      changed_when: false
++
++    - name: Set only instance quota to 20 in the authenticated workload project
++      ansible.builtin.shell: |
++        set -euo pipefail
++        source {{ (reset_kolla_venv + '/bin/activate') | quote }}
++        source /etc/kolla/admin-openrc.sh
++        python3 - {{ (playbook_dir + '/scripts') | quote }} {{ reset_run_dir | quote }} <<'PYCODE'
++        import sys, pathlib, openstack
++        sys.path.insert(0, sys.argv[1])
++        from extended_validation import quota20
++        quota20(openstack.connect(), pathlib.Path(sys.argv[2]))
++        PYCODE
++      args:
++        executable: /bin/bash
++
+     - name: Verify rendered Neutron MTU overrides on controller
+       ansible.builtin.shell: |
+         set -euo pipefail
+@@ -947,7 +999,7 @@
+           - >-
+             Source service checks passed: cloud is redeployed as ML2/OVS + VXLAN
+             with OVS native firewall. The migration repository, Kolla venv,
+-            inventory, passwords.yml, Docker images and host neutron-ext are preserved.
++            inventory, passwords.yml, Docker images and persistent NS underlay are preserved.
+ 
+     - name: Save fresh Ubuntu prerequisite settings for this reset
+       ansible.builtin.copy:
+@@ -970,4 +1022,4 @@
+       ansible.builtin.debug:
+         msg:
+           - "{{ reset_completion.stdout_lines }}"
+-          - "Run ansible-playbook -i {{ ansible_inventory_sources[0] }} migrate-to-ovn.yml; the A/B/C/D defaults discover managed image/flavor names. Fresh UUID evidence is in {{ reset_run_dir }}/migration-lab.yml."
++          - "Run ansible-playbook -i {{ ansible_inventory_sources[0] }} migrate-to-ovn.yml; the EW/NS defaults discover managed image/flavor names. Fresh UUID evidence is in {{ reset_run_dir }}/migration-lab.yml."
+diff --git a/retry-validation-preparation.yml b/retry-validation-preparation.yml
+index ccf7071..6a77107 100644
+--- a/retry-validation-preparation.yml
++++ b/retry-validation-preparation.yml
+@@ -60,6 +60,8 @@
+         validation_prerequisites_runtime: "{{ validation_retry_prerequisites }}"
+         validation_pair_compute_hosts: "{{ [validation_retry_config.placement['0'].inventory_host, validation_retry_config.placement['1'].inventory_host] }}"
+         validation_pair_d_enabled: "{{ validation_retry_config.pair_d_enabled | bool }}"
++        validation_ns_enabled: "{{ validation_retry_config.get('ns', {}).get('enabled', false) | bool }}"
++        validation_ew_matrix_enabled: "{{ validation_retry_config.get('ew_matrix_enabled', false) | bool }}"
+         target_geneve_mtu: "{{ validation_retry_config.target_mtu | int }}"
+         validation_allow_pre_cutover_guest_reboot: "{{ validation_retry_config.allow_pre_cutover_guest_reboot | bool }}"
+         validation_allow_post_cutover_guest_reboot: "{{ validation_retry_config.allow_post_cutover_guest_reboot | bool }}"
+diff --git a/scripts/aux_ping.py b/scripts/aux_ping.py
+new file mode 100644
+index 0000000..8b883cb
+--- /dev/null
++++ b/scripts/aux_ping.py
+@@ -0,0 +1,30 @@
++#!/usr/bin/env python3
++"""One persistent ping per flow and boot/process heartbeats for added endpoints."""
++import json
++from pathlib import Path
++import subprocess
++import time
++
++
++def main():
++    cfg = json.loads(Path('/etc/aux-ping.json').read_text())
++    process = None
++    if cfg.get('peer'):
++        process = subprocess.Popen(['ping', '-n', '-I', cfg['ip'], '-i', str(cfg['interval']), cfg['peer']],
++                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++    started = time.monotonic()
++    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
++    while time.monotonic()-started < cfg['lifetime']:
++        row = dict(run=cfg['run'], vm=cfg['vm'], boot=boot, mono=time.monotonic(),
++                   ping_alive=process is None or process.poll() is None)
++        with open('/dev/ttyS0', 'w') as console:
++            console.write('OVN_AUX_JSON '+json.dumps(row)+'\n')
++        if process is not None and process.poll() is not None:
++            raise SystemExit('Persistent ping exited; restart prohibited')
++        time.sleep(2)
++    if process:
++        process.terminate()
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/scripts/dataplane_capture.py b/scripts/dataplane_capture.py
+index 3922412..c10ebf0 100644
+--- a/scripts/dataplane_capture.py
++++ b/scripts/dataplane_capture.py
+@@ -404,7 +404,7 @@ class Capture:
+             server=self.v.cloud.compute.get_server(vm['server']); port=self.v.cloud.network.get_port(vm['port'])
+             if (server.id!=vm['server'] or port.id!=vm['port'] or port.device_id!=vm['server'] or port.fixed_ips!=vm['fixed_ips'] or
+                 server.status!='ACTIVE' or server.metadata.get('ovn_migration_run')!=self.v.cfg['run'] or
+-                server.metadata.get('ovn_validation_role')!='measure'):
++                server.metadata.get('ovn_validation_role')!=self.v.cfg.get('capture_role', 'measure')):
+                 raise RuntimeError('Pair-A capture identity changed')
+             host=port.binding_host_id
+             if self.v.cfg.get('placement_enabled'):
+diff --git a/scripts/extended_validation.py b/scripts/extended_validation.py
+new file mode 100644
+index 0000000..bd59be6
+--- /dev/null
++++ b/scripts/extended_validation.py
+@@ -0,0 +1,589 @@
++#!/usr/bin/env python3
++"""Owned EW matrix endpoints and SNAT/FIP continuity, checkpointed independently."""
++import base64
++import copy
++import json
++from pathlib import Path
++import subprocess
++import time
++from types import SimpleNamespace
++
++from dataplane_capture import Capture, identity, alive
++from workload_validation import read_evidence, save
++
++FLOW_NAMES = ('ew_same_compute_different_subnet', 'ew_different_compute_same_subnet',
++              'ew_same_compute_same_subnet')
++DISPLAY_NAMES = {'measure': 'EW different compute / different subnet',
++                 'existing': 'Existing workload DHCP/MTU/metadata',
++                 'fresh': 'Fresh OVN provisioning', 'tcp': 'EW TCP continuity'}
++
++
++def add_ping_files(data, cfg):
++    data['write_files'].extend([
++        dict(path='/usr/local/bin/aux-ping.py', content=(Path(__file__).parent/'aux_ping.py').read_text(), permissions='0700'),
++        dict(path='/etc/aux-ping.json', content=json.dumps(cfg), permissions='0600'),
++        dict(path='/etc/systemd/system/aux-ping.service', content='[Unit]\nAfter=network-online.target\n[Service]\nRestart=no\nExecStart=/usr/bin/python3 /usr/local/bin/aux-ping.py\n[Install]\nWantedBy=multi-user.target\n')])
++    data['runcmd'].append(['systemctl', 'enable', '--now', 'aux-ping'])
++    return data
++
++
++def quota20(cloud, root):
++    project = cloud.session.get_project_id()
++    if not project:
++        raise RuntimeError('Workload authentication must be project scoped')
++    before = cloud.compute.get_quota_set(project)
++    original = {k: getattr(before, k) for k in ('instances', 'cores', 'ram')}
++    cloud.compute.update_quota_set(project, instances=20)
++    after = cloud.compute.get_quota_set(project)
++    row = dict(project=project, before=original,
++               after={k: getattr(after, k) for k in ('instances', 'cores', 'ram')})
++    row['status'] = 'PASS' if after.instances == 20 and after.cores == original['cores'] and after.ram == original['ram'] else 'FAIL'
++    save(root/'quota-instances.json', row)
++    if row['status'] != 'PASS':
++        raise RuntimeError('Quota verification failed: only instances may change')
++
++
++class Extended:
++    def __init__(self, validation):
++        self.v = validation
++        self.root = validation.root
++        self.cfg = validation.cfg
++        self.cloud = validation.cloud
++        self.path = self.root/'extended-resources.json'
++        self.state = read_evidence(self.root, self.path.name) or {'schema': 1, 'run': self.cfg['run']}
++        if self.state['run'] != self.cfg['run']:
++            raise RuntimeError('Extended workload run identity changed')
++
++    @property
++    def matrix(self):
++        return self.cfg.get('ew_matrix_enabled', False)
++
++    @property
++    def ns(self):
++        return self.cfg.get('ns', {}).get('enabled', False)
++
++    def commit(self):
++        save(self.path, self.state)
++
++    def capacity(self):
++        if not (self.matrix or self.ns):
++            return
++        quota20(self.cloud, self.root)
++        flavor = self.cloud.compute.find_flavor(self.cfg['flavor'], ignore_missing=False)
++        servers = list(self.cloud.compute.servers(all_projects=False))
++        owned = [s for s in servers if (s.metadata or {}).get('ovn_migration_run') == self.cfg['run']]
++        count = 6 + 2*bool(self.cfg.get('pair_d_enabled')) + 2*self.matrix + 2*self.ns
++        remaining = count-len(owned)
++        limits = self.cloud.compute.get_limits().absolute
++        checks = {}
++        for key, demand, used in [('instances', count, len(servers)),
++                                  ('cores', remaining*flavor.vcpus, limits.total_cores_used),
++                                  ('ram', remaining*flavor.ram, limits.total_ram_used)]:
++            quota = getattr(self.cloud.compute.get_quota_set(self.cloud.session.get_project_id()), key)
++            needed = used+remaining if key == 'instances' else used+demand
++            checks[key] = dict(quota=quota, projected=needed, status='PASS' if quota == -1 or needed <= quota else 'FAIL')
++        nodes = list(self.cloud.compute.hypervisors(details=True))
++        per_host = count//2
++        for target in self.cfg['placement'].values():
++            node = next(h for h in nodes if h.name == target['hypervisor'])
++            current_owned = sum(s.compute_host == target['nova_host'] for s in owned)
++            slots = per_host-current_owned
++            checks[target['inventory_host']] = dict(additional_instances=slots,
++                free_ram_mb=node.memory_size-node.memory_used, required_ram_mb=slots*flavor.ram,
++                free_disk_gb=node.local_disk_size-node.local_disk_used, required_disk_gb=slots*flavor.disk,
++                status='PASS' if node.memory_size-node.memory_used >= slots*flavor.ram and
++                node.local_disk_size-node.local_disk_used >= slots*flavor.disk else 'FAIL')
++        save(self.root/'workload-capacity.json', dict(status='PASS' if all(c['status']=='PASS' for c in checks.values()) else 'FAIL',
++              max_instances=count, max_per_compute=per_host, flavor=dict(id=flavor.id, ram=flavor.ram, vcpus=flavor.vcpus, disk=flavor.disk), checks=checks))
++        if any(c['status'] != 'PASS' for c in checks.values()):
++            raise RuntimeError('Insufficient quota/compute RAM or disk; inspect workload-capacity.json')
++
++    def resource(self, state, key, kind, name, **attrs):
++        proxy = self.cloud.network
++        if state.get(key):
++            return getattr(proxy, 'get_'+kind)(state[key])
++        collection = {'network': 'networks', 'subnet': 'subnets', 'router': 'routers',
++                      'security_group': 'security_groups', 'port': 'ports'}[kind]
++        matches = [r for r in getattr(proxy, collection)(name=name) if r.name == name]
++        marker = 'ovn-migration-run='+self.cfg['run']
++        if len(matches) > 1 or matches and matches[0].description != marker:
++            raise RuntimeError('Ambiguous/unowned '+kind+' name; refusing adoption')
++        obj = matches[0] if matches else getattr(proxy, 'create_'+kind)(name=name, description=marker, **attrs)
++        state[key] = obj.id
++        self.commit()
++        return obj
++
++    def port(self, group, key, network, subnet, role, placement, security_group, ip=None):
++        vm = group.setdefault(key, {})
++        name = self.cfg['prefix']+'-'+self.cfg['run']+'-'+role
++        attrs = dict(network_id=network, security_group_ids=[security_group])
++        if ip:
++            attrs['fixed_ips'] = [dict(subnet_id=subnet, ip_address=ip)]
++        obj = self.resource(vm, 'port', 'port', name, **attrs)
++        if obj.network_id != network or security_group not in obj.security_group_ids or len(obj.fixed_ips) != 1:
++            raise RuntimeError('Checkpointed extended port changed')
++        if ip and obj.fixed_ips != attrs['fixed_ips']:
++            raise RuntimeError('Fixed N-S address changed')
++        expected = dict(network=network, subnet=subnet, placement=placement, role=role,
++                        name=name, record_vm=role, ip=obj.fixed_ips[0]['ip_address'], fixed_ips=obj.fixed_ips, owned=True)
++        if any(k in vm and vm[k] != val for k, val in expected.items()):
++            raise RuntimeError('Extended workload identity/placement changed')
++        vm.update(expected)
++        self.commit()
++        return vm
++
++    def prepare_matrix_ports(self):
++        if not self.matrix:
++            return
++        group = self.state.setdefault('matrix', {})
++        net = self.v.state['pre']['networks']['1']
++        for key in ('0', '1'):
++            self.port(group, key, net['network'], net['subnet'], 'ew-matrix-'+key,
++                      self.cfg['placement'][key], self.v.state['pre']['security_group'])
++
++    def ping_cfg(self, vm, peer=None):
++        return dict(run=self.cfg['run'], vm=vm['record_vm'], ip=vm['ip'], peer=peer,
++                    interval=self.cfg['interval'], lifetime=self.cfg['lifetime'])
++
++    def decorate_measure(self, data, index):
++        if self.matrix:
++            vm = self.v.pair('measure')[index]
++            add_ping_files(data, self.ping_cfg(vm, self.state['matrix'][index]['ip']))
++        return data
++
++    def server(self, vm, data):
++        if vm.get('server'):
++            self.v.wait_active(vm['server'])
++            self.audit(vm)
++            return
++        matches = [s for s in self.cloud.compute.servers(name=vm['name']) if s.name == vm['name']]
++        if len(matches) > 1:
++            raise RuntimeError('Ambiguous extended server')
++        if matches:
++            s = matches[0]
++            if (s.metadata or {}).get('ovn_migration_run') != self.cfg['run'] or (s.metadata or {}).get('ovn_validation_role') != vm['role'] or self.cloud.network.get_port(vm['port']).device_id != s.id:
++                raise RuntimeError('Cannot adopt unowned extended server')
++        else:
++            from validation_placement import create_on_target
++            import yaml
++            s = create_on_target(self.cloud.compute, vm['placement'], name=vm['name'], image_id=self.cfg['image'],
++                  flavor_id=self.cfg['flavor'], networks=[{'port': vm['port']}],
++                  metadata={'ovn_migration_run': self.cfg['run'], 'ovn_validation_role': vm['role']},
++                  user_data=base64.b64encode(('#cloud-config\n'+yaml.safe_dump(data)).encode()).decode())
++        vm['server'] = s.id
++        self.commit()
++        self.v.wait_active(s.id)
++        self.v.wait_placement(vm)
++
++    def audit(self, vm):
++        s = self.cloud.compute.get_server(vm['server'])
++        p = self.cloud.network.get_port(vm['port'])
++        if (vm.get('owned') is not True or s.id != vm['server'] or p.device_id != s.id or
++            p.fixed_ips != vm['fixed_ips'] or p.status != 'ACTIVE' or s.status != 'ACTIVE' or
++            (s.metadata or {}).get('ovn_migration_run') != self.cfg['run'] or
++            (s.metadata or {}).get('ovn_validation_role') != vm['role'] or self.v.placement(vm, s, p)['status'] != 'PASS'):
++            raise RuntimeError('Extended server/port/placement ownership changed')
++
++    def create_matrix(self):
++        if not self.matrix:
++            return
++        for key, vm in self.state['matrix'].items():
++            peer = self.v.pair('measure')['1']['ip'] if key == '0' else None
++            data = dict(write_files=[], runcmd=[])
++            add_ping_files(data, self.ping_cfg(vm, peer))
++            self.server(vm, data)
++
++    def flows(self):
++        a = self.v.pair('measure')
++        x = self.state['matrix']
++        return dict(zip(FLOW_NAMES, ((a['0'], x['0']), (x['0'], a['1']), (a['1'], x['1']))))
++
++    def capture(self, name, pair):
++        root = self.root/'flows'/name
++        root.mkdir(parents=True, exist_ok=True, mode=0o700)
++        cfg = dict(self.cfg, capture_directory=str(Path(self.cfg['capture_directory'])/name),
++                   capture_role=pair[0].get('role', 'measure'))
++        adapter = SimpleNamespace(root=root, cfg=cfg, cloud=self.cloud, pair=lambda _: {'0': pair[0], '1': pair[1]}, placement=self.v.placement)
++        return Capture(adapter)
++
++    def matrix_start(self):
++        if not self.matrix:
++            return
++        self.matrix_boots(post=False)
++        for name, pair in self.flows().items():
++            cap = self.capture(name, pair)
++            cap.start()
++            cap.anchor()
++
++    def matrix_ready(self):
++        if not self.matrix:
++            return
++        self.matrix_boots(post=True)
++        for name, pair in self.flows().items():
++            cap = self.capture(name, pair)
++            first = cap.snapshot().get('last_request_index', 0)
++            deadline = time.monotonic()+self.cfg['timeout']
++            while True:
++                cp = cap.snapshot()
++                if not cp.get('parse_problems') and cp.get('observed_endpoint', {}).get('index', 0) >= first+5:
++                    break
++                if time.monotonic() > deadline:
++                    raise TimeoutError('Fresh EW matrix recovery unavailable: '+name)
++                time.sleep(1)
++
++    def console_rows(self, vm, prefix):
++        output = self.v.console_output(vm['server'], time.monotonic()+self.cfg['timeout'])
++        rows = []
++        for line in output.splitlines():
++            if prefix in line:
++                try:
++                    row = json.JSONDecoder().raw_decode(line.split(prefix, 1)[1])[0]
++                    if row.get('run') == self.cfg['run']:
++                        rows.append(row)
++                except (ValueError, TypeError):
++                    pass
++        save(self.root/(vm['role']+'-extended-console.json'), rows)
++        return rows
++
++    def matrix_boots(self, post):
++        if not self.matrix:
++            return
++        saved = read_evidence(self.root, 'matrix-boot-baseline.json')
++        current = {}
++        deadline = time.monotonic()+self.cfg['timeout']
++        for key, vm in self.state['matrix'].items():
++            self.audit(vm)
++            while True:
++                rows = self.console_rows(vm, 'OVN_AUX_JSON ')
++                if rows:
++                    anchor = rows[-1]
++                    break
++                if time.monotonic() > deadline:
++                    raise TimeoutError('Matrix guest heartbeat unavailable')
++                time.sleep(2)
++            time.sleep(2)
++            row = self.console_rows(vm, 'OVN_AUX_JSON ')[-1]
++            if row['boot'] != anchor['boot'] or row['mono'] <= anchor['mono'] or not row['ping_alive']:
++                raise RuntimeError('Matrix heartbeat/persistent ping not fresh')
++            current[key] = dict(boot=row['boot'], server=vm['server'], port=vm['port'], fixed_ips=vm['fixed_ips'])
++        if saved and current != saved:
++            raise RuntimeError('Matrix endpoint rebooted or replaced')
++        if post and not saved:
++            raise RuntimeError('Missing matrix boot baseline')
++        if not saved:
++            save(self.root/'matrix-boot-baseline.json', current)
++
++    def matrix_finish(self):
++        if not self.matrix:
++            return
++        boot_error = None
++        try:
++            self.matrix_boots(post=True)
++            primary = read_evidence(self.root, 'measure-post-checks.json').get('guests', {})
++            if set(primary) != {'0', '1'} or any(row.get('boot_continuity') != 'PASS' for row in primary.values()):
++                raise RuntimeError('Shared measurement endpoints lack boot continuity evidence')
++        except Exception as exc:
++            boot_error = str(exc)
++        results = {}
++        for name, pair in self.flows().items():
++            try:
++                cap = self.capture(name, pair)
++                result = cap.finish()
++                result.update(measurement_workload=name, measurement_guest=pair[0]['record_vm'],
++                    boot_continuity='FAIL' if boot_error else 'PASS', source=pair[0], destination=pair[1])
++                result.pop('pair_a_boot_continuity', None)
++                if boot_error:
++                    result.update(status='UNAVAILABLE', reason=boot_error)
++                save(cap.v.root/'tenant-dataplane-probe.json', result)
++                results[name] = result
++            except Exception as exc:
++                results[name] = dict(status='UNAVAILABLE', reason=str(exc))
++        save(self.root/'ew-matrix-results.json', dict(status='PASS' if all(r['status']=='PASS' for r in results.values()) else 'UNAVAILABLE', flows=results))
++        if any(r['status'] != 'PASS' for r in results.values()):
++            raise RuntimeError('EW matrix evidence incomplete')
++
++    def ns_config(self, **fields):
++        return dict(run=self.cfg['run'], port=self.cfg['ns']['port'],
++                    interval=self.cfg['tcp_interval'], timeout=self.cfg['tcp_timeout'],
++                    lifetime=self.cfg['lifetime'], **fields)
++
++    def local_process(self, role, action, cfg):
++        journal = self.state.setdefault('processes', {})
++        if role in journal:
++            cp = journal[role]
++            if cp.get('config') != cfg or not alive(cp.get('identity')):
++                raise RuntimeError('N-S endpoint process ended/changed; restart prohibited')
++            return
++        directory = self.root/'ns'
++        directory.mkdir(mode=0o700, exist_ok=True)
++        config = directory/(role+'.json')
++        save(config, cfg)
++        journal[role] = dict(status='START_INTENT', config=cfg)
++        self.commit()
++        with (directory/(role+'.log')).open('ab') as log:
++            process = subprocess.Popen(['python3', str(Path(__file__).parent/'ns_probe.py'), action, str(config)],
++                stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
++        journal[role].update(status='RUNNING', identity=identity(process.pid))
++        self.commit()
++
++    def add_ns_guest(self, vm, action, cfg):
++        unit = '[Unit]\nAfter=network-online.target\n[Service]\nRestart=no\nExecStart=/usr/bin/python3 /usr/local/bin/ns-probe.py '+action+' /etc/ns-probe.json\n[Install]\nWantedBy=multi-user.target\n'
++        data = dict(write_files=[
++            dict(path='/usr/local/bin/ns-probe.py', content=(Path(__file__).parent/'ns_probe.py').read_text(), permissions='0700'),
++            dict(path='/etc/ns-probe.json', content=json.dumps(cfg), permissions='0600'),
++            dict(path='/etc/systemd/system/ns-probe.service', content=unit)],
++            runcmd=[['systemctl', 'enable', '--now', 'ns-probe']])
++        self.server(vm, data)
++
++    def create_ns(self):
++        if not self.ns:
++            return
++        cfg = self.cfg['ns']
++        s = self.state.setdefault('ns', {})
++        prefix = self.cfg['prefix']+'-'+self.cfg['run']+'-ns'
++        ext = self.resource(s, 'external_network', 'network', prefix+'-external',
++            is_router_external=True, provider_network_type='flat', provider_physical_network=cfg['physnet'], mtu=cfg['mtu'])
++        if ext.provider_network_type != 'flat' or ext.provider_physical_network != cfg['physnet'] or ext.mtu != cfg['mtu']:
++            raise RuntimeError('N-S external network must retain configured flat physnet/MTU')
++        ext_sub = self.resource(s, 'external_subnet', 'subnet', prefix+'-external', network_id=ext.id,
++            cidr=cfg['external_cidr'], ip_version=4, gateway_ip=cfg['external_gateway'], is_dhcp_enabled=False,
++            allocation_pools=[dict(start=cfg['snat_ip'], end=cfg['fip_ip'])])
++        net = self.resource(s, 'network', 'network', prefix+'-tenant')
++        sub = self.resource(s, 'subnet', 'subnet', prefix+'-tenant', network_id=net.id, cidr=cfg['tenant_cidr'],
++                            ip_version=4, is_dhcp_enabled=True)
++        sg = self.resource(s, 'security_group', 'security_group', prefix+'-security')
++        rules = list(self.cloud.network.security_group_rules(security_group_id=sg.id))
++        for protocol, port in (('icmp', None), ('tcp', cfg['port'])):
++            remote = cfg['endpoint_ip']+'/32'
++            if not any(r.direction == 'ingress' and r.protocol == protocol and r.ether_type == 'IPv4' and
++                       r.remote_ip_prefix == remote and (port is None or r.port_range_min == r.port_range_max == port) for r in rules):
++                attrs = dict(security_group_id=sg.id, direction='ingress', ether_type='IPv4', protocol=protocol, remote_ip_prefix=remote)
++                if port:
++                    attrs.update(port_range_min=port, port_range_max=port)
++                self.cloud.network.create_security_group_rule(**attrs)
++        router = self.resource(s, 'router', 'router', prefix+'-router')
++        existing = list(self.cloud.network.ports(device_id=router.id, network_id=net.id))
++        if not existing:
++            self.cloud.network.add_interface_to_router(router.id, subnet_id=sub.id)
++        gateway = dict(network_id=ext.id, enable_snat=True,
++                       external_fixed_ips=[dict(subnet_id=ext_sub.id, ip_address=cfg['snat_ip'])])
++        current = self.cloud.network.get_router(router.id).external_gateway_info
++        if not current:
++            self.cloud.network.update_router(router.id, external_gateway_info=gateway)
++        elif any(current.get(k) != val for k, val in gateway.items()):
++            raise RuntimeError('Router external gateway changed; refusing reassignment')
++        s['interface'] = True
++        self.commit()
++        vms = s.setdefault('vms', {})
++        for key, role, ip in [('0', 'ns-snat-outbound', cfg['outbound_ip']), ('1', 'ns-fip-inbound', cfg['inbound_ip'])]:
++            self.port(vms, key, net.id, sub.id, role, self.cfg['placement'][key], sg.id, ip)
++        vm = vms['1']
++        if not s.get('floating_ip'):
++            candidates = list(self.cloud.network.ips(floating_ip_address=cfg['fip_ip']))
++            marker = 'ovn-migration-run='+self.cfg['run']
++            if len(candidates) > 1 or candidates and (candidates[0].description != marker or candidates[0].port_id != vm['port']):
++                raise RuntimeError('Reserved FIP already allocated to another owner')
++            fip = candidates[0] if candidates else self.cloud.network.create_ip(floating_network_id=ext.id,
++                floating_ip_address=cfg['fip_ip'], port_id=vm['port'], fixed_ip_address=vm['ip'], description=marker)
++            s['floating_ip'] = fip.id
++            self.commit()
++        directory = self.root/'ns'
++        directory.mkdir(mode=0o700, exist_ok=True)
++        self.local_process('snat-server', 'serve', self.ns_config(bind=cfg['endpoint_ip'], server='external-endpoint',
++            console=False, output=str(directory/'snat-server.jsonl')))
++        deadline = time.monotonic()+self.cfg['timeout']
++        while not (directory/'snat-server.jsonl').exists():
++            if time.monotonic() > deadline:
++                raise RuntimeError('Cannot bind external endpoint address/port on controller')
++            time.sleep(1)
++        self.add_ns_guest(vms['1'], 'serve', self.ns_config(bind=vms['1']['ip'], server='instance-id'))
++        self.add_ns_guest(vms['0'], 'client', self.ns_config(source=vms['0']['ip'], target=cfg['endpoint_ip'],
++            expected_peer=cfg['snat_ip'], expected_server='external-endpoint', label='snat'))
++        deadline = time.monotonic()+self.cfg['timeout']
++        while not self.console_rows(vms['1'], 'OVN_NS_JSON '):
++            if time.monotonic() > deadline:
++                raise TimeoutError('FIP listener startup unavailable')
++            time.sleep(2)
++        self.local_process('fip-client', 'client', self.ns_config(source=cfg['endpoint_ip'], target=cfg['fip_ip'],
++            expected_peer=cfg['endpoint_ip'], expected_server=vms['1']['server'], label='fip',
++            console=False, output=str(directory/'fip-client.jsonl')))
++        # Diagnostic evidence identifies the MACs that an outer whitelist must permit.
++        ports = list(self.cloud.network.ports(device_id=router.id, network_id=ext.id))
++        save(self.root/'ns-outer-policy.json', dict(router_uuid=router.id,
++            gateway_ports=[dict(id=p.id, mac=p.mac_address, fixed_ips=p.fixed_ips) for p in ports],
++            required_ips=[cfg['snat_ip'], cfg['fip_ip']], scope='Reachability gate validates the mentor-managed outer policy'))
++
++    def ns_snapshot(self):
++        s = self.state['ns']
++        cfg = self.cfg['ns']
++        net = self.cloud.network.get_network(s['network'])
++        ext = self.cloud.network.get_network(s['external_network'])
++        sub = self.cloud.network.get_subnet(s['external_subnet'])
++        router = self.cloud.network.get_router(s['router'])
++        fip = self.cloud.network.get_ip(s['floating_ip'])
++        gateway_ports = list(self.cloud.network.ports(device_id=router.id, network_id=ext.id))
++        if len(gateway_ports) != 1 or gateway_ports[0].fixed_ips != [dict(subnet_id=sub.id, ip_address=cfg['snat_ip'])]:
++            raise RuntimeError('External gateway port identity/address is missing or ambiguous')
++        for vm in s['vms'].values():
++            self.audit(vm)
++        expected = dict(network_id=ext.id, enable_snat=True,
++                        external_fixed_ips=[dict(subnet_id=sub.id, ip_address=cfg['snat_ip'])])
++        if any(router.external_gateway_info.get(k) != v for k, v in expected.items()) or (
++            ext.provider_network_type != 'flat' or ext.provider_physical_network != cfg['physnet'] or
++            ext.mtu != cfg['mtu'] or sub.cidr != cfg['external_cidr'] or sub.is_dhcp_enabled or
++            fip.floating_ip_address != cfg['fip_ip'] or fip.port_id != s['vms']['1']['port'] or
++            fip.fixed_ip_address != s['vms']['1']['ip'] or fip.router_id != router.id or
++            fip.floating_network_id != ext.id or fip.status != 'ACTIVE'):
++            raise RuntimeError('N-S flat network, gateway, SNAT or FIP mapping changed')
++        return dict(tenant_type=net.provider_network_type, external_type=ext.provider_network_type,
++            external_mtu=ext.mtu, ids={k:s[k] for k in ('network', 'subnet', 'external_network', 'external_subnet', 'router', 'floating_ip')},
++            gateway_ports=[dict(id=p.id, mac=p.mac_address, fixed_ips=p.fixed_ips) for p in gateway_ports],
++            gateway=expected, fip=dict(id=fip.id, floating_network_id=fip.floating_network_id,
++            port_id=fip.port_id, fixed_ip_address=fip.fixed_ip_address, floating_ip_address=fip.floating_ip_address),
++            vms={k:{f:vm[f] for f in ('server', 'port', 'fixed_ips', 'network', 'subnet', 'placement')} for k, vm in s['vms'].items()})
++
++    def ns_rows(self):
++        from ns_probe import PREFIX
++        guest = self.console_rows(self.state['ns']['vms']['0'], PREFIX)
++        local_path = self.root/'ns/fip-client.jsonl'
++        local = []
++        if local_path.exists():
++            for line in local_path.read_text().splitlines():
++                try:
++                    local.append(json.loads(line.split(PREFIX, 1)[1]))
++                except (ValueError, IndexError):
++                    pass
++        return dict(snat=guest[-1] if guest else {}, fip=local[-1] if local else {})
++
++    def ns_wait(self, post=False):
++        if not self.ns:
++            return
++        initial = self.ns_rows()
++        baseline = read_evidence(self.root, 'ns-baseline.json')
++        deadline = time.monotonic()+self.cfg['timeout']
++        while True:
++            rows = self.ns_rows()
++            snapshot = self.ns_snapshot()
++            errors = []
++            for role, cp in self.state['processes'].items():
++                if not alive(cp.get('identity')):
++                    errors.append('External '+role+' process ended')
++            for direction, row in rows.items():
++                prior = baseline.get('clients', {}).get(direction, {})
++                if not row or row.get('mono', 0) <= initial[direction].get('mono', 0):
++                    errors.append(direction+' client summary not fresh')
++                    continue
++                if prior and any(row.get(k) != prior.get(k) for k in ('boot', 'probe_id')):
++                    raise RuntimeError(direction+' client rebooted/restarted')
++                for stream, stats in row['streams'].items():
++                    if stats['held_broken'] and not post:
++                        raise RuntimeError(direction+' held socket closed; reconnect prohibited')
++                    if stats['consecutive_successes'] < 5 or stats['open_failure_since'] is not None:
++                        errors.append(direction+'/'+stream+' not recovered')
++                    if not stats['first_session'] or stats['observed_peer_ips'] != [self.cfg['ns']['snat_ip'] if direction == 'snat' else self.cfg['ns']['endpoint_ip']]:
++                        errors.append(direction+'/'+stream+' NAT/source identity not proven')
++                    if stream == 'held' and stats['first_session'] != stats['last_session'] and not post:
++                        raise RuntimeError('Held session identity changed')
++                    if prior:
++                        before = prior['streams'][stream]
++                        if stream == 'held' and (stats['first_session'] != before['first_session'] or stats['connection_attempts'] != before['connection_attempts']) and not post:
++                            raise RuntimeError('Held session replaced or reconnected')
++                        if stats['last_session'] and before['last_session'] and any(stats['last_session'][k] != before['last_session'][k] for k in ('server', 'server_boot', 'listener')):
++                            raise RuntimeError('N-S server listener restarted')
++            before = baseline.get('resources')
++            if before and any(snapshot.get(k) != before.get(k) for k in snapshot if k != 'tenant_type'):
++                raise RuntimeError('N-S resource preservation failed')
++            if snapshot['tenant_type'] != ('geneve' if post else 'vxlan'):
++                errors.append('Unexpected N-S tenant network type')
++            if post and not baseline:
++                raise RuntimeError('N-S baseline missing; cannot validate held session across migration')
++            if not errors:
++                if not baseline:
++                    save(self.root/'ns-baseline.json', dict(status='PASS', clients=rows, resources=snapshot))
++                if post:
++                    self.ns_results(rows, snapshot, baseline)
++                else:
++                    save(self.root/'ns-precutover.json', dict(status='PASS', clients=rows, resources=snapshot))
++                return
++            if time.monotonic() > deadline:
++                if post:
++                    self.ns_results(rows, snapshot, baseline, errors)
++                raise TimeoutError('N-S baseline/recovery failed; check outer policy and ns logs: '+', '.join(errors))
++            time.sleep(2)
++
++    def ns_results(self, rows, snapshot, baseline, errors=None):
++        results = {}
++        for direction, row in rows.items():
++            old_row = baseline['clients'][direction]
++            continuity = all(row.get(k) == old_row.get(k) for k in ('boot', 'probe_id'))
++            streams = {}
++            for name, stats in row.get('streams', {}).items():
++                old = old_row['streams'][name]
++                attempts = stats['attempts']-old['attempts'] if continuity else None
++                failed = stats['failures']-old['failures'] if continuity else None
++                bursts = [b for b in stats['recovered_failure_bursts'] if b['start_mono'] >= old_row['mono']] if continuity else []
++                held = (not stats['held_broken'] and stats['first_session'] == old['first_session'] == stats['last_session'] and
++                        stats['connection_attempts'] == old['connection_attempts']) if name == 'held' else True
++                ready = continuity and held and attempts and attempts > 0 and stats['consecutive_successes'] >= 5 and stats['open_failure_since'] is None
++                streams[name] = dict(status='PASS' if ready else 'FAIL', attempts=attempts, failures=failed,
++                    failed_probe_percent=100*failed/attempts if attempts else None,
++                    longest_recovered_failure_seconds=max((b['duration_seconds'] for b in bursts), default=0.0) if continuity and stats['open_failure_since'] is None else None,
++                    recovered_failure_bursts=bursts, open_failure_since=stats['open_failure_since'],
++                    terminal_error=stats['terminal_error'], first_session=old['last_session'], last_session=stats['last_session'],
++                    observed_peer_ips=stats['observed_peer_ips'], connection_attempts=stats['connection_attempts'])
++            results[direction] = dict(status='PASS' if len(streams)==2 and all(s['status']=='PASS' for s in streams.values()) else 'FAIL',
++                held_session_preservation=streams.get('held', {}).get('status', 'UNAVAILABLE'),
++                boot_continuity='PASS' if continuity else 'FAIL', start_mono=old_row['mono'], end_mono=row.get('mono'), streams=streams)
++        save(self.root/'ns-results.json', dict(status='PASS' if not errors and all(r['status']=='PASS' for r in results.values()) else 'FAIL',
++            reason='; '.join(errors or []), directions=results, resources=snapshot,
++            scope='Fresh pre-migration baseline summary to final recovered summary, client monotonic application probes; no held reconnect', baseline=baseline))
++
++    def cleanup(self):
++        """Delete only checkpointed UUIDs; matrix has no shared network ownership."""
++        if self.state.get('cleaned'):
++            return
++        import os
++        import signal
++        for cp in self.state.get('processes', {}).values():
++            if alive(cp.get('identity')):
++                os.kill(cp['identity']['pid'], signal.SIGTERM)
++        groups = [self.state.get('matrix', {}), self.state.get('ns', {}).get('vms', {})]
++        for group in groups:
++            for vm in group.values():
++                s = self.cloud.compute.find_server(vm['server'])
++                if s:
++                    self.audit(vm)
++                    self.cloud.compute.delete_server(vm['server'])
++                    deadline = time.monotonic()+self.cfg['timeout']
++                    while self.cloud.compute.find_server(vm['server']):
++                        if time.monotonic() > deadline:
++                            raise TimeoutError('Extended server deletion timeout')
++                        time.sleep(2)
++                p = self.cloud.network.find_port(vm['port'])
++                if p:
++                    if p.device_id or p.fixed_ips != vm['fixed_ips']:
++                        raise RuntimeError('Extended port cleanup identity changed')
++                    self.cloud.network.delete_port(vm['port'])
++        ns = self.state.get('ns', {})
++        if ns:
++            fip = self.cloud.network.find_ip(ns['floating_ip'])
++            if fip and fip.description != 'ovn-migration-run='+self.cfg['run']:
++                raise RuntimeError('Floating IP cleanup ownership changed')
++            self.cloud.network.delete_ip(ns['floating_ip'], ignore_missing=True)
++            r = self.cloud.network.find_router(ns['router'])
++            if r:
++                if r.description != 'ovn-migration-run='+self.cfg['run']:
++                    raise RuntimeError('Router cleanup ownership changed')
++                self.cloud.network.update_router(r.id, external_gateway_info={})
++                if list(self.cloud.network.ports(device_id=r.id, network_id=ns['network'])):
++                    self.cloud.network.remove_interface_from_router(r.id, subnet_id=ns['subnet'])
++                self.cloud.network.delete_router(r.id)
++            for key, kind in [('subnet', 'subnet'), ('network', 'network'), ('external_subnet', 'subnet'),
++                              ('external_network', 'network'), ('security_group', 'security_group')]:
++                obj = getattr(self.cloud.network, 'find_'+kind)(ns[key])
++                if obj and obj.description != 'ovn-migration-run='+self.cfg['run']:
++                    raise RuntimeError(kind+' cleanup ownership changed')
++                getattr(self.cloud.network, 'delete_'+kind)(ns[key], ignore_missing=True)
++        self.state['cleaned'] = True
++        self.commit()
++        save(self.root/'extended-cleanup.json', dict(status='PASS'))
+diff --git a/scripts/migration_report.py b/scripts/migration_report.py
+index bed174a..2ee3e6a 100644
+--- a/scripts/migration_report.py
++++ b/scripts/migration_report.py
+@@ -35,7 +35,7 @@ report={
+   'new_network_smoke':smoke,
+   'limitations':[
+      'Tenant packet evidence is required; PortBinding convergence is separate.',
+-     'v2 intentionally fails on provider/external networks, floating IPs, router external gateways, DVR and Neutron agent HA because those paths are not yet validated.',
++     'Supported N-S scope is the owned flat physnet1 uplink with centralized SNAT/FIP to the on-link controller endpoint. DVR, HA, arbitrary provider workloads and Internet are outside this test.',
+      'Guest static MTU cannot be changed automatically; existing VXLAN network MTUs are reduced by the configured VXLAN-to-Geneve delta.'
+   ]
+ }
+@@ -73,12 +73,19 @@ report['workload_placement'] = evidence('workload-placement.json') or {'status':
+ report['pair_d_tcp'] = (evidence('pair-d-tcp.json') or {'status': 'UNAVAILABLE'}) if cfg.get('pair_d_enabled') else {'status': 'DISABLED', 'enabled': False}
+ report['pair_d_tcp']['baseline'] = evidence('pair-d-baseline.json')
+ report['pair_d_tcp']['trigger'] = evidence('pair-d-trigger.json')
+-report['limitations'].append('Pair D measures small application TCP echoes and new connections, with client monotonic timing; it is not a throughput or large-packet MTU benchmark.')
++report['limitations'].append('EW TCP measures small application TCP echoes and new connections, with client monotonic timing; it is not a throughput or large-packet MTU benchmark.')
+ report['new_ovn_workload_bindings']=(evidence('post-ovn-bindings.json') or {}).get('status','NOT TESTED')
+ report['dataplane_probe']=evidence('tenant-dataplane-probe.json') or {'status':'NOT TESTED'}
+ if report['dataplane_probe'].get('status')=='PASS' and (report['dataplane_probe'].get('measurement_workload')!='Pair A' or report['dataplane_probe'].get('evidence_source')!='compute-tap-pcap'):
+     report['historical_dataplane_probe']=report['dataplane_probe']
+     report['dataplane_probe']={'status':'NOT TESTED', 'reason':'Historical console probe cannot serve as authoritative compute-PCAP measurement'}
++matrix = evidence('ew-matrix-results.json') or {'status': 'UNAVAILABLE', 'flows': {}}
++report['ew_connectivity_matrix'] = {'status': matrix['status'] if cfg.get('ew_matrix_enabled') else 'PARTIAL',
++    'flows': dict({'ew_different_compute_different_subnet': report['dataplane_probe']}, **matrix.get('flows', {}))}
++report['north_south'] = (evidence('ns-results.json') or {'status':'UNAVAILABLE'}) if cfg.get('ns', {}).get('enabled') else {'status':'DISABLED'}
++report['extended_cleanup'] = (evidence('extended-cleanup.json') or {}).get('status', 'NOT TESTED') if cfg.get('ew_matrix_enabled') or cfg.get('ns', {}).get('enabled') else 'DISABLED'
++report['workload_capacity'] = evidence('workload-capacity.json')
++report['instance_quota'] = evidence('quota-instances.json')
+ state = evidence('validation-resources.json') or {}
+ modern = state.get('schema_version') == 2 and not state.get('historical_dual_pair')
+ automatic = evidence('existing-mtu-automatic.json') or {}
+@@ -168,7 +175,9 @@ if orchestration.get('semantics_rc',0) or orchestration.get('workload_rc',0):
+ if report['result']=='SUCCESS' and post_remediation.get('remediation_action')=='soft reboot' and post_remediation.get('status')=='PASS':
+     report['result']='SUCCESS_WITH_REMEDIATION'
+     report['existing_workload_migration']['status']='PASS AFTER REMEDIATION'
+-report['limitations'][0]='Pair-A metrics require a continuous drop-free compute-tap PCAP, endpoints and request cadence; gaps or unrecovered loss yield UNAVAILABLE. Console packet history is secondary only. PortBinding convergence remains separate.'
++report['limitations'][0]='ICMP metrics require a continuous drop-free compute-tap PCAP, endpoints and request cadence; gaps or unrecovered loss yield UNAVAILABLE. Console packet history is secondary only. PortBinding convergence remains separate.'
++if report['result'] in ('SUCCESS', 'SUCCESS_WITH_REMEDIATION') and report['extended_cleanup'] not in ('PASS', 'DISABLED'):
++    report['result']='MIGRATED_VALIDATION_INCOMPLETE'
+ report = ordered_report(report)
+ (root/'migration-report.json').write_text(json.dumps(report, indent=2) + '\n')
+ (root/'migration-report.txt').write_text(render_text(report, root, modern=modern))
+diff --git a/scripts/network_semantics.py b/scripts/network_semantics.py
+index 8b52eaa..329a86a 100644
+--- a/scripts/network_semantics.py
++++ b/scripts/network_semantics.py
+@@ -8,7 +8,7 @@ root = pathlib.Path(sys.argv[2])
+ c = openstack.connect()
+ if sys.argv[1] == 'before':
+     rows = [dict(network_uuid=n.id, network_type_before=n.provider_network_type,
+-                 segmentation_id_before=n.provider_segmentation_id) for n in c.network.networks()]
++                 segmentation_id_before=n.provider_segmentation_id, physical_network_before=n.provider_physical_network, mtu_before=n.mtu) for n in c.network.networks()]
+     (root/'network-segments.before.json').write_text(json.dumps(rows, indent=2))
+ else:
+     rows = json.loads((root/'network-segments.before.json').read_text())
+@@ -22,10 +22,15 @@ else:
+                    segmentation_id_after=n.provider_segmentation_id,
+                    ovn_logical_switch_exists='neutron-'+n.id in names,
+                    observed_chassis_tunnel_encapsulation=sorted(types))
+-        row['status'] = 'PASS' if (row['network_type_before']=='vxlan' and
++        converted = (row['network_type_before']=='vxlan' and
+             row['network_type_after']=='geneve' and
+             str(row['segmentation_id_before'])==str(row['segmentation_id_after']) and
+-            row['ovn_logical_switch_exists'] and types == {'geneve'}) else 'FAIL'
++            row['ovn_logical_switch_exists'] and types == {'geneve'})
++        flat_preserved = (row['network_type_before']=='flat' and n.provider_network_type=='flat' and
++            n.provider_physical_network==row.get('physical_network_before') and n.mtu==row.get('mtu_before') and
++            str(n.provider_segmentation_id)==str(row['segmentation_id_before']) and row['ovn_logical_switch_exists'])
++        row['status'] = 'PASS' if converted or flat_preserved else 'FAIL'
++        row['scope'] = 'flat-preservation' if row['network_type_before']=='flat' else 'vxlan-to-geneve'
+     (root/'existing-network-semantics.json').write_text(json.dumps(dict(
+         status='PASS' if all(r['status']=='PASS' for r in rows) else 'FAIL', networks=rows,
+         upstream='https://github.com/openstack/neutron/blob/24.0.0/neutron/plugins/ml2/drivers/ovn/db_migration.py'), indent=2))
+diff --git a/scripts/ns_probe.py b/scripts/ns_probe.py
+new file mode 100644
+index 0000000..afbda95
+--- /dev/null
++++ b/scripts/ns_probe.py
+@@ -0,0 +1,229 @@
++#!/usr/bin/env python3
++"""Small TCP application probes; held sockets never reconnect after establishment."""
++import argparse
++import json
++import os
++from pathlib import Path
++import socket
++import threading
++import time
++import uuid
++
++PREFIX = 'OVN_NS_JSON '
++
++
++def boot_id():
++    return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
++
++
++def emit(cfg, value):
++    row = dict(value, run=cfg['run'], boot=boot_id(), mono=time.monotonic(), ts=time.time())
++    line = PREFIX + json.dumps(row, sort_keys=True)
++    if cfg.get('output'):
++        path = Path(cfg['output'])
++        path.parent.mkdir(parents=True, exist_ok=True)
++        with path.open('a') as f:
++            f.write(line + '\n')
++            f.flush()
++        path.chmod(0o600)
++    if cfg.get('console', True):
++        with open('/dev/ttyS0', 'w') as f:
++            f.write(line + '\n')
++
++
++class Wire:
++    def __init__(self, sock):
++        self.sock = sock
++        self.buffer = b''
++
++    def line(self, deadline):
++        while b'\n' not in self.buffer:
++            remaining = deadline-time.monotonic()
++            if remaining <= 0:
++                raise TimeoutError('echo timeout')
++            self.sock.settimeout(remaining)
++            chunk = self.sock.recv(8192)
++            if not chunk:
++                raise EOFError('socket closed')
++            self.buffer += chunk
++            if len(self.buffer) > 65536:
++                raise ValueError('oversized echo')
++        row, self.buffer = self.buffer.split(b'\n', 1)
++        return json.loads(row)
++
++
++class Stats:
++    def __init__(self):
++        self.value = dict(attempts=0, successes=0, failures=0, consecutive_successes=0,
++                          connection_attempts=0, first_session=None, last_session=None,
++                          open_failure_since=None, longest_recovered_failure_seconds=0.0,
++                          observed_peer_ips=[], held_broken=False, terminal_error=None,
++                          recovered_failure_bursts=[])
++        self.lock = threading.Lock()
++
++    def record(self, start, response=None, error=None):
++        with self.lock:
++            v = self.value
++            v['attempts'] += 1
++            if error:
++                v['failures'] += 1
++                v['consecutive_successes'] = 0
++                if v['open_failure_since'] is None:
++                    v['open_failure_since'] = start
++            else:
++                v['successes'] += 1
++                v['consecutive_successes'] += 1
++                if v['open_failure_since'] is not None:
++                    v['recovered_failure_bursts'].append(dict(start_mono=v['open_failure_since'],
++                        recovery_mono=time.monotonic(), duration_seconds=time.monotonic()-v['open_failure_since']))
++                    v['longest_recovered_failure_seconds'] = max(
++                        v['longest_recovered_failure_seconds'], time.monotonic()-v['open_failure_since'])
++                    v['open_failure_since'] = None
++                session = {k: response[k] for k in ('server', 'server_boot', 'listener', 'connection')}
++                if v['first_session'] is None:
++                    v['first_session'] = session
++                v['last_session'] = session
++                if response['peer'] not in v['observed_peer_ips']:
++                    v['observed_peer_ips'].append(response['peer'])
++
++    def snapshot(self):
++        with self.lock:
++            return json.loads(json.dumps(self.value))
++
++
++class Client:
++    def __init__(self, cfg):
++        self.cfg = cfg
++        self.stats = {name: Stats() for name in ('held', 'new')}
++        self.stop = threading.Event()
++        self.probe_id = str(uuid.uuid4())
++
++    def connect(self, stats):
++        with stats.lock:
++            stats.value['connection_attempts'] += 1
++        sock = socket.socket()
++        try:
++            sock.settimeout(self.cfg['timeout'])
++            sock.bind((self.cfg['source'], 0))
++            sock.connect((self.cfg['target'], self.cfg['port']))
++            return Wire(sock)
++        except BaseException:
++            sock.close()
++            raise
++
++    def stream(self, name):
++        stats = self.stats[name]
++        wire = None
++        established = False
++        sequence = 0
++        try:
++            while not self.stop.is_set():
++                sequence += 1
++                started = time.monotonic()
++                response = None
++                error = None
++                try:
++                    if name == 'held' and established and wire is None:
++                        raise EOFError('held socket already closed; reconnect prohibited')
++                    if wire is None:
++                        wire = self.connect(stats)
++                        if name == 'held':
++                            established = True
++                    request = dict(run=self.cfg['run'], probe=self.probe_id, seq=sequence)
++                    wire.sock.settimeout(self.cfg['timeout'])
++                    wire.sock.sendall((json.dumps(request)+'\n').encode())
++                    deadline = started+self.cfg['timeout']
++                    while True:
++                        response = wire.line(deadline)
++                        if response.get('seq', 0) < sequence:
++                            continue  # Drain late echoes, preserving the same held socket.
++                        if any(response.get(k) != val for k, val in request.items()):
++                            raise ValueError('echo identity mismatch')
++                        if response.get('peer') != self.cfg['expected_peer']:
++                            raise ValueError('unexpected translated/source address')
++                        if response.get('server') != self.cfg['expected_server']:
++                            raise ValueError('unexpected listener server')
++                        session = {k: response[k] for k in ('server', 'server_boot', 'listener', 'connection')}
++                        first = stats.snapshot()['first_session']
++                        if name == 'held' and first and session != first:
++                            raise ValueError('held session identity changed')
++                        break
++                except (TimeoutError, socket.timeout) as exc:
++                    error = str(exc)
++                except (OSError, EOFError, ValueError, KeyError, TypeError) as exc:
++                    error = str(exc)
++                    if name == 'held' and established:
++                        with stats.lock:
++                            stats.value.update(held_broken=True, terminal_error=error)
++                    if wire:
++                        wire.sock.close()
++                        wire = None
++                stats.record(started, response, error)
++                if name == 'new' and wire:
++                    wire.sock.close()
++                    wire = None
++                self.stop.wait(max(0, self.cfg['interval']-(time.monotonic()-started)))
++        finally:
++            if wire:
++                wire.sock.close()
++
++    def run(self):
++        threads = [threading.Thread(target=self.stream, args=(name,), daemon=True) for name in self.stats]
++        for thread in threads:
++            thread.start()
++        started = time.monotonic()
++        try:
++            while time.monotonic()-started < self.cfg['lifetime']:
++                emit(self.cfg, dict(kind='client', label=self.cfg['label'], probe_id=self.probe_id,
++                                   started_mono=started, streams={k: s.snapshot() for k, s in self.stats.items()}))
++                self.stop.wait(1)
++        finally:
++            self.stop.set()
++            for thread in threads:
++                thread.join(self.cfg['timeout']+1)
++
++
++def serve(cfg):
++    listener_id = str(uuid.uuid4())
++    def handle(sock, peer):
++        with sock:
++            wire = Wire(sock)
++            connection = str(uuid.uuid4())
++            while True:
++                try:
++                    row = wire.line(time.monotonic()+cfg['lifetime'])
++                    if row.get('run') != cfg['run']:
++                        return
++                    row.update(server=cfg['server'], server_boot=boot_id(), listener=listener_id,
++                               connection=connection, peer=peer[0])
++                    sock.sendall((json.dumps(row)+'\n').encode())
++                except (OSError, EOFError, ValueError):
++                    return
++    with socket.socket() as listener:
++        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++        listener.bind((cfg['bind'], cfg['port']))
++        listener.listen(64)
++        listener.settimeout(1)
++        started = time.monotonic()
++        while time.monotonic()-started < cfg['lifetime']:
++            emit(cfg, dict(kind='server', listener=listener_id, server=cfg['server']))
++            try:
++                sock, peer = listener.accept()
++                threading.Thread(target=handle, args=(sock, peer), daemon=True).start()
++            except socket.timeout:
++                pass
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument('action', choices=('client', 'serve'))
++    parser.add_argument('config', type=Path)
++    args = parser.parse_args()
++    cfg = json.loads(args.config.read_text())
++    if cfg.get('server') == 'instance-id':
++        cfg['server'] = Path('/var/lib/cloud/data/instance-id').read_text().strip()
++    serve(cfg) if args.action == 'serve' else Client(cfg).run()
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/scripts/ns_underlay.py b/scripts/ns_underlay.py
+new file mode 100644
+index 0000000..3b6c267
+--- /dev/null
++++ b/scripts/ns_underlay.py
+@@ -0,0 +1,143 @@
++#!/usr/bin/env python3
++"""Persistent shared eth1 Linux bridge/veth, retaining the underlay IP and MAC."""
++import argparse
++import json
++from pathlib import Path
++import re
++import shutil
++import subprocess
++import time
++import yaml
++
++
++def run(*args):
++    return subprocess.check_output(args, text=True)
++
++
++def inspect(cfg, deployed=False):
++    links = {l['ifname']: l for l in json.loads(run('ip', '-j', '-d', 'link', 'show'))}
++    addresses = json.loads(run('ip', '-j', '-4', 'addr', 'show'))
++    owners = [a['ifname'] for a in addresses for ip in a['addr_info']
++              if ip.get('family') == 'inet' and ip['local']+'/'+str(ip['prefixlen']) == cfg['address']]
++    if len(owners) != 1 or owners[0] not in ('eth1', 'br-underlay'):
++        raise RuntimeError('Expected underlay address must exist once on eth1 or br-underlay')
++    if links['eth1']['mtu'] != cfg['mtu'] or links[owners[0]]['mtu'] != cfg['mtu']:
++        raise RuntimeError('Unexpected underlay MTU')
++    mac = links['eth1']['address']
++    if owners[0] == 'br-underlay' and (links['br-underlay']['address'] != mac or
++            links['eth1'].get('master') != 'br-underlay'):
++        raise RuntimeError('Bridge must retain eth1 MAC and membership')
++    if deployed:
++        if owners != ['br-underlay']:
++            raise RuntimeError('Kolla must use br-underlay, not IP on eth1')
++        for name in ('ns-uplink', 'ns-ex'):
++            if name not in links or links[name]['mtu'] != cfg['mtu'] or links[name].get('linkinfo', {}).get('info_kind') != 'veth':
++                raise RuntimeError('Missing/invalid N-S veth pair')
++        if links['ns-uplink'].get('master') != 'br-underlay':
++            raise RuntimeError('ns-uplink is not attached to br-underlay')
++        # Confirm the actual pair, never substitute similarly named interfaces.
++        left = int(Path('/sys/class/net/ns-uplink/iflink').read_text())
++        right = int(Path('/sys/class/net/ns-ex/ifindex').read_text())
++        if left != right:
++            raise RuntimeError('N-S veth peer identity changed')
++        if run('ovs-vsctl', '--timeout=10', 'port-to-br', 'ns-ex').strip() != 'br-ex':
++            raise RuntimeError('ns-ex must be a port of br-ex')
++        ovs = run('ovs-vsctl', 'get', 'Open_vSwitch', '.', 'external_ids:ovn-bridge-mappings') if cfg.get('ovn') else ''
++        if cfg.get('ovn') and cfg['physnet']+':br-ex' not in ovs:
++            raise RuntimeError('OVN external physnet mapping missing')
++        if not cfg.get('ovn'):
++            parser = __import__('configparser').ConfigParser(interpolation=None)
++            parser.read('/etc/kolla/neutron-openvswitch-agent/openvswitch_agent.ini')
++            if cfg['physnet']+':br-ex' not in parser.get('ovs', 'bridge_mappings') or parser.get('ovs', 'local_ip') != cfg['address'].split('/')[0]:
++                raise RuntimeError('Rendered OVS bridge mapping/tunnel IP mismatch')
++    return dict(status='PASS', address=cfg['address'], mtu=cfg['mtu'], mac=mac, owner=owners[0])
++
++
++def netplan_update(directory, cfg, mac):
++    """Remove only definitions for eth1/br-underlay; preserve all other netplan data."""
++    for path in sorted(directory.glob('*.yaml'))+sorted(directory.glob('*.yml')):
++        data = yaml.safe_load(path.read_text()) or {}
++        network = data.get('network', {})
++        if network.get('renderer', 'networkd') != 'networkd':
++            raise RuntimeError('This Ubuntu server lab requires networkd')
++        changed = False
++        for key, definition in list(network.get('ethernets', {}).items()):
++            match = definition.get('match', {})
++            if key == 'eth1' or definition.get('set-name') == 'eth1' or match.get('macaddress', '').lower() == mac.lower() or match.get('name') == 'eth1':
++                del network['ethernets'][key]
++                changed = True
++            elif match.get('name') and any(c in match['name'] for c in '*?['):
++                # A wildcard might still apply to eth1. Do not merge conflicting definitions.
++                import fnmatch
++                if fnmatch.fnmatch('eth1', match['name']):
++                    raise RuntimeError('Ambiguous wildcard netplan definition covers eth1')
++        if 'br-underlay' in network.get('bridges', {}):
++            del network['bridges']['br-underlay']
++            changed = True
++        for name, bridge in network.get('bridges', {}).items():
++            if 'eth1' in bridge.get('interfaces', []):
++                raise RuntimeError('eth1 belongs to another configured bridge: '+name)
++        if changed:
++            path.write_text(yaml.safe_dump(data, sort_keys=False))
++            path.chmod(0o600)
++    data = dict(network=dict(version=2, ethernets={'eth1': dict(dhcp4=False, dhcp6=False, mtu=cfg['mtu'], optional=True)},
++        bridges={'br-underlay': dict(interfaces=['eth1'], addresses=[cfg['address']], macaddress=mac,
++            mtu=cfg['mtu'], dhcp4=False, dhcp6=False, parameters={'stp': False, 'forward-delay': 0})}))
++    path = directory/'90-ns-underlay.yaml'
++    path.write_text(yaml.safe_dump(data, sort_keys=False))
++    path.chmod(0o600)
++
++
++def apply(cfg):
++    evidence = inspect(cfg)
++    directory = Path('/etc/netplan')
++    backup = Path('/var/lib/ns-underlay')/str(time.time_ns())
++    backup.mkdir(parents=True, mode=0o700)
++    shutil.copytree(directory, backup/'netplan')
++    # Work on a full temporary copy first, so an ambiguity never leaves partial edits.
++    staging = backup/'staged'
++    shutil.copytree(directory, staging)
++    netplan_update(staging, cfg, evidence['mac'])
++    for path in staging.iterdir():
++        if path.suffix in ('.yaml', '.yml'):
++            shutil.copy2(path, directory/path.name)
++    run('netplan', 'generate')
++    # Stop cloud-init from regenerating the old eth1 definition on the next boot.
++    cloud_config = Path('/etc/cloud/cloud.cfg.d/99-ns-underlay-network.cfg')
++    cloud_config.parent.mkdir(parents=True, exist_ok=True)
++    if cloud_config.exists():
++        shutil.copy2(cloud_config, backup/cloud_config.name)
++    cloud_config.write_text('network: {config: disabled}\n')
++    cloud_config.chmod(0o600)
++    mtu = int(cfg['mtu'])
++    script = Path('/usr/local/sbin/ns-veth-up')
++    script.write_text('#!/bin/bash\nset -euo pipefail\n'
++        'if ! ip link show ns-ex >/dev/null 2>&1; then\n'
++        '  ! ip link show ns-uplink >/dev/null 2>&1\n'
++        '  ip link add ns-uplink type veth peer name ns-ex\nfi\n'
++        'test "$(cat /sys/class/net/ns-uplink/iflink)" = "$(cat /sys/class/net/ns-ex/ifindex)"\n'
++        f'ip link set ns-uplink mtu {mtu}\nip link set ns-ex mtu {mtu}\n'
++        'ip link set ns-uplink master br-underlay\nip link set ns-uplink up\nip link set ns-ex up\n')
++    script.chmod(0o700)
++    unit = Path('/etc/systemd/system/ns-underlay-veth.service')
++    unit.write_text('[Unit]\nWants=network-online.target\nAfter=network-online.target\nBefore=docker.service\n'
++        '[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/usr/local/sbin/ns-veth-up\n'
++        '[Install]\nWantedBy=multi-user.target\n')
++    run('netplan', 'apply')
++    run('systemctl', 'daemon-reload')
++    run('systemctl', 'enable', 'ns-underlay-veth.service')
++    run('systemctl', 'restart', 'ns-underlay-veth.service')
++    return dict(evidence, backup=str(backup), status='PERSISTENT_CONFIG_READY')
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument('action', choices=('inspect', 'apply', 'deployed'))
++    parser.add_argument('config')
++    args = parser.parse_args()
++    cfg = json.loads(args.config)
++    print(json.dumps(apply(cfg) if args.action == 'apply' else inspect(cfg, args.action == 'deployed')))
++
++
++if __name__ == '__main__':
++    main()
+diff --git a/scripts/report_format.py b/scripts/report_format.py
+index 3bf6da2..e21eb04 100644
+--- a/scripts/report_format.py
++++ b/scripts/report_format.py
+@@ -35,7 +35,7 @@ JSON_GROUPS = (
+      'new_ovn_workload_geneve', 'new_ovn_workload_bindings',
+      'new_ovn_workload_dhcp', 'new_ovn_workload_mtu',
+      'new_ovn_workload_metadata', 'new_ovn_workload_connectivity'),
+-    ('pair_d_tcp',),
++    ('pair_d_tcp', 'ew_connectivity_matrix', 'north_south', 'workload_capacity', 'instance_quota'),
+     ('existing_workload_cleanup', 'existing_workload_cleanup_evidence',
+      'new_ovn_workload_cleanup'),
+     ('workload_checks', 'validation_orchestration', 'limitations'),
+@@ -97,7 +97,7 @@ def render_text(report, root, *, modern):
+              f"Result : {report['result']}", f"Run    : {report['run_id']}", '']
+     lines.append({
+         'SUCCESS': 'Migration and validation passed.',
+-        'SUCCESS_WITH_REMEDIATION': 'Migration passed. Pair B required guest reboot remediation.',
++        'SUCCESS_WITH_REMEDIATION': 'Migration passed. Existing DHCP workload required guest reboot remediation.',
+         'MIGRATED_VALIDATION_INCOMPLETE': 'Migration completed; validation or cleanup is incomplete.',
+     }.get(report['result'], 'See JSON report for the recorded result.'))
+ 
+@@ -133,7 +133,7 @@ def render_text(report, root, *, modern):
+     section('3. WORKLOAD VALIDATION')
+     probe = report.get('dataplane_probe') or {}
+     continuity = report.get('dataplane_continuity') or {}
+-    lines.extend(['', 'PAIR A - Continuous routed ICMP'])
++    lines.extend(['', 'EW - Different compute / different subnet (ICMP)'])
+     field('Result', check(continuity.get('status')), 2)
+     field('Packet loss', packet_loss(probe), 2)
+     field('Longest packet outage', seconds(probe.get('actual_dataplane_outage_seconds'))
+@@ -143,7 +143,7 @@ def render_text(report, root, *, modern):
+           else 'UNAVAILABLE', 2)
+ 
+     existing = report.get('existing_workload_migration') or {}
+-    lines.extend(['', 'PAIR B - Existing workload migration' if modern
++    lines.extend(['', 'EXISTING WORKLOAD - DHCP / MTU / metadata' if modern
+                   else 'EXISTING WORKLOAD - Legacy VM1/VM2 migration'])
+     field('Result', check(existing.get('status')), 2)
+     result('Initial validation on OVS', 'initial_ovs_workload_validation')
+@@ -168,7 +168,7 @@ def render_text(report, root, *, modern):
+     if report.get('pre_cutover_remediation_action') == 'soft reboot' or report.get('post_cutover_remediation_action') == 'soft reboot':
+         lines.extend(['', '  Boot checks account for the recorded remediation reboots.'])
+ 
+-    lines.extend(['', 'PAIR C - Fresh workload provisioning on OVN'])
++    lines.extend(['', 'FRESH OVN - Provisioning / DHCP / metadata'])
+     field('Result', check((report.get('fresh_ovn_provisioning') or {}).get('status')), 2)
+     for label, key in [('Provisioning', 'new_ovn_workload_provisioning'),
+                        ('Geneve networks', 'new_ovn_workload_geneve'),
+@@ -179,7 +179,7 @@ def render_text(report, root, *, modern):
+         result(label, key)
+ 
+     tcp = report.get('pair_d_tcp') or {}
+-    lines.extend(['', 'PAIR D - TCP continuity and new connections'])
++    lines.extend(['', 'EW TCP - Session continuity and new connections'])
+     field('Result', check(tcp.get('status')), 2)
+     if tcp.get('status') == 'DISABLED':
+         lines.append('  TCP validation disabled for this run.')
+@@ -201,14 +201,37 @@ def render_text(report, root, *, modern):
+             lines.extend(['', '  New listener opening during the Neutron freeze was not proven.'])
+         lines.append('  TCP durations measure application probe failures.')
+ 
++    matrix = report.get('ew_connectivity_matrix') or {}
++    for name, flow in (matrix.get('flows') or {}).items():
++        if name == 'ew_different_compute_different_subnet':
++            continue
++        lines.extend(['', name.replace('_', ' ').upper()+' (ICMP)'])
++        field('Result', check(flow.get('status')), 2)
++        field('Packet loss', packet_loss(flow), 2)
++        field('Longest packet outage', seconds(flow.get('actual_dataplane_outage_seconds')) if flow.get('status')=='PASS' else 'UNAVAILABLE', 2)
++        field('Boot continuity', check(flow.get('boot_continuity')), 2)
++    ns = report.get('north_south') or {}
++    lines.extend(['', 'NORTH-SOUTH - SNAT outbound / FIP inbound'])
++    field('Result', check(ns.get('status')), 2)
++    for direction, value in (ns.get('directions') or {}).items():
++        lines.append('  '+direction.upper())
++        field('Held session preservation', check(value.get('held_session_preservation')), 4)
++        for name, stream in value.get('streams', {}).items():
++            field(name+' recovered probe failure', seconds(stream.get('longest_recovered_failure_seconds')), 4)
++            field(name+' failed application probes', str(stream.get('failures'))+' / '+str(stream.get('attempts')), 4)
++    if ns.get('reason'):
++        field('Reason', ns['reason'], 2)
++
+     section('4. VALIDATION RESOURCE CLEANUP')
+-    cleanup_label = ('Existing workloads (A/B)' if tcp.get('status') == 'DISABLED'
+-                     else 'Existing workloads (A/B/D)') if modern else 'Existing workloads (legacy)'
++    cleanup_label = ('Existing ICMP / DHCP workloads' if tcp.get('status') == 'DISABLED'
++                     else 'Existing ICMP / DHCP / TCP workloads') if modern else 'Existing workloads (legacy)'
+     field(cleanup_label,
+           check(report.get('existing_workload_cleanup')))
+-    field('Fresh OVN workloads (C)' if modern else 'Fresh OVN workloads (legacy)',
++    field('Fresh OVN workloads' if modern else 'Fresh OVN workloads (legacy)',
+           check(report.get('new_ovn_workload_cleanup')))
+ 
++    field('Extended EW / NS cleanup', check(report.get('extended_cleanup')))
++
+     section('5. REPORT FILES')
+     field('Directory', str(root) + '/')
+     field('Text', 'migration-report.txt')
+diff --git a/scripts/workload_validation.py b/scripts/workload_validation.py
+index 1ff557f..60787ba 100644
+--- a/scripts/workload_validation.py
++++ b/scripts/workload_validation.py
+@@ -279,6 +279,10 @@ def validation_ready(root):
+         role_ready = role_ready and read_evidence(root,'existing-post-cutover-readiness.json').get('status')=='PASS'
+     if cfg.get('capture_enabled'):
+         role_ready = role_ready and read_evidence(root,'tenant-dataplane-probe.json').get('evidence_source')=='compute-tap-pcap'
++    if cfg.get('ew_matrix_enabled'):
++        role_ready = role_ready and read_evidence(root, 'ew-matrix-results.json').get('status') == 'PASS'
++    if cfg.get('ns', {}).get('enabled'):
++        role_ready = role_ready and read_evidence(root, 'ns-results.json').get('status') == 'PASS'
+     return (role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
+             workload_pass(read_evidence(root, 'pre-workload-checks.json'), 'geneve') and
+             workload_pass(read_evidence(root, 'post-workload-checks.json'), 'geneve') and
+@@ -427,9 +431,11 @@ class Validation:
+                 vm['placement'] = target
+                 self.commit()
+             vm.update(network=net['network'], subnet=net['subnet'])
+-            name = prefix + '-' + role + str(i) if modern else prefix + '-' + str(i+1)
++            public_role = {'measure':'ew-cross-compute-cross-subnet', 'existing':'existing-dhcp-metadata', 'fresh':'fresh-ovn', 'tcp':'ew-tcp-continuity'}[role]
++            name = prefix + '-' + public_role + '-' + str(i) if modern else prefix + '-' + str(i+1)
+             vm.setdefault('record_vm', role+str(i) if modern else stage+str(i))
+-            vm.setdefault('name', name)
++            # Preserve checkpointed names during a retry of an older run.
++            name = vm.setdefault('name', name)
+             if not vm.get('port'):
+                 if vm.get('server'):
+                     raise RuntimeError('Checkpointed server has no explicit owned port; refusing duplicate/replacement port')
+@@ -440,6 +446,9 @@ class Validation:
+                                                                              security_group_ids=[sg])
+                 vm.update(port=port.id, fixed_ips=port.fixed_ips, ip=port.fixed_ips[0]['ip_address'], owned=True)
+                 self.commit()
++        if stage == 'measure' and cfg.get('ew_matrix_enabled'):
++            from extended_validation import Extended
++            Extended(self).prepare_matrix_ports()
+         if stage == 'pre':
+             for i in range(2):
+                 vm = pair[str(i)]
+@@ -467,6 +476,11 @@ class Validation:
+                              dict(path='/etc/migration-probe.json', content=json.dumps(config), permissions='0600'),
+                              dict(path='/etc/systemd/system/migration-probe.service', content='[Unit]\nAfter=network-online.target\n[Service]\nExecStart=/usr/bin/python3 /usr/local/bin/migration-probe.py\n[Install]\nWantedBy=multi-user.target\n')],
+                 runcmd=[['python3', '-c', launcher], ['systemctl', 'enable', '--now', 'migration-probe']]))
++            if stage == 'measure' and cfg.get('ew_matrix_enabled'):
++                from extended_validation import Extended
++                data = __import__('yaml').safe_load(user_data)
++                Extended(self).decorate_measure(data, str(i))
++                user_data = '#cloud-config\n'+__import__('yaml').safe_dump(data)
+             if stage == 'tcp':
+                 data = __import__('yaml').safe_load(user_data)
+                 data['write_files'].extend([
+@@ -1230,6 +1244,9 @@ class Validation:
+     def finalize(self):
+         if not validation_ready(self.root):
+             return False
++        if getattr(self, 'cfg', {}).get('ew_matrix_enabled') or getattr(self, 'cfg', {}).get('ns', {}).get('enabled'):
++            from extended_validation import Extended
++            Extended(self).cleanup()
+         self.cleanup('post')
+         self.cleanup('pre')
+         return True
+@@ -1245,6 +1262,10 @@ def main():
+     v = Validation(args.root)
+     from tcp_validation import PairD
+     pair_d = PairD(v)
++    extended = None
++    if v.cfg.get('ew_matrix_enabled') or v.cfg.get('ns', {}).get('enabled'):
++        from extended_validation import Extended
++        extended = Extended(v)
+     if args.action == 'collect':
+         running = True
+         def stop(*_):
+@@ -1256,12 +1277,28 @@ def main():
+                 v.collect('measure')
+                 if pair_d.enabled:
+                     v.collect('tcp')
++                if extended and extended.ns:
++                    extended.console_rows(extended.state['ns']['vms']['0'], 'OVN_NS_JSON ')
+             except Exception as exc:
+                 with (v.root/'console-collector-errors.log').open('a') as f:
+                     f.write(str(exc)+'\n')
+             time.sleep(v.cfg['console_interval'])
+     elif args.action == 'capture-finish':
+-        return int(Capture(v).finish()['status'] != 'PASS')
++        primary_error = None
++        try:
++            primary = Capture(v).finish()
++        except Exception as exc:
++            primary_error = exc
++            primary = {'status': 'UNAVAILABLE'}
++        if extended:
++            try:
++                extended.matrix_finish()
++            except Exception as exc:
++                if not read_evidence(v.root, 'ew-matrix-results.json'):
++                    save(v.root/'ew-matrix-results.json', dict(status='UNAVAILABLE', reason=str(exc)))
++        if primary_error:
++            raise primary_error
++        return int(primary['status'] != 'PASS')
+     elif args.action == 'capture-cleanup':
+         report = read_evidence(v.root,'migration-report.json')
+         if report.get('result') in ('SUCCESS','SUCCESS_WITH_REMEDIATION') and validation_ready(v.root):
+@@ -1269,6 +1306,12 @@ def main():
+             cp = capture.checkpoint()
+             if cp and cp.get('status') == 'STOPPED':
+                 capture.transport('remove',cp)
++            if extended and extended.matrix:
++                for name, pair in extended.flows().items():
++                    cap = extended.capture(name, pair)
++                    cp = cap.checkpoint()
++                    if cp and cp.get('status') == 'STOPPED':
++                        cap.transport('remove', cp)
+         return 0
+     elif args.action == 'd-arm':
+         pair_d.arm()
+@@ -1282,13 +1325,26 @@ def main():
+             v.audit_placement(['measure', 'pre'] + (['tcp'] if pair_d.enabled else []))
+         pair_d.wait(freeze=True)
+         pair_d.control_precheck()
++        if extended:
++            extended.matrix_ready()
++            extended.ns_wait()
+     elif args.action == 'finalize':
+         v.finalize()
+     elif args.action == 'pre':
+         v.cfg['initial'] = True
++        if extended:
++            extended.capacity()
+         v.create('measure')
++        if extended:
++            # Ports were prepared before cloud-init payloads were generated.
++            extended = Extended(v)
++            extended.create_matrix()
+         v.wait_measure(initial=True)
+         v.checkpoint_start()
++        if extended:
++            extended.matrix_start()
++            extended.create_ns()
++            extended.ns_wait()
+         v.create('pre')
+         rows = v.wait('pre')
+         if not read_evidence(v.root,'existing-initial-baseline.json'):
+@@ -1329,6 +1385,14 @@ def main():
+                 v.audit_placement(['measure', 'pre', 'post'] + (['tcp'] if pair_d.enabled else []))
+         except Exception as exc:
+             failures.append(str(exc))
++        if extended:
++            try:
++                extended.ns_wait(post=True)
++            except Exception as exc:
++                result = read_evidence(v.root, 'ns-results.json')
++                result.update(status='FAIL', reason=str(exc))
++                save(v.root/'ns-results.json', result)
++                failures.append(str(exc))
+         if getattr(v,'state',{}).get('schema_version')==2 and not v.state.get('historical_dual_pair'):
+             try:
+                 # Keep Pair A running throughout B/C validation, and confirm
+diff --git a/tests/test_extended_validation.py b/tests/test_extended_validation.py
+new file mode 100644
+index 0000000..817e3ab
+--- /dev/null
++++ b/tests/test_extended_validation.py
+@@ -0,0 +1,251 @@
++import copy
++import json
++from pathlib import Path
++import socket
++import sys
++import tempfile
++import threading
++import time
++from types import SimpleNamespace as NS
++import unittest
++from unittest.mock import Mock, patch
++import yaml
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT/'scripts'))
++from extended_validation import Extended, FLOW_NAMES, quota20
++from ns_probe import Client, Stats, Wire
++from ns_underlay import netplan_update
++from workload_validation import save, validation_ready
++
++
++class ExtensionTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.root = Path(self.temp.name)
++        self.cfg = dict(run='test-run', prefix='validation', ew_matrix_enabled=True, ns={'enabled':False},
++                       placement={'0':{'inventory_host':'compute1'}, '1':{'inventory_host':'compute2'}},
++                       interval=.2, lifetime=30, timeout=2, capture_directory='/captures')
++        self.a = {str(i): dict(owned=True, record_vm='measure'+str(i), network='net'+str(i), subnet='sub'+str(i),
++            ip='10.231.'+str(i)+'.20', placement=self.cfg['placement'][str(i)]) for i in range(2)}
++        self.v = NS(root=self.root, cfg=self.cfg, cloud=Mock(),
++                    pair=lambda _: self.a, placement=Mock(return_value={'status':'PASS'}))
++        self.x = Extended(self.v)
++        self.x.state['matrix'] = {str(i): dict(role='ew-matrix-'+str(i), record_vm='ew-matrix-'+str(i),
++            owned=True, network='net1', subnet='sub1', ip='10.231.1.'+str(30+i),
++            placement=self.cfg['placement'][str(i)]) for i in range(2)}
++
++    def test_three_added_flows_fill_all_compute_subnet_cases(self):
++        expected = [(True,False), (False,True), (True,True)]
++        for name, (same_compute, same_subnet) in zip(FLOW_NAMES, expected):
++            source, dest = self.x.flows()[name]
++            self.assertEqual(source['placement'] == dest['placement'], same_compute)
++            self.assertEqual(source['subnet'] == dest['subnet'], same_subnet)
++
++    def test_shared_measure_sources_receive_only_one_added_ping(self):
++        for index in ('0','1'):
++            data = {'write_files':[], 'runcmd':[]}
++            self.x.decorate_measure(data, index)
++            cfg = json.loads(next(f['content'] for f in data['write_files'] if f['path']=='/etc/aux-ping.json'))
++            self.assertEqual(cfg['peer'], self.x.state['matrix'][index]['ip'])
++            self.assertEqual(cfg['ip'], self.a[index]['ip'])
++            self.assertEqual(data['runcmd'], [['systemctl','enable','--now','aux-ping']])
++
++    def test_captures_have_separate_local_and_remote_roots_and_exact_role(self):
++        roots = []
++        remote = []
++        for name, pair in self.x.flows().items():
++            cap = self.x.capture(name, pair)
++            roots.append(cap.v.root)
++            remote.append(cap.v.cfg['capture_directory'])
++            self.assertEqual(cap.v.pair('measure')['0'], pair[0])
++            self.assertEqual(cap.v.cfg['capture_role'], pair[0].get('role','measure'))
++        self.assertEqual(len(set(roots)), 3)
++        self.assertEqual(len(set(remote)), 3)
++
++    def test_existing_resource_requires_checkpoint_or_run_description(self):
++        self.v.cloud.network.networks.return_value = [NS(id='foreign', name='name', description='foreign')]
++        with self.assertRaisesRegex(RuntimeError, 'unowned'):
++            self.x.resource({}, 'network', 'network', 'name')
++        self.v.cloud.network.create_network.assert_not_called()
++
++    def test_lost_resource_reply_recovers_exact_run_name_without_duplicate(self):
++        obj = NS(id='owned', name='name', description='ovn-migration-run=test-run')
++        self.v.cloud.network.networks.return_value = [obj]
++        state = {}
++        self.assertIs(self.x.resource(state,'network','network','name'), obj)
++        self.assertEqual(state['network'], 'owned')
++        self.v.cloud.network.create_network.assert_not_called()
++
++    def test_port_fixed_ip_or_placement_change_cannot_be_adopted(self):
++        self.v.cloud.network.ports.return_value = []
++        self.v.cloud.network.create_port.return_value = NS(id='port', network_id='net',
++            security_group_ids=['sg'], fixed_ips=[{'subnet_id':'sub','ip_address':'10.1.0.20'}])
++        group = {}
++        vm = self.x.port(group,'0','net','sub','role',{'host':'one'},'sg')
++        self.v.cloud.network.get_port.return_value = self.v.cloud.network.create_port.return_value
++        with self.assertRaisesRegex(RuntimeError, 'placement'):
++            self.x.port(group,'0','net','sub','role',{'host':'two'},'sg')
++
++    def test_restart_of_local_client_is_refused(self):
++        self.x.state['processes'] = {'client': {'config':{'a':1}, 'identity':None}}
++        with self.assertRaisesRegex(RuntimeError, 'restart prohibited'):
++            self.x.local_process('client','client',{'a':1})
++
++    def baseline(self):
++        stats = Stats().snapshot()
++        session = dict(server='srv', server_boot='boot-srv', listener='listener', connection='connection')
++        stats.update(attempts=20, successes=20, consecutive_successes=20, first_session=session,
++                     last_session=session, connection_attempts=1, observed_peer_ips=['10.1.0.4'])
++        row = dict(boot='guest-boot', probe_id='probe', mono=100, streams={'held':copy.deepcopy(stats),'new':copy.deepcopy(stats)})
++        return {'clients':{'snat':copy.deepcopy(row),'fip':copy.deepcopy(row)}}
++
++    def test_ns_measurement_excludes_startup_failures_before_baseline(self):
++        baseline = self.baseline()
++        rows = copy.deepcopy(baseline['clients'])
++        for row in rows.values():
++            row['mono'] = 200
++            for stats in row['streams'].values():
++                stats.update(attempts=40, failures=2)
++                stats['recovered_failure_bursts'] = [dict(start_mono=50, duration_seconds=15), dict(start_mono=120, duration_seconds=1)]
++        self.x.ns_results(rows, {}, baseline)
++        result = json.loads((self.root/'ns-results.json').read_text())
++        self.assertEqual(result['status'], 'PASS')
++        self.assertEqual(result['directions']['snat']['streams']['held']['longest_recovered_failure_seconds'], 1)
++        self.assertEqual(result['directions']['snat']['streams']['new']['attempts'], 20)
++
++    def test_held_closed_reports_fail_and_keeps_new_connection_metrics(self):
++        baseline = self.baseline()
++        rows = copy.deepcopy(baseline['clients'])
++        for row in rows.values():
++            row['mono'] = 200
++            for stats in row['streams'].values():
++                stats['attempts'] = 40
++            row['streams']['held'].update(held_broken=True, failures=10, consecutive_successes=0, open_failure_since=120, terminal_error='closed')
++        self.x.ns_results(rows, {}, baseline, ['held closed'])
++        result = json.loads((self.root/'ns-results.json').read_text())
++        self.assertEqual(result['status'], 'FAIL')
++        for row in result['directions'].values():
++            self.assertEqual(row['held_session_preservation'], 'FAIL')
++            self.assertEqual(row['streams']['new']['status'], 'PASS')
++            self.assertIsNone(row['streams']['held']['longest_recovered_failure_seconds'])
++
++    def test_guest_restart_cannot_be_reported_as_same_epoch(self):
++        baseline = self.baseline()
++        rows = copy.deepcopy(baseline['clients'])
++        rows['snat']['boot'] = 'new-boot'
++        self.x.ns_results(rows, {}, baseline)
++        result = json.loads((self.root/'ns-results.json').read_text())
++        self.assertEqual(result['status'], 'FAIL')
++        self.assertIsNone(result['directions']['snat']['streams']['held']['attempts'])
++
++    def test_only_instance_quota_is_changed(self):
++        cloud = Mock()
++        cloud.session.get_project_id.return_value = 'project'
++        cloud.compute.get_quota_set.side_effect = [NS(instances=10, cores=20,ram=50000), NS(instances=20,cores=20,ram=50000)]
++        quota20(cloud, self.root)
++        cloud.compute.update_quota_set.assert_called_once_with('project', instances=20)
++        self.assertEqual(json.loads((self.root/'quota-instances.json').read_text())['status'], 'PASS')
++
++    def test_changed_cpu_quota_fails_verification(self):
++        cloud = Mock()
++        cloud.session.get_project_id.return_value = 'project'
++        cloud.compute.get_quota_set.side_effect = [NS(instances=10,cores=20,ram=50000), NS(instances=20,cores=40,ram=50000)]
++        with self.assertRaisesRegex(RuntimeError, 'only instances'):
++            quota20(cloud, self.root)
++
++
++class NetplanTests(unittest.TestCase):
++    def test_bridge_retains_mac_ip_and_does_not_modify_management(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            eth0 = {'dhcp4':True, 'mtu':1500}
++            (root/'50-cloud-init.yaml').write_text(yaml.safe_dump({'network':{'version':2,'ethernets':{'eth0':eth0,'eth1':{'dhcp4':True}}}}))
++            netplan_update(root, {'address':'10.1.0.90/24','mtu':1450}, 'fa:16:3e:00:00:01')
++            old = yaml.safe_load((root/'50-cloud-init.yaml').read_text())
++            new = yaml.safe_load((root/'90-ns-underlay.yaml').read_text())
++            self.assertEqual(old['network']['ethernets'], {'eth0':eth0})
++            bridge = new['network']['bridges']['br-underlay']
++            self.assertEqual(bridge['addresses'], ['10.1.0.90/24'])
++            self.assertEqual(bridge['macaddress'], 'fa:16:3e:00:00:01')
++            self.assertEqual(bridge['mtu'], 1450)
++            netplan_update(root, {'address':'10.1.0.90/24','mtu':1450}, 'fa:16:3e:00:00:01')
++            self.assertEqual(yaml.safe_load((root/'90-ns-underlay.yaml').read_text()), new)
++
++    def test_wildcard_covering_eth1_is_rejected(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root=Path(directory)
++            (root/'net.yaml').write_text(yaml.safe_dump({'network':{'ethernets':{'all':{'match':{'name':'eth*'},'dhcp4':True}}}}))
++            with self.assertRaisesRegex(RuntimeError, 'wildcard'):
++                netplan_update(root, {'address':'10.1.0.90/24','mtu':1450}, 'fa:16:3e:00:00:01')
++
++
++class TCPTests(unittest.TestCase):
++    def probe(self, mode):
++        listener = socket.socket()
++        listener.bind(('127.0.0.1',0))
++        listener.listen()
++        listener.settimeout(.05)
++        stop = threading.Event()
++        def handle(sock):
++            wire = Wire(sock)
++            connection = str(sock.getpeername()[1])
++            with sock:
++                while not stop.is_set():
++                    try:
++                        row=wire.line(time.monotonic()+1)
++                        if mode == 'close': return
++                        if mode == 'delay' and row['seq']==2: time.sleep(.12)
++                        row.update(server='expected',server_boot='boot',listener='listener',connection=connection,
++                                   peer='127.0.0.2' if mode=='wrong-source' else '127.0.0.1')
++                        sock.sendall((json.dumps(row)+'\n').encode())
++                    except (OSError,EOFError,ValueError): return
++        def server():
++            while not stop.is_set():
++                try:
++                    sock,_=listener.accept()
++                    threading.Thread(target=handle,args=(sock,),daemon=True).start()
++                except socket.timeout: pass
++                except OSError: return
++        thread=threading.Thread(target=server,daemon=True);thread.start()
++        cfg=dict(run='r',source='127.0.0.1',target='127.0.0.1',port=listener.getsockname()[1],
++                 expected_peer='127.0.0.1',expected_server='expected',timeout=.08,interval=.05)
++        client=Client(cfg)
++        workers=[threading.Thread(target=client.stream,args=(name,),daemon=True) for name in ('held','new')]
++        for worker in workers: worker.start()
++        time.sleep(.65)
++        client.stop.set()
++        for worker in workers: worker.join(2)
++        stop.set();listener.close();thread.join(1)
++        return {name:stats.snapshot() for name,stats in client.stats.items()}
++
++    def test_normal_held_is_one_socket_and_new_is_multiple(self):
++        result=self.probe('normal')
++        self.assertEqual(result['held']['connection_attempts'],1)
++        self.assertGreater(result['new']['connection_attempts'],3)
++        self.assertEqual(result['held']['failures'],0)
++        self.assertEqual(result['held']['first_session'],result['held']['last_session'])
++
++    def test_timeout_recovers_on_same_held_socket(self):
++        result=self.probe('delay')
++        self.assertEqual(result['held']['connection_attempts'],1)
++        self.assertFalse(result['held']['held_broken'])
++        self.assertGreater(result['held']['failures'],0)
++        self.assertIsNone(result['held']['open_failure_since'])
++        self.assertGreater(result['held']['longest_recovered_failure_seconds'],0)
++
++    def test_closed_held_socket_never_reconnects(self):
++        result=self.probe('close')
++        self.assertEqual(result['held']['connection_attempts'],1)
++        self.assertTrue(result['held']['held_broken'])
++        self.assertGreater(result['new']['connection_attempts'],3)
++
++    def test_unexpected_source_is_not_success(self):
++        result=self.probe('wrong-source')
++        self.assertEqual(result['held']['successes'],0)
++        self.assertEqual(result['new']['successes'],0)
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/tests/test_ns_lifecycle.py b/tests/test_ns_lifecycle.py
+new file mode 100644
+index 0000000..5803ab0
+--- /dev/null
++++ b/tests/test_ns_lifecycle.py
+@@ -0,0 +1,159 @@
++import copy
++import json
++from pathlib import Path
++import sys
++import tempfile
++from types import SimpleNamespace as NS
++import unittest
++from unittest.mock import Mock, patch
++
++ROOT=Path(__file__).resolve().parents[1]
++sys.path.insert(0,str(ROOT/'scripts'))
++from extended_validation import Extended
++from openstack.network.v2.network import Network
++from openstack.network.v2.subnet import Subnet
++from openstack.network.v2.port import Port
++from openstack.network.v2.router import Router
++from openstack.network.v2.floating_ip import FloatingIP
++from openstack.network.v2.security_group import SecurityGroup
++from openstack.network.v2.security_group_rule import SecurityGroupRule
++from openstack.compute.v2.server import Server
++
++
++class MemoryNetwork:
++    def __init__(self):
++        self.data={kind:{} for kind in ('network','subnet','port','router','security_group','ip')}
++        self.rules=[]
++        self.writes=[]
++        self.classes=dict(network=Network,subnet=Subnet,port=Port,router=Router,security_group=SecurityGroup,ip=FloatingIP)
++
++    def create(self,kind,**attrs):
++        identifier=kind+'-'+str(len(self.data[kind])+1)
++        if kind=='network': attrs.setdefault('provider_network_type','vxlan')
++        if kind=='port':
++            attrs.setdefault('fixed_ips',[dict(subnet_id='sub',ip_address='10.233.0.50')])
++            attrs.update(status='ACTIVE',binding_host_id='host',binding_vif_type='ovs',device_id='',mac_address='fa:16:3e:01:02:03')
++        if kind=='ip': attrs.update(status='ACTIVE',router_id=next(iter(self.data['router'])))
++        resource=self.classes[kind](id=identifier,**attrs)
++        self.data[kind][identifier]=resource
++        self.writes.append(('create',kind,copy.deepcopy(attrs)))
++        return resource
++
++    def __getattr__(self,name):
++        for kind in self.data:
++            if name=='create_'+kind: return lambda _kind=kind,**attrs:self.create(_kind,**attrs)
++            if name=='get_'+kind: return lambda identifier,_kind=kind:self.data[_kind][getattr(identifier,'id',identifier)]
++            if name=='find_'+kind: return lambda identifier,_kind=kind:self.data[_kind].get(getattr(identifier,'id',identifier))
++            if name=='delete_'+kind: return lambda identifier,ignore_missing=False,_kind=kind:self.data[_kind].pop(getattr(identifier,'id',identifier),None)
++            collection={'security_group':'security_groups','ip':'ips'}.get(kind,kind+'s')
++            if name==collection:
++                return lambda _kind=kind,**query:[obj for obj in self.data[_kind].values() if all(getattr(obj,k,None)==v for k,v in query.items())]
++        raise AttributeError(name)
++
++    def security_group_rules(self,**kwargs): return self.rules
++
++    def create_security_group_rule(self,**kwargs):
++        rule=SecurityGroupRule(**kwargs);self.rules.append(rule);return rule
++
++    def add_interface_to_router(self,router,subnet_id):
++        sub=self.data['subnet'][subnet_id]
++        port=self.create('port',network_id=sub.network_id,fixed_ips=[dict(subnet_id=subnet_id,ip_address='10.233.0.1')])
++        port.device_id=router
++
++    def update_router(self,router,**attrs):
++        self.writes.append(('update','router',copy.deepcopy(attrs)))
++        for key,value in attrs.items(): setattr(self.data['router'][router],key,value)
++        gateway=attrs.get('external_gateway_info')
++        if gateway and not any(p.device_id==router and p.network_id==gateway['network_id'] for p in self.data['port'].values()):
++            port=self.create('port',network_id=gateway['network_id'],fixed_ips=gateway['external_fixed_ips'])
++            port.device_id=router
++        return self.data['router'][router]
++
++
++class NSLifecycleTests(unittest.TestCase):
++    def setUp(self):
++        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
++        self.root=Path(self.temp.name)
++        placement={str(i):{'inventory_host':'compute'+str(i+1),'nova_host':'compute'+str(i+1),'hypervisor':'hv'+str(i+1),'neutron_host':'compute'+str(i+1)} for i in range(2)}
++        self.cfg=dict(run='run',prefix='validation',ns=dict(enabled=True,endpoint_ip='10.1.0.187',port=18180,
++            external_cidr='10.1.0.0/24',external_gateway='10.1.0.1',physnet='physnet1',mtu=1450,
++            snat_ip='10.1.0.4',fip_ip='10.1.0.5',tenant_cidr='10.233.0.0/24',outbound_ip='10.233.0.11',inbound_ip='10.233.0.20'),
++            timeout=2,lifetime=30,tcp_interval=.5,tcp_timeout=1,placement=placement,image='image',flavor='flavor')
++        self.network=MemoryNetwork();self.compute=Mock();self.servers={}
++        self.compute.servers.side_effect=lambda **query:[s for s in self.servers.values() if s.name==query.get('name')]
++        self.compute.get_server.side_effect=lambda identifier:self.servers[identifier]
++        self.v=NS(root=self.root,cfg=self.cfg,cloud=NS(network=self.network,compute=self.compute),
++            wait_active=Mock(),wait_placement=Mock(),placement=Mock(return_value={'status':'PASS'}))
++        self.x=Extended(self.v)
++        def create(compute,target,**attrs):
++            identifier='server-'+str(len(self.servers)+1)
++            server=Server(id=identifier,name=attrs['name'],metadata=attrs['metadata'],status='ACTIVE')
++            self.servers[identifier]=server
++            self.network.data['port'][attrs['networks'][0]['port']].device_id=identifier
++            return server
++        self.creator=patch('validation_placement.create_on_target',side_effect=create).start()
++        self.addCleanup(patch.stopall)
++        def local(role,action,cfg):
++            if role=='snat-server':
++                (self.root/'ns/snat-server.jsonl').write_text('ready')
++        patch.object(self.x,'local_process',side_effect=local).start()
++        patch.object(self.x,'console_rows',return_value=[{'kind':'server'}]).start()
++
++    def test_owned_flat_gateway_fip_and_two_computes_are_created_once(self):
++        self.x.create_ns()
++        original=copy.deepcopy(self.x.state['ns'])
++        writes=len(self.network.writes)
++        self.x.create_ns()
++        self.assertEqual(len(self.network.writes),writes)
++        self.assertEqual(self.x.state['ns'],original)
++        self.assertEqual(self.creator.call_count,2)
++        self.assertEqual(len(self.network.data['network']),2)
++        self.assertEqual(len(self.network.data['subnet']),2)
++        self.assertEqual(len(self.network.data['router']),1)
++        self.assertEqual(len(self.network.data['ip']),1)
++        s=self.x.state['ns']
++        self.assertEqual(self.network.get_network(s['external_network']).provider_network_type,'flat')
++        self.assertFalse(self.network.get_subnet(s['external_subnet']).is_dhcp_enabled)
++        self.assertEqual(self.network.get_router(s['router']).external_gateway_info['external_fixed_ips'],
++                         [{'subnet_id':s['external_subnet'],'ip_address':'10.1.0.4'}])
++        self.assertEqual(s['vms']['0']['placement']['inventory_host'],'compute1')
++        self.assertEqual(s['vms']['1']['placement']['inventory_host'],'compute2')
++        inbound=self.network.get_ip(s['floating_ip'])
++        self.assertEqual((inbound.floating_ip_address,inbound.fixed_ip_address),('10.1.0.5','10.233.0.20'))
++
++    def test_lost_fip_reply_is_recovered_without_a_second_fip(self):
++        original=self.network.create_ip
++        def lost(**attrs):
++            original(**attrs)
++            raise RuntimeError('reply lost')
++        with patch.object(self.network,'create_ip',side_effect=lost):
++            with self.assertRaisesRegex(RuntimeError,'reply lost'): self.x.create_ns()
++        self.x.create_ns()
++        self.assertEqual(len(self.network.data['ip']),1)
++        self.assertEqual(self.creator.call_count,2)
++
++    def test_external_mtu_and_fip_mapping_changes_fail_preservation(self):
++        self.x.create_ns()
++        self.x.ns_snapshot()
++        ext=self.network.get_network(self.x.state['ns']['external_network'])
++        ext.mtu=1392
++        with self.assertRaisesRegex(RuntimeError,'mapping changed'): self.x.ns_snapshot()
++        ext.mtu=1450
++        fip=self.network.get_ip(self.x.state['ns']['floating_ip'])
++        fip.port_id='another-port'
++        with self.assertRaisesRegex(RuntimeError,'mapping changed'): self.x.ns_snapshot()
++
++    def test_renamed_or_replaced_guest_metadata_fails_audit(self):
++        self.x.create_ns()
++        vm=self.x.state['ns']['vms']['0']
++        self.servers[vm['server']].metadata={'ovn_migration_run':'another-run'}
++        with self.assertRaisesRegex(RuntimeError,'ownership changed'): self.x.ns_snapshot()
++
++    def test_reserved_fip_owned_by_another_run_is_never_adopted(self):
++        self.network.data['ip']['foreign']=FloatingIP(id='foreign',floating_ip_address='10.1.0.5',description='foreign',port_id='foreign-port')
++        with self.assertRaisesRegex(RuntimeError,'another owner'): self.x.create_ns()
++        self.assertEqual(len(self.network.data['ip']),1)
++        self.creator.assert_not_called()
++
++
++if __name__=='__main__':unittest.main()
+diff --git a/tests/test_report_presentation.py b/tests/test_report_presentation.py
+index c18f405..0fd8f73 100644
+--- a/tests/test_report_presentation.py
++++ b/tests/test_report_presentation.py
+@@ -69,12 +69,12 @@ class PresentationTests(unittest.TestCase):
+         report = self.report(pair_d_tcp={'status': 'DISABLED', 'streams': {
+             'held': {'status': 'PASS', 'longest_recovered_failure_seconds': 0}}})
+         text = render_text(report, pathlib.Path('/run'), modern=True)
+-        tcp = text.split('PAIR D -')[1].split('4. VALIDATION RESOURCE CLEANUP')[0]
++        tcp = text.split('EW TCP -')[1].split('NORTH-SOUTH -')[0]
+         self.assertRegex(tcp, r'Result\s+: DISABLED')
+         self.assertNotIn('PASS', tcp)
+         self.assertNotIn('Existing TCP session', tcp)
+-        self.assertIn('Existing workloads (A/B)', text)
+-        self.assertNotIn('Existing workloads (A/B/D)', text)
++        self.assertIn('Existing ICMP / DHCP workloads', text)
++        self.assertNotIn('Existing ICMP / DHCP / TCP workloads', text)
+ 
+     def test_open_tcp_failure_is_visible_beside_previous_recovered_duration(self):
+         report = self.report(pair_d_tcp={'status': 'FAIL', 'streams': {

@@ -1,0 +1,17 @@
+---
+# Addresses approved for this nested lab; this is an on-link endpoint, not Internet.
+ns_enabled: true
+ns_underlay_ip: 10.1.0.90/24
+ns_underlay_mtu: 1450
+ns_endpoint_ip: 10.1.0.187
+ns_external_cidr: 10.1.0.0/24
+ns_external_gateway: 10.1.0.1
+ns_router_ip: 10.1.0.4
+ns_floating_ip: 10.1.0.5
+ns_physnet: physnet1
+ns_tenant_cidr: 10.233.0.0/24
+ns_outbound_ip: 10.233.0.11
+ns_inbound_ip: 10.233.0.20
+# Dedicated port, independent of the manually started baseline services.
+ns_tcp_port: 18180
+validation_ew_matrix_enabled: true

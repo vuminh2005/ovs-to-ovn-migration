@@ -1,6 +1,15 @@
 # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
 
-## Cross-compute A/B/C/D update
+## Bản mở rộng N-S và ma trận EW (13/10/2026)
+
+Hướng dẫn hiện hành: [docs/ns-ew-matrix.md](docs/ns-ew-matrix.md).
+Bản này bổ sung reset uplink bền vững, quota instance 20, hai VM cho ba luồng
+ICMP bổ sung và hai VM cho TCP SNAT/FIP. Mặc định tối đa **12 VM, 6 mỗi compute**.
+Tên VM mới và tiêu đề báo cáo mô tả phép đo; các khóa evidence A/B/C/D cũ được
+để lại làm alias kỹ thuật nhằm giữ tương thích với report/checkpoint cũ.
+Không có thao tác lab nào được chạy khi tạo bản cập nhật này.
+
+## Cross-compute A/B/C/D update (thiết kế nền)
 
 Every pair now places member 1 on `compute1` and member 2 on `compute2`.
 Precheck resolves inventory aliases to real Nova hosts, hypervisors and OVS
@@ -14,7 +23,7 @@ Pair-A PCAP delegation uses this verified compute mapping.
 Pair D is enabled automatically by default (`validation_pair_d_enabled: true`).
 A/B/D share the pre-migration two-network routed topology. C still creates its
 own two Geneve networks/subnets and router after migration. With D enabled the
-run creates eight VMs, four networks/subnets and two routers in total.
+base workload creates eight VMs, four networks/subnets and two routers. The enabled EW/NS extension raises the total to twelve VMs, six networks/subnets and three routers.
 See [A/B/C/D lab instructions](docs/abcd-validation.md) for TCP semantics,
 checkpoints, cleanup and the current nested-lab commands.
 
@@ -24,8 +33,7 @@ checkpoints, cleanup and the current nested-lab commands.
 `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
 with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
 See [four-node reset instructions](docs/reset-four-nodes.md) for destructive
-scope, commands, new UUIDs and retry. This A/B/C/D update leaves reset operations
-unchanged.
+scope, commands, new UUIDs and retry. The latest extension also persists the NS uplink and instance quota during reset.
 
 V2 turns the lab-validated migration into a **single-invocation migration proof of concept** for its supported scope. It discovers the Kolla inventory path from the `-i` argument, finds `kolla-ansible` from the active execution environment, parses `/etc/kolla/globals.yml`, uses standard Kolla inventory groups to find control/network/compute/OVN hosts, and reads the generated ML2/OVN config to discover the real OVN NB/SB connection strings.
 
@@ -80,14 +88,14 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
 - DVR off
 - Neutron agent HA off
 - provider networks off
-- no external/provider network
-- no Floating IPs
-- no router external gateway
+- pre-existing external/FIP topology is rejected before workload provisioning
+- the run then creates one owned flat physnet1 external network with SNAT .4 and FIP .5
+- target external flat/MTU/gateway/FIP preservation is audited separately
 - target ML2/OVN + Geneve
 - native OVN DHCP
 - OVN metadata agent
 
-This is a deliberate safety property. V2 does **not** claim that FIP/provider/DVR/HA migration is supported merely because the generic OVN components can run.
+This is a deliberate safety property. Only the owned, centralized SNAT/FIP test path is enabled. Arbitrary existing provider/FIP topologies, DVR and HA remain outside scope. The migration measurements still require a live lab run; offline tests cannot establish their outcomes.
 
 ## What is now auto-discovered
 

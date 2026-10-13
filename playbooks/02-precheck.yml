@@ -6,6 +6,7 @@
   become: true
   vars_files:
     - ../group_vars/all.yml
+    - ../group_vars/ns-lab.yml
   tasks:
     - name: Mark phase 02 start
       ansible.builtin.command:
@@ -61,13 +62,13 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Fail if external/provider/FIP topology is present in unsupported v2 scope
+    - name: Require fresh source topology before creating owned N-S validation resources
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path }}
         for id in $(openstack network list -f value -c ID); do
           ext=$(openstack network show "$id" -f value -c router:external)
-          case "${ext,,}" in true|yes|1) echo "External network $id detected" >&2; exit 1;; esac
+          case "${ext,,}" in true|yes|1) echo "Existing external network $id detected; reset before owned N-S test" >&2; exit 1;; esac
         done
         test "$(openstack floating ip list -f value -c ID | wc -l)" -eq 0
         for id in $(openstack router list -f value -c ID); do
@@ -101,6 +102,9 @@
   become: true
   vars_files:
     - ../group_vars/all.yml
+    - ../group_vars/ns-lab.yml
+  vars:
+    validation_effective_tunnel_interface: "{{ ('br-underlay' if inventory_hostname in groups['network'] else 'eth1') if validation_ns_enabled | bool else hostvars['localhost']['source_kolla_globals'].tunnel_interface }}"
   tasks:
     - name: Assert Ubuntu 24.04 on migration hosts
       ansible.builtin.assert:
@@ -111,16 +115,25 @@
     - name: Verify configured tunnel interface exists and has IPv4 on network/compute chassis
       ansible.builtin.shell: |
         set -euo pipefail
-        iface='{{ hostvars['localhost']['source_kolla_globals'].tunnel_interface }}'
+        iface='{{ validation_effective_tunnel_interface }}'
         ip -4 -o addr show dev "$iface" | grep -q ' inet '
       args:
         executable: /bin/bash
       when: inventory_hostname in (groups['network'] + groups['compute'])
       changed_when: false
 
+    - name: Resolve source globals per host and verify effective tunnel interface
+      ansible.builtin.assert:
+        that:
+          - (lookup('template', hostvars['localhost']['kolla_globals_path']) | from_yaml).tunnel_interface == validation_effective_tunnel_interface
+          - inventory_hostname not in groups['network'] or (lookup('template', hostvars['localhost']['kolla_globals_path']) | from_yaml).neutron_external_interface == 'ns-ex'
+      when:
+        - validation_ns_enabled | bool
+        - inventory_hostname in (groups['network'] + groups['compute'])
+
     - name: Read effective tunnel interface MTU and IPv4 address
       ansible.builtin.command:
-        argv: [ip, -j, -4, addr, show, dev, "{{ hostvars['localhost']['source_kolla_globals'].tunnel_interface }}"]
+        argv: [ip, -j, -4, addr, show, dev, "{{ validation_effective_tunnel_interface }}"]
       register: validation_tunnel_interface
       changed_when: false
       when:
@@ -164,10 +177,13 @@
   become: true
   vars_files:
     - ../group_vars/all.yml
+    - ../group_vars/ns-lab.yml
+  vars:
+    validation_effective_tunnel_interface: "{{ ('br-underlay' if inventory_hostname in groups['network'] else 'eth1') if validation_ns_enabled | bool else hostvars['localhost']['source_kolla_globals'].tunnel_interface }}"
   tasks:
     - name: Verify full mesh tunnel transport with no fragmentation
       ansible.builtin.command:
-        argv: [ping, -I, "{{ hostvars['localhost']['source_kolla_globals'].tunnel_interface }}", -M, do,
+        argv: [ping, -I, "{{ validation_effective_tunnel_interface }}", -M, do,
                -s, "{{ (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int) + 50 - 28 }}",
                -c, '3', -W, '2', "{{ hostvars[item]['validation_tunnel_ip'] }}"]
       loop: "{{ ((groups['network'] + groups['compute']) | unique | list) | difference([inventory_hostname]) }}"
@@ -187,6 +203,7 @@
   become: true
   vars_files:
     - ../group_vars/all.yml
+    - ../group_vars/ns-lab.yml
   tasks:
     - name: Require two distinct compute targets and supported automatic D topology
       ansible.builtin.assert:
@@ -225,6 +242,54 @@
       when: validation_workloads_enabled | bool
       changed_when: false
 
+- name: Phase 02 - Verify persistent NS uplink before any validation workload is created
+  hosts: network
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/ns-lab.yml
+  tasks:
+    - name: Install uplink inspection helper
+      ansible.builtin.copy:
+        src: ../scripts/ns_underlay.py
+        dest: /root/ns-underlay-check.py
+        mode: '0700'
+      when: validation_ns_enabled | bool
+    - name: Verify IP MAC veth br-ex and OVS physnet mapping
+      ansible.builtin.command:
+        argv: [python3, /root/ns-underlay-check.py, deployed, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int, 'physnet': ns_physnet, 'ovn': false} | to_json }}"]
+      changed_when: false
+      when: validation_ns_enabled | bool
+    - name: Verify controller endpoint underlay reachability
+      ansible.builtin.command:
+        argv: [ping, -I, br-underlay, -c, '3', -W, '2', "{{ ns_endpoint_ip }}"]
+      changed_when: false
+      when: validation_ns_enabled | bool
+
+- name: Phase 02 - Verify NS endpoint source address belongs to this controller
+  hosts: localhost
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/ns-lab.yml
+  tasks:
+    - name: Require controller underlay endpoint address before provisioning
+      ansible.builtin.shell: |
+        set -euo pipefail
+        python3 - {{ ns_endpoint_ip | quote }} <<'PYCODE'
+        import json, subprocess, sys
+        rows=json.loads(subprocess.check_output(['ip','-j','-4','addr','show'], text=True))
+        assert sum(a.get('local')==sys.argv[1] for r in rows for a in r['addr_info'])==1, 'NS endpoint address missing/ambiguous'
+        PYCODE
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: validation_ns_enabled | bool
+
 - name: Phase 02 - Verify DB sync utility on first control host
   hosts: control
   any_errors_fatal: true
@@ -232,6 +297,7 @@
   become: true
   vars_files:
     - ../group_vars/all.yml
+    - ../group_vars/ns-lab.yml
   tasks:
     - name: Verify migration utility and migrate mode
       ansible.builtin.shell: |
