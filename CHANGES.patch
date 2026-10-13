@@ -8,10 +8,10 @@ index 0000000..41c33c8
 +__pycache__/
 +*.pyc
 diff --git a/README.md b/README.md
-index af78e70..0003d9a 100644
+index af78e70..29498ac 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,6 +1,15 @@
+@@ -1,6 +1,18 @@
  # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
  
 -## Cross-compute A/B/C/D update
@@ -24,11 +24,14 @@ index af78e70..0003d9a 100644
 +để lại làm alias kỹ thuật nhằm giữ tương thích với report/checkpoint cũ.
 +Không có thao tác lab nào được chạy khi tạo bản cập nhật này.
 +
++Lỗi quota `KeyError: project_id` trên SDK cũ đã được sửa; xem
++[tiếp tục validation quota](docs/quota-fix-recovery.md).
++
 +## Cross-compute A/B/C/D update (thiết kế nền)
  
  Every pair now places member 1 on `compute1` and member 2 on `compute2`.
  Precheck resolves inventory aliases to real Nova hosts, hypervisors and OVS
-@@ -14,7 +23,7 @@ Pair-A PCAP delegation uses this verified compute mapping.
+@@ -14,7 +26,7 @@ Pair-A PCAP delegation uses this verified compute mapping.
  Pair D is enabled automatically by default (`validation_pair_d_enabled: true`).
  A/B/D share the pre-migration two-network routed topology. C still creates its
  own two Geneve networks/subnets and router after migration. With D enabled the
@@ -37,7 +40,7 @@ index af78e70..0003d9a 100644
  See [A/B/C/D lab instructions](docs/abcd-validation.md) for TCP semantics,
  checkpoints, cleanup and the current nested-lab commands.
  
-@@ -24,8 +33,7 @@ checkpoints, cleanup and the current nested-lab commands.
+@@ -24,8 +36,7 @@ checkpoints, cleanup and the current nested-lab commands.
  `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
  with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
  See [four-node reset instructions](docs/reset-four-nodes.md) for destructive
@@ -47,7 +50,7 @@ index af78e70..0003d9a 100644
  
  V2 turns the lab-validated migration into a **single-invocation migration proof of concept** for its supported scope. It discovers the Kolla inventory path from the `-i` argument, finds `kolla-ansible` from the active execution environment, parses `/etc/kolla/globals.yml`, uses standard Kolla inventory groups to find control/network/compute/OVN hosts, and reads the generated ML2/OVN config to discover the real OVN NB/SB connection strings.
  
-@@ -80,14 +88,14 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
+@@ -80,14 +91,14 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
  - DVR off
  - Neutron agent HA off
  - provider networks off
@@ -68,14 +71,14 @@ index af78e70..0003d9a 100644
  
 diff --git a/VALIDATION.txt b/VALIDATION.txt
 new file mode 100644
-index 0000000..bcf55b7
+index 0000000..2fc7ffb
 --- /dev/null
 +++ b/VALIDATION.txt
-@@ -0,0 +1,28 @@
+@@ -0,0 +1,33 @@
 +Validation — 2026-10-13
 +Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
 +
-+346 unittest cases: PASS, no skipped tests.
++348 unittest cases: PASS on SDK 3.0.0 and 4.21.0, no skipped tests.
 +Includes real localhost TCP normal, same-socket timeout/recovery,
 +closed held socket without reconnect, unexpected source rejection;
 +SDK resource lifecycle, lost FIP reply recovery, UUID/ownership/mapping,
@@ -100,6 +103,11 @@ index 0000000..bcf55b7
 +No live lab reset, deploy, cloud API request or migration was executed.
 +A live migration is required to establish outage and held-session results.
 +Mentor-managed outer policy is checked through baseline traffic, not modified.
++
++Quota compatibility correction after controller KeyError project_id:
++  Explicit update URI project_id; only instances=20 in PUT body.
++  Real local HTTP GET/PUT and 403 failure checks passed on both SDK versions.
++  Final-validation resume verified: 9 tasks remain, same reset snapshot.
 diff --git a/docs/ns-ew-matrix.md b/docs/ns-ew-matrix.md
 new file mode 100644
 index 0000000..6a28e80
@@ -297,6 +305,54 @@ index 0000000..6a28e80
 +- https://docs.openstack.org/openstacksdk/latest/user/proxies/compute.html
 +- https://docs.openstack.org/openstacksdk/latest/user/resources/compute/v2/limits.html
 +- https://docs.openstack.org/openstacksdk/latest/user/resources/network/v2/floating_ip.html
+diff --git a/docs/quota-fix-recovery.md b/docs/quota-fix-recovery.md
+new file mode 100644
+index 0000000..fc3d41a
+--- /dev/null
++++ b/docs/quota-fix-recovery.md
+@@ -0,0 +1,42 @@
++# Tiếp tục validation sau lỗi quota project_id
++
++Lỗi `KeyError: 'project_id'` xảy ra ở helper quota, sau khi Kolla deploy và
++kiểm tra uplink đã thành công. SDK 3.x dùng QuotaSet/URI attributes khi update;
++truyền project ID đơn lẻ không cung cấp URI `project_id`. SDK 4.21 nhận project
++ID theo chữ ký mới, nên các kiểm tra trên phiên bản đó trước đây không bắt lỗi.
++
++Helper đã sửa thành:
++
++```python
++cloud.compute.update_quota_set(project, project_id=project, instances=20)
++```
++
++Tham số `project_id` chỉ định URL của Nova. Request PUT thực tế vẫn chỉ gửi
++`{"quota_set":{"instances":20}}`, không gửi cores/RAM hay project_id trong body.
++Đã kiểm tra GET/PUT thật trên HTTP server localhost với SDK 3.0.0 và 4.21.0.
++
++Trên controller, cập nhật một dòng trong `scripts/extended_validation.py`, hoặc
++lấy script đã sửa từ ZIP. Sau đó tiếp tục từ task quota, truyền snapshot đã tạo
++bởi lần reset đang bị dừng:
++
++```bash
++cd /root/ovs-to-ovn-migration
++source /root/venvs/kolla-2024.1/bin/activate
++
++ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
++    --start-at-task "Set only instance quota to 20 in the authenticated workload project" \
++    -e reset_run_dir=/root/kolla-reset-snapshots/20261013T075659131026384
++```
++
++Lệnh chạy chín task validation cuối cùng: quota, cấu hình MTU, smoke VXLAN,
++agent/resource evidence và chuẩn bị image/flavor rồi ghi completion marker.
++Nó sử dụng snapshot của run này; không tạo một reset run mới. Không cần nâng
++cấp OpenStackSDK trên controller.
++
++Chỉ chạy migration sau khi validation kết thúc `OVS_4NODE_BASELINE_READY` và
++không còn task lỗi. Nếu `reset-complete.json` đã tồn tại, không chạy lại helper
++finish; completion guard sẽ từ chối vì run đó đã hoàn tất.
++
++Nguồn chữ ký SDK:
++https://docs.openstack.org/openstacksdk/2024.1/user/proxies/compute.html
++https://docs.openstack.org/openstacksdk/latest/user/proxies/compute.html
 diff --git a/docs/reset-four-nodes.md b/docs/reset-four-nodes.md
 index d671414..2d26964 100644
 --- a/docs/reset-four-nodes.md
@@ -852,10 +908,10 @@ index 3922412..c10ebf0 100644
              if self.v.cfg.get('placement_enabled'):
 diff --git a/scripts/extended_validation.py b/scripts/extended_validation.py
 new file mode 100644
-index 0000000..bd59be6
+index 0000000..28001c7
 --- /dev/null
 +++ b/scripts/extended_validation.py
-@@ -0,0 +1,589 @@
+@@ -0,0 +1,591 @@
 +#!/usr/bin/env python3
 +"""Owned EW matrix endpoints and SNAT/FIP continuity, checkpointed independently."""
 +import base64
@@ -891,7 +947,9 @@ index 0000000..bd59be6
 +        raise RuntimeError('Workload authentication must be project scoped')
 +    before = cloud.compute.get_quota_set(project)
 +    original = {k: getattr(before, k) for k in ('instances', 'cores', 'ram')}
-+    cloud.compute.update_quota_set(project, instances=20)
++    # SDK 3.x expects a QuotaSet/URI attribute; SDK 4.x accepts project IDs.
++    # Explicit project_id retains the supported compatibility path in both.
++    cloud.compute.update_quota_set(project, project_id=project, instances=20)
 +    after = cloud.compute.get_quota_set(project)
 +    row = dict(project=project, before=original,
 +               after={k: getattr(after, k) for k in ('instances', 'cores', 'ram')})
@@ -2163,7 +2221,7 @@ index 1ff557f..60787ba 100644
                  # Keep Pair A running throughout B/C validation, and confirm
 diff --git a/tests/test_extended_validation.py b/tests/test_extended_validation.py
 new file mode 100644
-index 0000000..817e3ab
+index 0000000..f55eefb
 --- /dev/null
 +++ b/tests/test_extended_validation.py
 @@ -0,0 +1,251 @@
@@ -2314,7 +2372,7 @@ index 0000000..817e3ab
 +        cloud.session.get_project_id.return_value = 'project'
 +        cloud.compute.get_quota_set.side_effect = [NS(instances=10, cores=20,ram=50000), NS(instances=20,cores=20,ram=50000)]
 +        quota20(cloud, self.root)
-+        cloud.compute.update_quota_set.assert_called_once_with('project', instances=20)
++        cloud.compute.update_quota_set.assert_called_once_with('project', project_id='project', instances=20)
 +        self.assertEqual(json.loads((self.root/'quota-instances.json').read_text())['status'], 'PASS')
 +
 +    def test_changed_cpu_quota_fails_verification(self):
@@ -2580,6 +2638,92 @@ index 0000000..5803ab0
 +        with self.assertRaisesRegex(RuntimeError,'another owner'): self.x.create_ns()
 +        self.assertEqual(len(self.network.data['ip']),1)
 +        self.creator.assert_not_called()
++
++
++if __name__=='__main__':unittest.main()
+diff --git a/tests/test_quota_http.py b/tests/test_quota_http.py
+new file mode 100644
+index 0000000..2a66528
+--- /dev/null
++++ b/tests/test_quota_http.py
+@@ -0,0 +1,80 @@
++"""Real SDK GET/PUT serialization against a local Nova quota endpoint."""
++import json
++from pathlib import Path
++import sys
++import tempfile
++import threading
++import unittest
++from urllib.parse import urlsplit
++from http.server import BaseHTTPRequestHandler, HTTPServer
++from types import SimpleNamespace
++
++from keystoneauth1 import noauth, session
++from openstack.compute.v2._proxy import Proxy
++from openstack.connection import Connection
++from openstack.exceptions import ForbiddenException
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
++from extended_validation import quota20
++
++
++class QuotaHTTPTests(unittest.TestCase):
++    def setUp(self):
++        self.temp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.temp.cleanup)
++        self.root = Path(self.temp.name)
++        self.requests = []
++        self.quotas = dict(instances=10, cores=20, ram=51200)
++        self.reject = False
++        owner = self
++        class Handler(BaseHTTPRequestHandler):
++            def log_message(self, *args): pass
++            def answer(self, status, payload):
++                self.send_response(status)
++                self.send_header('Content-Type','application/json')
++                self.end_headers()
++                self.wfile.write(json.dumps(payload).encode())
++            def do_GET(self):
++                path=urlsplit(self.path).path
++                owner.requests.append(('GET', path, None))
++                if path != '/v2.1/os-quota-sets/project-id':
++                    return self.answer(404, {})
++                self.answer(200, {'quota_set':dict(owner.quotas, id='project-id')})
++            def do_PUT(self):
++                body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
++                owner.requests.append(('PUT', self.path, body))
++                if owner.reject:
++                    return self.answer(403, {'forbidden':{'message':'not permitted'}})
++                if body != {'quota_set':{'instances':20}} or self.path != '/v2.1/os-quota-sets/project-id':
++                    return self.answer(400, {'badRequest':{'message':'invalid quota update'}})
++                owner.quotas['instances']=20
++                self.answer(200, {'quota_set':dict(owner.quotas, id='project-id')})
++        self.http=HTTPServer(('127.0.0.1',0),Handler)
++        self.thread=threading.Thread(target=self.http.serve_forever,kwargs={'poll_interval':.01},daemon=True)
++        self.thread.start()
++        self.addCleanup(self.http.server_close)
++        self.addCleanup(self.thread.join)
++        self.addCleanup(self.http.shutdown)
++        endpoint=f'http://127.0.0.1:{self.http.server_port}/v2.1'
++        self.connection=Connection(session=session.Session(auth=noauth.NoAuth(endpoint=endpoint)),force_ipv4=True)
++        proxy=Proxy(session=self.connection.session,
++                    endpoint_override=endpoint, service_type='compute',default_microversion='2.1')
++        self.cloud=SimpleNamespace(compute=proxy,session=SimpleNamespace(get_project_id=lambda:'project-id'))
++
++    def test_only_instances_reaches_the_correct_project_url(self):
++        quota20(self.cloud,self.root)
++        self.assertEqual(self.requests,[('GET','/v2.1/os-quota-sets/project-id',None),
++            ('PUT','/v2.1/os-quota-sets/project-id',{'quota_set':{'instances':20}}),
++            ('GET','/v2.1/os-quota-sets/project-id',None)])
++        evidence=json.loads((self.root/'quota-instances.json').read_text())
++        self.assertEqual(evidence['status'],'PASS')
++        self.assertEqual(evidence['after'],dict(instances=20,cores=20,ram=51200))
++
++    def test_permission_failure_is_not_retried_or_marked_pass(self):
++        self.reject=True
++        with self.assertRaises(ForbiddenException):quota20(self.cloud,self.root)
++        self.assertEqual(sum(method=='PUT' for method,_,_ in self.requests),1)
++        self.assertFalse((self.root/'quota-instances.json').exists())
 +
 +
 +if __name__=='__main__':unittest.main()

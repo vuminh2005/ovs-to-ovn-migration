@@ -9,6 +9,9 @@ Tên VM mới và tiêu đề báo cáo mô tả phép đo; các khóa evidence 
 để lại làm alias kỹ thuật nhằm giữ tương thích với report/checkpoint cũ.
 Không có thao tác lab nào được chạy khi tạo bản cập nhật này.
 
+Lỗi quota `KeyError: project_id` trên SDK cũ đã được sửa; xem
+[tiếp tục validation quota](docs/quota-fix-recovery.md).
+
 ## Cross-compute A/B/C/D update (thiết kế nền)
 
 Every pair now places member 1 on `compute1` and member 2 on `compute2`.

@@ -33,7 +33,9 @@ def quota20(cloud, root):
         raise RuntimeError('Workload authentication must be project scoped')
     before = cloud.compute.get_quota_set(project)
     original = {k: getattr(before, k) for k in ('instances', 'cores', 'ram')}
-    cloud.compute.update_quota_set(project, instances=20)
+    # SDK 3.x expects a QuotaSet/URI attribute; SDK 4.x accepts project IDs.
+    # Explicit project_id retains the supported compatibility path in both.
+    cloud.compute.update_quota_set(project, project_id=project, instances=20)
     after = cloud.compute.get_quota_set(project)
     row = dict(project=project, before=original,
                after={k: getattr(after, k) for k in ('instances', 'cores', 'ram')})

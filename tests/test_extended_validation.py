@@ -145,7 +145,7 @@ class ExtensionTests(unittest.TestCase):
         cloud.session.get_project_id.return_value = 'project'
         cloud.compute.get_quota_set.side_effect = [NS(instances=10, cores=20,ram=50000), NS(instances=20,cores=20,ram=50000)]
         quota20(cloud, self.root)
-        cloud.compute.update_quota_set.assert_called_once_with('project', instances=20)
+        cloud.compute.update_quota_set.assert_called_once_with('project', project_id='project', instances=20)
         self.assertEqual(json.loads((self.root/'quota-instances.json').read_text())['status'], 'PASS')
 
     def test_changed_cpu_quota_fails_verification(self):

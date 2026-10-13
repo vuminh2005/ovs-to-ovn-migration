@@ -1,7 +1,7 @@
 Validation — 2026-10-13
 Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
 
-346 unittest cases: PASS, no skipped tests.
+348 unittest cases: PASS on SDK 3.0.0 and 4.21.0, no skipped tests.
 Includes real localhost TCP normal, same-socket timeout/recovery,
 closed held socket without reconnect, unexpected source rejection;
 SDK resource lifecycle, lost FIP reply recovery, UUID/ownership/mapping,
@@ -26,3 +26,8 @@ Diff whitespace check: PASS
 No live lab reset, deploy, cloud API request or migration was executed.
 A live migration is required to establish outage and held-session results.
 Mentor-managed outer policy is checked through baseline traffic, not modified.
+
+Quota compatibility correction after controller KeyError project_id:
+  Explicit update URI project_id; only instances=20 in PUT body.
+  Real local HTTP GET/PUT and 403 failure checks passed on both SDK versions.
+  Final-validation resume verified: 9 tasks remain, same reset snapshot.
