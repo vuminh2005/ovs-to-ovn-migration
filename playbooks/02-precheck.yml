@@ -170,6 +170,23 @@
       when: inventory_hostname in (groups['network'] + groups['compute'])
       changed_when: false
 
+- name: Phase 02 - Verify opt-in source SNAT experiment before creating sessions
+  hosts: network
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+    - ../group_vars/ns-lab.yml
+  tasks:
+    - name: Require effective source SNAT profile when experiment is enabled
+      ansible.builtin.include_tasks: ns-source-profile-tasks.yml
+      vars:
+        ns_profile_evidence_directory: "{{ hostvars['localhost']['migration_run_dir'] }}"
+      when:
+        - validation_ns_enabled | bool
+        - ns_preserve_snat_source_port | bool
+
 - name: Phase 02 - Verify cross-node tunnel transport and packet capture tool
   hosts: network:compute
   any_errors_fatal: true

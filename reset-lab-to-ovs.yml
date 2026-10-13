@@ -617,6 +617,11 @@
         content: |
           [DEFAULT]
           global_physnet_mtu = {{ reset_tunnel_mtu }}
+          {% if ns_enabled | bool and ns_preserve_snat_source_port | bool %}
+
+          [AGENT]
+          use_random_fully = false
+          {% endif %}
 
     - name: Set tunnel path MTU and target Geneve header size
       ansible.builtin.copy:
@@ -911,6 +916,14 @@
       args:
         executable: /bin/bash
       changed_when: false
+    - name: Verify the opt-in source SNAT profile before declaring reset ready
+      ansible.builtin.include_tasks: playbooks/ns-source-profile-tasks.yml
+      vars:
+        ns_profile_evidence_directory: "{{ hostvars['localhost']['reset_run_dir'] }}"
+      when:
+        - ns_enabled | bool
+        - ns_preserve_snat_source_port | bool
+
 
 
 - name: Final source-cloud validation

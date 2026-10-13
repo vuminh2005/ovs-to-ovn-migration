@@ -229,7 +229,9 @@ def conntrack_snapshot(cfg):
     port = int(cfg['tcp_port'])
     if not 1 <= port <= 65535:
         raise ValueError('Invalid TCP port')
-    legacy = run_readonly(['docker', 'exec', 'neutron_l3_agent', 'ip', 'netns', 'exec',
+    # Kolla's service user cannot enter a qrouter netns. Grant namespace access
+    # only to this read-only exec; do not change the container or its NAT rules.
+    legacy = run_readonly(['docker', 'exec', '--privileged', '--user', 'root', 'neutron_l3_agent', 'ip', 'netns', 'exec',
                           'qrouter-'+cfg['router'], 'conntrack', '-L', '-p', 'tcp',
                           '-s', cfg['guest_ip'], '-d', cfg['endpoint_ip'], '--dport', str(port), '-o', 'extended'])
     ovs = run_readonly(['docker', 'exec', 'openvswitch_vswitchd', 'ovs-appctl', 'dpctl/dump-conntrack'])

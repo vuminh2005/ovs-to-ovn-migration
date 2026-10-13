@@ -1,0 +1,36 @@
+---
+- name: Read effective source SNAT option using Neutron's own configuration parser
+  ansible.builtin.shell: |
+    set -euo pipefail
+    docker exec -i neutron_l3_agent /var/lib/kolla/venv/bin/python3 - <<'PYCODE'
+    import json
+    from oslo_config import cfg
+    from neutron.conf.agent import common
+    common.register_iptables_opts(cfg.CONF)
+    files = ['/etc/neutron/neutron.conf', '/etc/neutron/l3_agent.ini']
+    cfg.CONF([], project='neutron', default_config_files=files)
+    value = cfg.CONF.AGENT.use_random_fully
+    print(json.dumps(dict(status='PASS' if value is False else 'FAIL',
+        use_random_fully=value, experiment='source-port-preserving',
+        config_files=files, conntrack_transfer=False)))
+    PYCODE
+  args:
+    executable: /bin/bash
+  register: ns_source_profile
+  changed_when: false
+
+- name: Persist effective source profile evidence before workload creation
+  ansible.builtin.copy:
+    dest: "{{ ns_profile_evidence_directory }}/source-snat-profile-{{ inventory_hostname }}.json"
+    content: "{{ ns_source_profile.stdout }}\n"
+    mode: '0600'
+  delegate_to: localhost
+
+- name: Require the source-port experiment configuration to be active
+  ansible.builtin.assert:
+    that:
+      - (ns_source_profile.stdout | from_json).use_random_fully == false
+    fail_msg: >-
+      Experiment requires effective [AGENT] use_random_fully=false BEFORE
+      workload creation. Reset with -e ns_preserve_snat_source_port=true and
+      use the same flag for migration. No conntrack state is transferred.

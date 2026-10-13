@@ -215,6 +215,8 @@ def render_text(report, root, *, modern):
     ns = report.get('north_south') or {}
     lines.extend(['', 'NORTH-SOUTH - SNAT outbound / FIP inbound'])
     field('Result', check(ns.get('status')), 2)
+    if ns.get('source_snat_profile', {}).get('preserve_snat_source_port_requested'):
+        field('Source SNAT experiment', 'use_random_fully=false; no conntrack transfer', 2)
     for direction, value in (ns.get('directions') or {}).items():
         lines.append('  '+direction.upper())
         field('Held session preservation', check(value.get('held_session_preservation')), 4)
@@ -227,6 +229,8 @@ def render_text(report, root, *, modern):
                 field(name+' guest/client endpoint', str(stream['first_local_endpoint']), 4)
             if stream.get('first_peer_endpoint'):
                 field(name+' endpoint seen by server', str(stream['first_peer_endpoint']), 4)
+            if direction == 'snat' and ns.get('source_snat_profile', {}).get('preserve_snat_source_port_requested'):
+                field(name+' successful-echo port match', check(stream.get('successful_echo_source_port_match')), 4)
             if stream.get('terminal_error'):
                 event = stream.get('terminal_event') or {}
                 label = ' first terminal error' if event else ' recorded terminal error'

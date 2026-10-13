@@ -59,6 +59,7 @@
         validation_prerequisites_runtime: "{{ validation_retry_prerequisites }}"
         validation_pair_compute_hosts: "{{ [validation_retry_config.placement['0'].inventory_host, validation_retry_config.placement['1'].inventory_host] }}"
         validation_pair_d_enabled: "{{ validation_retry_config.pair_d_enabled | bool }}"
+        ns_preserve_snat_source_port: "{{ validation_retry_config.get('ns', {}).get('preserve_snat_source_port', false) | bool }}"
         validation_ns_enabled: "{{ validation_retry_config.get('ns', {}).get('enabled', false) | bool }}"
         validation_ew_matrix_enabled: "{{ validation_retry_config.get('ew_matrix_enabled', false) | bool }}"
         target_geneve_mtu: "{{ validation_retry_config.target_mtu | int }}"

@@ -18,6 +18,17 @@ DISPLAY_NAMES = {'measure': 'EW different compute / different subnet',
                  'fresh': 'Fresh OVN provisioning', 'tcp': 'EW TCP continuity'}
 
 
+def snat_source_port_status(stats):
+    """Only successful echoes establish the guest and externally visible ports."""
+    pairs = [(stats.get(edge+'_local_endpoint'), stats.get(edge+'_peer_endpoint'))
+             for edge in ('first', 'last')]
+    if not all(isinstance(endpoint, (list, tuple)) and len(endpoint) == 2 and
+               isinstance(endpoint[0], str) and type(endpoint[1]) is int and 0 < endpoint[1] <= 65535
+               for pair in pairs for endpoint in pair):
+        return 'UNAVAILABLE'
+    return 'PASS' if all(local[1] == peer[1] for local, peer in pairs) else 'FAIL'
+
+
 def add_ping_files(data, cfg):
     data['write_files'].extend([
         dict(path='/usr/local/bin/aux-ping.py', content=(Path(__file__).parent/'aux_ping.py').read_text(), permissions='0700'),
@@ -491,6 +502,16 @@ class Extended:
                         errors.append(direction+'/'+stream+' not recovered')
                     if not stats['first_session'] or stats['observed_peer_ips'] != [self.cfg['ns']['snat_ip'] if direction == 'snat' else self.cfg['ns']['endpoint_ip']]:
                         errors.append(direction+'/'+stream+' NAT/source identity not proven')
+                    if direction == 'snat' and stream == 'held' and self.cfg['ns'].get('preserve_snat_source_port') and stats['first_session']:
+                        port_status = snat_source_port_status(stats)
+                        if port_status != 'PASS':
+                            message = ('SNAT held source-port experiment '+port_status+
+                                ': guest='+str(stats.get('first_local_endpoint'))+
+                                ', translated='+str(stats.get('first_peer_endpoint')))
+                            if not post:
+                                raise RuntimeError(message+'; migration blocked before freeze. '
+                                    'Source use_random_fully=false must be active before creating the session.')
+                            errors.append(message)
                     if stream == 'held' and stats['first_session'] != stats['last_session'] and not post:
                         raise RuntimeError('Held session identity changed')
                     if prior:
@@ -533,6 +554,9 @@ class Extended:
                 bursts = [b for b in stats['recovered_failure_bursts'] if b['start_mono'] >= old_row['mono']] if continuity else []
                 held = (not stats['held_broken'] and stats['first_session'] == old['first_session'] == stats['last_session'] and
                         stats['connection_attempts'] == old['connection_attempts']) if name == 'held' else True
+                port_status = snat_source_port_status(stats)
+                if direction == 'snat' and name == 'held' and self.cfg['ns'].get('preserve_snat_source_port'):
+                    held = held and snat_source_port_status(old) == 'PASS' and port_status == 'PASS'
                 ready = continuity and held and attempts and attempts > 0 and stats['consecutive_successes'] >= 5 and stats['open_failure_since'] is None
                 streams[name] = dict(status='PASS' if ready else 'FAIL', attempts=attempts, failures=failed,
                     failed_probe_percent=100*failed/attempts if attempts else None,
@@ -540,6 +564,7 @@ class Extended:
                     recovered_failure_bursts=bursts, open_failure_since=stats['open_failure_since'],
                     terminal_error=stats['terminal_error'], first_session=old['last_session'], last_session=stats['last_session'],
                     held_broken=stats['held_broken'], terminal_event=stats.get('terminal_event'),
+                    successful_echo_source_port_match=port_status,
                     **{key:stats.get(key) for key in ('first_local_endpoint', 'last_local_endpoint',
                         'first_peer_endpoint', 'last_peer_endpoint')},
                     observed_peer_ips=stats['observed_peer_ips'], connection_attempts=stats['connection_attempts'])
@@ -548,7 +573,9 @@ class Extended:
                 boot_continuity='PASS' if continuity else 'FAIL', start_mono=old_row['mono'], end_mono=row.get('mono'), streams=streams)
         save(self.root/'ns-results.json', dict(status='PASS' if not errors and all(r['status']=='PASS' for r in results.values()) else 'FAIL',
             reason='; '.join(errors or []), directions=results, resources=snapshot,
-            scope='Fresh pre-migration baseline summary to final recovered summary, client monotonic application probes; no held reconnect', baseline=baseline))
+            scope='Fresh pre-migration baseline summary to final recovered summary, client monotonic application probes; no held reconnect', baseline=baseline,
+            source_snat_profile=dict(preserve_snat_source_port_requested=bool(self.cfg['ns'].get('preserve_snat_source_port')),
+                conntrack_transfer=False, port_evidence_scope='First/last successful echoes only; a reset held socket still fails')))
 
     def cleanup(self):
         """Delete only checkpointed UUIDs; matrix has no shared network ownership."""

@@ -19,3 +19,6 @@ validation_ew_matrix_enabled: true
 # Preserve the NAT profile while recording TCP tuples and resets.
 ns_diagnostics_enabled: true
 ns_capture_interface: eth1
+
+# Opt-in causal experiment; leave the standard source profile as the default.
+ns_preserve_snat_source_port: false
