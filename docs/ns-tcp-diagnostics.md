@@ -97,3 +97,40 @@ File quan trọng trong thư mục run:
 
 Các bản capture trên compute được giữ lại; khi reset, bản archive tại controller
 được ưu tiên nếu checkpoint xác nhận đã dừng. Không xóa backup báo cáo cũ.
+
+## Sửa lỗi khởi động capture và tiếp tục run 20261013-233510
+
+Bản đầu chặn mọi file ngoài hai helper và start.lock. Import helper tạo
+`__pycache__` trước khi agent_start kiểm tra thư mục, khiến chính cache Python
+bị coi là dữ liệu lạ. Bản sửa tắt tạo bytecode ở agent và chỉ chấp nhận cache
+.pyc của hai helper nếu đã tồn tại. PCAP/log/symlink và file lạ vẫn bị chặn.
+
+`retry-ns-diagnostics-preparation.yml` dành riêng cho phase 04 chưa hoàn tất:
+Pair A/EW matrix có thể đã chạy, nhưng capture endpoint, VM N-S và local N-S
+probe phải chưa từng khởi động. Guard chặn mọi marker phase 05 trở đi, freeze,
+DB migration và cutover. Agent inspect kiểm tra không có journal/PCAP/log
+khởi động trước khi cho phép một lần launch. Intent lỗi được lưu riêng,
+không xóa file cũ hoặc nối lại held. Run, config, port/VM EW và capture ICMP
+được giữ nguyên. Playbook tiếp tục phase 04–13, không bootstrap run mới hay reset.
+
+Không dùng retry-validation-preparation.yml cũ: nó chỉ hỗ trợ lỗi tạo VM
+đầu tiên. Không chạy lại precheck fresh-cloud vì run này đã tạo external
+network/FIP được sở hữu bởi checkpoint. Retry mới kiểm tra OVS source, API,
+inventory, placement/config cũ và source agent; phase 04 kiểm tra lại VM/port.
+
+Sau khi cập nhật repo:
+
+```bash
+(
+    set -euo pipefail
+    source /root/venvs/kolla-2024.1/bin/activate
+    cd /root/ovs-to-ovn-migration
+    git pull --ff-only
+    ansible-playbook -i /root/multinode retry-ns-diagnostics-preparation.yml --syntax-check
+    ansible-playbook -i /root/multinode retry-ns-diagnostics-preparation.yml \
+        -e migration_resume_run_dir=/root/ovs-to-ovn-backup/20261013-233510
+)
+```
+
+Guard từ chối nếu có bằng chứng process đã launch hoặc nguồn đã đổi; không
+tự gỡ guard hay xóa checkpoint để ép retry.

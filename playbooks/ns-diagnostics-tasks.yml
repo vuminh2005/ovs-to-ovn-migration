@@ -10,7 +10,7 @@
         state: directory
         mode: '0700'
       delegate_to: "{{ ns_diag_checkpoint.host }}"
-      when: ns_diag_action == 'start'
+      when: ns_diag_action in ['start', 'inspect']
 
     - name: Stage diagnostic helpers
       ansible.builtin.copy:
@@ -19,7 +19,7 @@
         mode: '0700'
       loop: [ns_diagnostics.py, dataplane_capture.py]
       delegate_to: "{{ ns_diag_checkpoint.host }}"
-      when: ns_diag_action == 'start'
+      when: ns_diag_action in ['start', 'inspect']
 
     - name: Operate the original TCP capture only
       ansible.builtin.command:

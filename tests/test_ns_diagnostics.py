@@ -75,6 +75,43 @@ class DiagnosticTests(unittest.TestCase):
             diag.agent_start(self.root, self.cfg)
         self.assertEqual((self.root/'tcp.pcap').read_bytes(), b'old evidence')
 
+    def test_actual_helper_import_cache_does_not_block_startup(self):
+        for name in ('ns_diagnostics.py','dataplane_capture.py'):
+            (self.root/name).write_bytes((ROOT/'scripts'/name).read_bytes())
+        program = '''import json, pathlib, sys
+root=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root))
+sys.dont_write_bytecode=False
+import dataplane_capture
+assert (root/'__pycache__').is_dir(), 'test must reproduce the legacy import cache'
+import ns_diagnostics as d
+cfg=json.loads(sys.argv[2])
+d.capture_interface=lambda cfg: 'eth1'
+d.subprocess.run=lambda *args, **kwargs: None
+def launch(*args, **kwargs):
+ state=d.read_state(root)
+ state.update(status='RUNNING',supervisor={'pid':1},tcpdump={'pid':2})
+ d.save(root/'tcp-capture-state.json',state)
+d.subprocess.Popen=launch
+print(json.dumps(d.agent_start(root,cfg)))
+'''
+        proc=subprocess.run([sys.executable,'-c',program,str(self.root),json.dumps(self.cfg)],capture_output=True,text=True)
+        self.assertEqual(proc.returncode,0,proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)['status'],'RUNNING')
+
+    def test_cache_allowance_never_hides_capture_evidence(self):
+        cache=self.root/'__pycache__';cache.mkdir()
+        (cache/'tcp.pcap').write_bytes(b'evidence')
+        with self.assertRaisesRegex(RuntimeError,'must not be overwritten'):
+            diag.agent_start(self.root,self.cfg)
+        self.assertEqual((cache/'tcp.pcap').read_bytes(),b'evidence')
+
+    def test_inspection_proves_no_launch_only_with_no_capture_artifacts(self):
+        (self.root/'dataplane_capture.py').write_text('helper')
+        self.assertEqual(diag.agent_inspect(self.root,self.cfg)['status'],'NOT_STARTED')
+        (self.root/'supervisor.log').write_text('possible launch')
+        with self.assertRaisesRegex(RuntimeError,'must be preserved'):
+            diag.agent_inspect(self.root,self.cfg)
+
     def test_stop_rejects_wrong_owner_without_stop_request(self):
         self.save_state()
         with self.assertRaisesRegex(RuntimeError, 'ownership'):
@@ -138,6 +175,26 @@ class DiagnosticTests(unittest.TestCase):
         with patch.object(d, 'transport', side_effect=RuntimeError('lost reply')):
             with self.assertRaisesRegex(RuntimeError, 'lost reply'): d.start('endpoint')
             with self.assertRaisesRegex(RuntimeError, 'Ambiguous'): d.start('endpoint')
+        self.assertTrue(d.state['captures']['endpoint']['launch_attempted'])
+
+    def test_recovery_preserves_failed_intent_and_rearms_only_proven_unstarted_capture(self):
+        d=self.controller()
+        config=dict(self.cfg,directory=str(self.root/'ns-diagnostics/endpoint-agent'))
+        d.state['captures']={'endpoint':dict(kind='endpoint',host='localhost',status='START_INTENT',
+            config=config,launch_attempted=True)}
+        with patch.object(d,'transport',return_value=dict(status='NOT_STARTED',config=config)):
+            d.recover_unstarted_endpoint()
+        self.assertFalse(d.state['captures']['endpoint']['launch_attempted'])
+        saved=json.loads((self.root/'ns-diagnostics-launch-recovery.json').read_text())
+        self.assertTrue(saved['before']['launch_attempted'])
+
+    def test_recovery_never_rearms_existing_launch_evidence(self):
+        d=self.controller()
+        config=dict(self.cfg,directory=str(self.root/'ns-diagnostics/endpoint-agent'))
+        d.state['captures']={'endpoint':dict(kind='endpoint',host='localhost',status='START_INTENT',
+            config=config,launch_attempted=True)}
+        with patch.object(d,'transport',return_value=dict(status='FAILED',config=config)):
+            with self.assertRaisesRegex(RuntimeError,'launch evidence'): d.recover_unstarted_endpoint()
         self.assertTrue(d.state['captures']['endpoint']['launch_attempted'])
 
     def test_finish_attempts_all_captures_even_if_first_fails(self):

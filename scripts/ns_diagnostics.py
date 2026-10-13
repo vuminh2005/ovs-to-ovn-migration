@@ -13,6 +13,9 @@ import sys
 import time
 import uuid
 
+# Agent helpers live beside the PCAP. Imports must not generate extra files in
+# that evidence directory; older staged helpers may already have a pyc cache.
+sys.dont_write_bytecode = True
 # Ansible's script module copies only this file for the read-only conntrack
 # command. Capture operations stage this file together with its tap resolver.
 if __name__ != '__main__' or len(sys.argv) < 2 or sys.argv[1] != 'conntrack':
@@ -60,6 +63,36 @@ def read_state(root):
     return json.loads((root/'tcp-capture-state.json').read_text())
 
 
+def unexpected_capture_files(root):
+    unexpected = []
+    allowed = {'ns_diagnostics.py', 'dataplane_capture.py', 'start.lock'}
+    for path in root.iterdir():
+        if path.name in allowed and path.is_file() and not path.is_symlink():
+            continue
+        if path.name == '__pycache__' and path.is_dir() and not path.is_symlink():
+            if all(p.is_file() and not p.is_symlink() and re.fullmatch(
+                r'(?:ns_diagnostics|dataplane_capture)\.cpython-\d+(?:\.opt-\d+)?\.pyc', p.name)
+                for p in path.iterdir()):
+                continue
+        unexpected.append(path.name)
+    return sorted(unexpected)
+
+
+def agent_inspect(root, cfg):
+    """An absent journal proves no launch only if no capture artifacts exist."""
+    checked_config(cfg)
+    if root.resolve() != Path(cfg['directory']).resolve():
+        raise RuntimeError('Diagnostic directory mismatch')
+    if not root.exists():
+        return dict(status='NOT_STARTED', config=cfg)
+    if (root/'tcp-capture-state.json').exists():
+        return agent_snapshot(root, cfg)
+    unexpected = unexpected_capture_files(root)
+    if unexpected:
+        raise RuntimeError('Unjournaled TCP capture files must be preserved: '+', '.join(unexpected))
+    return dict(status='NOT_STARTED', config=cfg)
+
+
 def agent_start(root, cfg):
     checked_config(cfg)
     if root.resolve() != Path(cfg['directory']).resolve():
@@ -74,8 +107,9 @@ def agent_start(root, cfg):
             return state
         if cfg.get('allow_create') is not True:
             raise RuntimeError('TCP capture launch is ambiguous; replacement prohibited')
-        if any(p.name not in ('ns_diagnostics.py', 'dataplane_capture.py', 'start.lock') for p in root.iterdir()):
-            raise RuntimeError('Existing TCP capture evidence must not be overwritten')
+        unexpected = unexpected_capture_files(root)
+        if unexpected:
+            raise RuntimeError('Existing TCP capture evidence must not be overwritten: '+', '.join(unexpected))
         interface = capture_interface(cfg)
         # All tools/interfaces are checked before recording a launch intent.
         subprocess.run(['tcpdump', '--version'], check=True, capture_output=True, timeout=10)
@@ -279,6 +313,24 @@ class Diagnostics:
         cp.update(status=remote['status'], remote=remote)
         save(self.path, self.state)
 
+    def recover_unstarted_endpoint(self):
+        if set(self.state['captures']) != {'endpoint'}:
+            raise RuntimeError('Retry requires only the pre-launch endpoint checkpoint')
+        cp = self.state['captures']['endpoint']
+        if cp['status'] != 'START_INTENT' or cp.get('remote') or cp['host'] != 'localhost':
+            raise RuntimeError('Retry cannot replace any launched TCP capture')
+        expected = self.root/'ns-diagnostics'/'endpoint-agent'
+        if Path(cp['config']['directory']).resolve() != expected.resolve():
+            raise RuntimeError('Retry endpoint directory identity changed')
+        row = self.transport('inspect', cp)
+        if row.get('status') != 'NOT_STARTED' or row.get('config') != cp['config']:
+            raise RuntimeError('TCP capture has launch evidence; automatic retry prohibited')
+        # Preserve the failed intent and inspection before enabling one launch.
+        save(self.root/'ns-diagnostics-launch-recovery.json', dict(
+            before=json.loads(json.dumps(cp)), inspection=row, recovered_at=time.time()))
+        cp['launch_attempted'] = False
+        save(self.path, self.state)
+
     def snapshot_conntrack(self, label):
         if not self.enabled:
             return
@@ -343,6 +395,11 @@ def reset_stop(backup_root, evidence):
         # Stop/fetch every checkpoint without deleting historical evidence.
         for kind, cp in diag.state['captures'].items():
             try:
+                if cp['status'] == 'START_INTENT' and not cp.get('remote'):
+                    inspected = diag.transport('inspect', cp)
+                    if inspected.get('status') == 'NOT_STARTED':
+                        rows.append(dict(run=root.name, kind=kind, status='NEVER_STARTED'))
+                        continue
                 archived = root/'ns-diagnostics'/kind
                 # A successfully archived stopped capture needs no remote
                 # service or interface from a later lab generation.
@@ -367,8 +424,8 @@ def reset_stop(backup_root, evidence):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['pre-freeze', 'post-cutover', 'post-validation', 'finish', 'reset-stop',
-                                        'agent-start', 'agent-snapshot', 'agent-stop', 'supervise', 'conntrack'])
+    parser.add_argument('action', choices=['pre-freeze', 'post-cutover', 'post-validation', 'finish', 'reset-stop', 'recover-unstarted',
+                                        'agent-start', 'agent-snapshot', 'agent-stop', 'agent-inspect', 'supervise', 'conntrack'])
     parser.add_argument('root', type=Path)
     parser.add_argument('config', nargs='?')
     args = parser.parse_args()
@@ -380,7 +437,10 @@ def main():
         print(json.dumps(conntrack_snapshot(json.loads(args.config))))
     elif args.action.startswith('agent-'):
         cfg = json.loads(args.config)
-        result = agent_start(args.root, cfg) if args.action == 'agent-start' else agent_snapshot(args.root, cfg, stop=args.action == 'agent-stop')
+        if args.action == 'agent-inspect':
+            result = agent_inspect(args.root, cfg)
+        else:
+            result = agent_start(args.root, cfg) if args.action == 'agent-start' else agent_snapshot(args.root, cfg, stop=args.action == 'agent-stop')
         print(json.dumps(result))
     else:
         # No OpenStack API is used during freeze or when finalizing captures.
@@ -389,6 +449,9 @@ def main():
             state=json.loads((args.root/'extended-resources.json').read_text())))()
         diag = Diagnostics(x)
         if not diag.enabled:
+            return
+        if args.action == 'recover-unstarted':
+            diag.recover_unstarted_endpoint()
             return
         if args.action == 'pre-freeze':
             diag.ready()
