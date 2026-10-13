@@ -8,10 +8,10 @@ index 0000000..41c33c8
 +__pycache__/
 +*.pyc
 diff --git a/README.md b/README.md
-index af78e70..2137e89 100644
+index af78e70..e38aab8 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,6 +1,24 @@
+@@ -1,6 +1,27 @@
  # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
  
 -## Cross-compute A/B/C/D update
@@ -33,11 +33,14 @@ index af78e70..2137e89 100644
 +Lỗi pipeline `rc=141` sau DB migration có route phục hồi riêng; xem
 +[tiếp tục sau DB migration](docs/post-db-recovery.md).
 +
++Lỗi chẩn đoán N-S ghi đè lỗi socket đầu tiên đã được sửa; xem
++[phân tích phiên SNAT bị mất](docs/ns-held-session-diagnostics.md).
++
 +## Cross-compute A/B/C/D update (thiết kế nền)
  
  Every pair now places member 1 on `compute1` and member 2 on `compute2`.
  Precheck resolves inventory aliases to real Nova hosts, hypervisors and OVS
-@@ -14,7 +32,7 @@ Pair-A PCAP delegation uses this verified compute mapping.
+@@ -14,7 +35,7 @@ Pair-A PCAP delegation uses this verified compute mapping.
  Pair D is enabled automatically by default (`validation_pair_d_enabled: true`).
  A/B/D share the pre-migration two-network routed topology. C still creates its
  own two Geneve networks/subnets and router after migration. With D enabled the
@@ -46,7 +49,7 @@ index af78e70..2137e89 100644
  See [A/B/C/D lab instructions](docs/abcd-validation.md) for TCP semantics,
  checkpoints, cleanup and the current nested-lab commands.
  
-@@ -24,8 +42,7 @@ checkpoints, cleanup and the current nested-lab commands.
+@@ -24,8 +45,7 @@ checkpoints, cleanup and the current nested-lab commands.
  `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
  with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
  See [four-node reset instructions](docs/reset-four-nodes.md) for destructive
@@ -56,7 +59,7 @@ index af78e70..2137e89 100644
  
  V2 turns the lab-validated migration into a **single-invocation migration proof of concept** for its supported scope. It discovers the Kolla inventory path from the `-i` argument, finds `kolla-ansible` from the active execution environment, parses `/etc/kolla/globals.yml`, uses standard Kolla inventory groups to find control/network/compute/OVN hosts, and reads the generated ML2/OVN config to discover the real OVN NB/SB connection strings.
  
-@@ -80,14 +97,14 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
+@@ -80,14 +100,14 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
  - DVR off
  - Neutron agent HA off
  - provider networks off
@@ -77,14 +80,14 @@ index af78e70..2137e89 100644
  
 diff --git a/VALIDATION.txt b/VALIDATION.txt
 new file mode 100644
-index 0000000..d34f2a9
+index 0000000..b2ef806
 --- /dev/null
 +++ b/VALIDATION.txt
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,58 @@
 +Validation — 2026-10-13
 +Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
 +
-+365 unittest cases: PASS on SDK 4.21.0, no skipped tests.
++371 unittest cases: PASS on SDK 4.21.0, no skipped tests.
 +Previous 348-case suite and quota HTTP cases also passed on SDK 3.0.0.
 +Includes real localhost TCP normal, same-socket timeout/recovery,
 +closed held socket without reconnect, unexpected source rejection;
@@ -128,6 +131,17 @@ index 0000000..d34f2a9
 +  Post-DB checkpoint guard, unique selection, original session/clock preservation passed.
 +  Real Ansible recovery bootstrap passed; a restarted Neutron server is rejected.
 +  Recovery event is reported, including the pause in control-plane downtime.
++
++N-S terminal-error diagnostics correction:
++  Real localhost TCP EOF and reset retain the original terminal event/errno.
++  Repeated prohibited reconnect loops never replace that event; held stays one socket.
++  Same-socket echo timeout/recovery remains unchanged and passing.
++  Broken held still FAILs while recovered new-stream metrics are preserved.
++  Historical probe summaries without terminal_event remain readable without inventing it.
++  TXT surfaces open failure and terminal details; old messages are labeled recorded only.
++  Correct current schema-2 marker filenames are phase08.* and phase09.* (no underscore).
++  This is a diagnostics correction; no claim that it preserves NAT sessions or repairs
++  the already-closed held socket in live run 20261013-153114.
 diff --git a/docs/globals-scope-fix.md b/docs/globals-scope-fix.md
 new file mode 100644
 index 0000000..2892bb4
@@ -372,6 +386,88 @@ index 0000000..6a28e80
 +- https://docs.openstack.org/openstacksdk/latest/user/proxies/compute.html
 +- https://docs.openstack.org/openstacksdk/latest/user/resources/compute/v2/limits.html
 +- https://docs.openstack.org/openstacksdk/latest/user/resources/network/v2/floating_ip.html
+diff --git a/docs/ns-held-session-diagnostics.md b/docs/ns-held-session-diagnostics.md
+new file mode 100644
+index 0000000..bb8f9ab
+--- /dev/null
++++ b/docs/ns-held-session-diagnostics.md
+@@ -0,0 +1,76 @@
++# Chẩn đoán phiên TCP SNAT bị mất
++
++Run `20261013-153114` đã chuyển đổi DB và cutover sang OVN. EW ICMP, EW TCP,
++VM cũ và VM tạo mới trên OVN đều PASS. N-S FIP giữ được phiên cũ; kết nối SNAT
++mới phục hồi, nhưng socket SNAT đã mở trước migration bị đóng. Toàn bộ run giữ
++kết quả `MIGRATED_VALIDATION_INCOMPLETE` vì không bảo toàn được phiên này.
++Cleanup workload được giữ lại để phục vụ kiểm tra; không hạ tiêu chí PASS.
++
++## Bằng chứng hiện có
++
++- Client SNAT chỉ có `connection_attempts: 1`, `held_broken: true` và boot/probe
++  không đổi. Listener/server phía controller không đổi.
++- Cả held và new bắt đầu mất phản hồi gần như đồng thời: khoảng
++  `2026-10-13 16:40:24.928 +07:00` và `16:40:24.921 +07:00`.
++- Kết nối mới phục hồi khoảng `16:41:41.160 +07:00`, sau 76.239 giây.
++- Held vẫn chưa phục hồi ở snapshot validation khoảng `16:59:41.585 +07:00`,
++  tức 1156.657 giây kể từ đầu chuỗi lỗi chưa phục hồi. Đây là thời gian lỗi đang
++  mở tại snapshot, không phải outage đã phục hồi.
++- Những giờ trên được quy đổi từ monotonic của cùng VM và cặp ts/mono trong
++  console. Giờ wall-clock giữa các máy chỉ dùng đối chiếu gần đúng; số đo
++  duration của client vẫn dùng monotonic.
++- Summary đầu tiên *còn trong bản console được gửi* ghi socket đã đóng lúc
++  `16:58:57.183 +07:00`. Không coi đây là thời điểm socket thực sự đóng.
++
++Lỗi probe cũ: sau khi socket đóng, mỗi vòng lặp tiếp theo ghi đè terminal_error
++bằng `held socket already closed; reconnect prohibited`. Vì vậy bản evidence
++cũ không xác định được lỗi đầu tiên là reset, broken pipe, EOF hay lỗi kiểm tra
++echo. Không được suy đoán errno/thời điểm đóng để bổ sung ngược vào run cũ.
++
++NAT/conntrack khi bỏ qrouter và chuyển sang OVN là hướng kiểm tra, chưa phải
++nguyên nhân đã chứng minh. Playbook không chuyển trạng thái conntrack từ
++namespace qrouter sang OVN; kết nối mới PASS không chứng minh trạng thái phiên
++cũ được bảo toàn. Cũng chưa có bằng chứng đủ để kết luận outer policy là thủ phạm.
++
++## Bản sửa chẩn đoán
++
++`scripts/ns_probe.py` giữ nguyên lỗi terminal đầu tiên và lưu `terminal_event`
++với operation, exception, errno, sequence, epoch/monotonic và endpoints của
++socket nếu còn đọc được. Các vòng lặp sau vẫn tăng bộ đếm lỗi, không reconnect
++held và không ghi đè sự kiện này. Timeout echo vẫn có thể phục hồi trên cùng
++socket như trước.
++
++`scripts/extended_validation.py` giữ held_broken/terminal_event trong kết quả.
++Báo cáo TXT hiển thị lỗi đang mở và lỗi socket. Khi đọc probe cũ chưa có event,
++báo cáo chỉ gọi đó là lỗi đã ghi lại, không khẳng định là lỗi đầu tiên.
++
++Thay code trên controller không cập nhật process đang chạy trong guest và
++không thể phục hồi một socket đã đóng. Bản sửa được dùng khi dựng probe ở lần
++thử tiếp theo. Không chạy lại migration hoặc restart probe để đổi kết quả
++lịch sử của run này.
++
++## Đọc marker đúng của run hiện tại
++
++Schema 2 dùng `phase08.start`, `phase08.end`, `phase09.start`, `phase09.end`.
++Lệnh trước đã dùng nhầm dấu gạch dưới (`phase_08.start`); MISSING từ lệnh đó
++không chứng minh run thiếu timestamp.
++
++```bash
++cd /root/ovs-to-ovn-backup/20261013-153114
++python3 - <<'PY'
++from datetime import datetime
++from pathlib import Path
++from zoneinfo import ZoneInfo
++for name in ('phase08.start', 'phase08.end', 'phase09.start', 'phase09.end'):
++    path = Path('metrics') / name
++    if path.exists():
++        raw = path.read_text().strip()
++        stamp = datetime.fromtimestamp(float(raw), ZoneInfo('Asia/Ho_Chi_Minh'))
++        print(name, raw, stamp.isoformat(timespec='milliseconds'))
++    else:
++        print(name, 'MISSING')
++PY
++```
++
++Chỉ đọc marker và evidence. Không chạy reset, DB migration, conntrack flush,
++reconnect hay xóa workload trong bước chẩn đoán này.
 diff --git a/docs/post-db-recovery.md b/docs/post-db-recovery.md
 new file mode 100644
 index 0000000..f59e49c
@@ -1239,10 +1335,10 @@ index 3922412..c10ebf0 100644
              if self.v.cfg.get('placement_enabled'):
 diff --git a/scripts/extended_validation.py b/scripts/extended_validation.py
 new file mode 100644
-index 0000000..28001c7
+index 0000000..5c0dd1e
 --- /dev/null
 +++ b/scripts/extended_validation.py
-@@ -0,0 +1,591 @@
+@@ -0,0 +1,592 @@
 +#!/usr/bin/env python3
 +"""Owned EW matrix endpoints and SNAT/FIP continuity, checkpointed independently."""
 +import base64
@@ -1777,6 +1873,7 @@ index 0000000..28001c7
 +                    longest_recovered_failure_seconds=max((b['duration_seconds'] for b in bursts), default=0.0) if continuity and stats['open_failure_since'] is None else None,
 +                    recovered_failure_bursts=bursts, open_failure_since=stats['open_failure_since'],
 +                    terminal_error=stats['terminal_error'], first_session=old['last_session'], last_session=stats['last_session'],
++                    held_broken=stats['held_broken'], terminal_event=stats.get('terminal_event'),
 +                    observed_peer_ips=stats['observed_peer_ips'], connection_attempts=stats['connection_attempts'])
 +            results[direction] = dict(status='PASS' if len(streams)==2 and all(s['status']=='PASS' for s in streams.values()) else 'FAIL',
 +                held_session_preservation=streams.get('held', {}).get('status', 'UNAVAILABLE'),
@@ -1921,10 +2018,10 @@ index 8b52eaa..329a86a 100644
          upstream='https://github.com/openstack/neutron/blob/24.0.0/neutron/plugins/ml2/drivers/ovn/db_migration.py'), indent=2))
 diff --git a/scripts/ns_probe.py b/scripts/ns_probe.py
 new file mode 100644
-index 0000000..afbda95
+index 0000000..c543f7b
 --- /dev/null
 +++ b/scripts/ns_probe.py
-@@ -0,0 +1,229 @@
+@@ -0,0 +1,251 @@
 +#!/usr/bin/env python3
 +"""Small TCP application probes; held sockets never reconnect after establishment."""
 +import argparse
@@ -1985,8 +2082,26 @@ index 0000000..afbda95
 +                          connection_attempts=0, first_session=None, last_session=None,
 +                          open_failure_since=None, longest_recovered_failure_seconds=0.0,
 +                          observed_peer_ips=[], held_broken=False, terminal_error=None,
++                          terminal_event=None,
 +                          recovered_failure_bursts=[])
 +        self.lock = threading.Lock()
++
++    def break_held(self, exc, operation, sequence, wire):
++        """Retain the first socket/identity failure, before closing the socket."""
++        with self.lock:
++            if self.value['held_broken']:
++                return
++            endpoints = {}
++            if wire:
++                for key, method in (('socket_local', 'getsockname'), ('socket_peer', 'getpeername')):
++                    try:
++                        endpoints[key] = list(getattr(wire.sock, method)())
++                    except OSError:
++                        endpoints[key] = None
++            self.value.update(held_broken=True, terminal_error=str(exc),
++                terminal_event=dict(error=str(exc), exception=type(exc).__name__,
++                    errno=getattr(exc, 'errno', None), operation=operation, sequence=sequence,
++                    mono=time.monotonic(), ts=time.time(), **endpoints))
 +
 +    def record(self, start, response=None, error=None):
 +        with self.lock:
@@ -2049,21 +2164,26 @@ index 0000000..afbda95
 +                started = time.monotonic()
 +                response = None
 +                error = None
++                operation = 'held_socket_guard'
 +                try:
 +                    if name == 'held' and established and wire is None:
 +                        raise EOFError('held socket already closed; reconnect prohibited')
 +                    if wire is None:
++                        operation = 'connect'
 +                        wire = self.connect(stats)
 +                        if name == 'held':
 +                            established = True
 +                    request = dict(run=self.cfg['run'], probe=self.probe_id, seq=sequence)
++                    operation = 'send'
 +                    wire.sock.settimeout(self.cfg['timeout'])
 +                    wire.sock.sendall((json.dumps(request)+'\n').encode())
 +                    deadline = started+self.cfg['timeout']
 +                    while True:
++                        operation = 'receive'
 +                        response = wire.line(deadline)
 +                        if response.get('seq', 0) < sequence:
 +                            continue  # Drain late echoes, preserving the same held socket.
++                        operation = 'validate_echo'
 +                        if any(response.get(k) != val for k, val in request.items()):
 +                            raise ValueError('echo identity mismatch')
 +                        if response.get('peer') != self.cfg['expected_peer']:
@@ -2080,8 +2200,7 @@ index 0000000..afbda95
 +                except (OSError, EOFError, ValueError, KeyError, TypeError) as exc:
 +                    error = str(exc)
 +                    if name == 'held' and established:
-+                        with stats.lock:
-+                            stats.value.update(held_broken=True, terminal_error=error)
++                        stats.break_held(exc, operation, sequence, wire)
 +                    if wire:
 +                        wire.sock.close()
 +                        wire = None
@@ -2436,7 +2555,7 @@ index 0000000..e134113
 +    except (OSError,ValueError,KeyError,TypeError,configparser.Error) as exc:
 +        raise SystemExit('STOP: '+str(exc))
 diff --git a/scripts/report_format.py b/scripts/report_format.py
-index 3bf6da2..e637b54 100644
+index 3bf6da2..8c28bf8 100644
 --- a/scripts/report_format.py
 +++ b/scripts/report_format.py
 @@ -35,10 +35,10 @@ JSON_GROUPS = (
@@ -2506,7 +2625,7 @@ index 3bf6da2..e637b54 100644
      field('Result', check(tcp.get('status')), 2)
      if tcp.get('status') == 'DISABLED':
          lines.append('  TCP validation disabled for this run.')
-@@ -201,14 +203,37 @@ def render_text(report, root, *, modern):
+@@ -201,14 +203,47 @@ def render_text(report, root, *, modern):
              lines.extend(['', '  New listener opening during the Neutron freeze was not proven.'])
          lines.append('  TCP durations measure application probe failures.')
  
@@ -2528,6 +2647,16 @@ index 3bf6da2..e637b54 100644
 +        for name, stream in value.get('streams', {}).items():
 +            field(name+' recovered probe failure', seconds(stream.get('longest_recovered_failure_seconds')), 4)
 +            field(name+' failed application probes', str(stream.get('failures'))+' / '+str(stream.get('attempts')), 4)
++            if stream.get('open_failure_since') is not None:
++                field(name+' failure still open', 'YES (client monotonic '+str(stream['open_failure_since'])+')', 4)
++            if stream.get('terminal_error'):
++                event = stream.get('terminal_event') or {}
++                label = ' first terminal error' if event else ' recorded terminal error'
++                field(name+label, stream['terminal_error'], 4)
++                if event:
++                    field(name+' terminal operation', str(event.get('operation')), 4)
++                    field(name+' terminal errno', str(event.get('errno')), 4)
++                    field(name+' terminal epoch', str(event.get('ts')), 4)
 +    if ns.get('reason'):
 +        field('Reason', ns['reason'], 2)
 +
@@ -2706,14 +2835,15 @@ index 1ff557f..60787ba 100644
                  # Keep Pair A running throughout B/C validation, and confirm
 diff --git a/tests/test_extended_validation.py b/tests/test_extended_validation.py
 new file mode 100644
-index 0000000..f55eefb
+index 0000000..30db913
 --- /dev/null
 +++ b/tests/test_extended_validation.py
-@@ -0,0 +1,251 @@
+@@ -0,0 +1,320 @@
 +import copy
 +import json
 +from pathlib import Path
 +import socket
++import struct
 +import sys
 +import tempfile
 +import threading
@@ -2843,6 +2973,42 @@ index 0000000..f55eefb
 +            self.assertEqual(row['streams']['new']['status'], 'PASS')
 +            self.assertIsNone(row['streams']['held']['longest_recovered_failure_seconds'])
 +
++    def test_first_terminal_event_is_carried_into_results_without_changing_failure(self):
++        baseline = self.baseline()
++        rows = copy.deepcopy(baseline['clients'])
++        event = dict(error='socket closed', exception='EOFError', operation='receive',
++                     errno=None, mono=120, ts=1700000000, sequence=25)
++        for row in rows.values():
++            row['mono'] = 200
++            for stats in row['streams'].values():
++                stats['attempts'] = 40
++            row['streams']['held'].update(held_broken=True, consecutive_successes=0,
++                failures=10, open_failure_since=120, terminal_error='socket closed', terminal_event=event)
++        self.x.ns_results(rows, {}, baseline, ['held closed'])
++        result = json.loads((self.root/'ns-results.json').read_text())
++        self.assertEqual(result['status'], 'FAIL')
++        for row in result['directions'].values():
++            self.assertEqual(row['streams']['held']['terminal_event'], event)
++            self.assertTrue(row['streams']['held']['held_broken'])
++            self.assertEqual(row['streams']['new']['status'], 'PASS')
++
++    def test_historical_probe_without_terminal_event_still_builds_honest_result(self):
++        baseline = self.baseline()
++        rows = copy.deepcopy(baseline['clients'])
++        for row in rows.values():
++            row['mono'] = 200
++            for stats in row['streams'].values():
++                stats.pop('terminal_event')
++                stats['attempts'] = 40
++            row['streams']['held'].update(held_broken=True, consecutive_successes=0,
++                failures=10, open_failure_since=120,
++                terminal_error='held socket already closed; reconnect prohibited')
++        self.x.ns_results(rows, {}, baseline, ['held closed'])
++        result = json.loads((self.root/'ns-results.json').read_text())
++        self.assertEqual(result['status'], 'FAIL')
++        for row in result['directions'].values():
++            self.assertIsNone(row['streams']['held']['terminal_event'])
++
 +    def test_guest_restart_cannot_be_reported_as_same_epoch(self):
 +        baseline = self.baseline()
 +        rows = copy.deepcopy(baseline['clients'])
@@ -2908,6 +3074,9 @@ index 0000000..f55eefb
 +                    try:
 +                        row=wire.line(time.monotonic()+1)
 +                        if mode == 'close': return
++                        if mode == 'reset':
++                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
++                            return
 +                        if mode == 'delay' and row['seq']==2: time.sleep(.12)
 +                        row.update(server='expected',server_boot='boot',listener='listener',connection=connection,
 +                                   peer='127.0.0.2' if mode=='wrong-source' else '127.0.0.1')
@@ -2946,6 +3115,7 @@ index 0000000..f55eefb
 +        self.assertGreater(result['held']['failures'],0)
 +        self.assertIsNone(result['held']['open_failure_since'])
 +        self.assertGreater(result['held']['longest_recovered_failure_seconds'],0)
++        self.assertIsNone(result['held']['terminal_event'])
 +
 +    def test_closed_held_socket_never_reconnects(self):
 +        result=self.probe('close')
@@ -2953,10 +3123,38 @@ index 0000000..f55eefb
 +        self.assertTrue(result['held']['held_broken'])
 +        self.assertGreater(result['new']['connection_attempts'],3)
 +
++    def test_closed_held_socket_keeps_first_eof_after_repeated_failures(self):
++        result = self.probe('close')['held']
++        self.assertGreater(result['failures'], 2)
++        self.assertEqual(result['connection_attempts'], 1)
++        self.assertEqual(result['terminal_error'], 'socket closed')
++        event = result['terminal_event']
++        self.assertEqual(event['exception'], 'EOFError')
++        self.assertEqual(event['operation'], 'receive')
++        self.assertEqual(event['sequence'], 1)
++        self.assertIsNone(event['errno'])
++        self.assertGreater(event['mono'], 0)
++        self.assertGreater(event['ts'], 0)
++        self.assertEqual(event['socket_local'][0], '127.0.0.1')
++        self.assertEqual(event['socket_peer'][0], '127.0.0.1')
++
++    def test_tcp_reset_records_original_os_error_and_never_reconnects_held(self):
++        result = self.probe('reset')['held']
++        self.assertGreater(result['failures'], 2)
++        self.assertEqual(result['connection_attempts'], 1)
++        self.assertTrue(result['held_broken'])
++        event = result['terminal_event']
++        self.assertIn(event['exception'], ('ConnectionResetError', 'BrokenPipeError'))
++        self.assertIn(event['operation'], ('receive', 'send'))
++        self.assertGreater(event['errno'], 0)
++        self.assertEqual(event['error'], result['terminal_error'])
++        self.assertNotIn('reconnect prohibited', result['terminal_error'])
++
 +    def test_unexpected_source_is_not_success(self):
 +        result=self.probe('wrong-source')
 +        self.assertEqual(result['held']['successes'],0)
 +        self.assertEqual(result['new']['successes'],0)
++        self.assertEqual(result['held']['terminal_event']['operation'], 'validate_echo')
 +
 +
 +if __name__ == '__main__':
@@ -3428,7 +3626,7 @@ index 0000000..2a66528
 +
 +if __name__=='__main__':unittest.main()
 diff --git a/tests/test_report_presentation.py b/tests/test_report_presentation.py
-index c18f405..0fd8f73 100644
+index c18f405..231b6fc 100644
 --- a/tests/test_report_presentation.py
 +++ b/tests/test_report_presentation.py
 @@ -69,12 +69,12 @@ class PresentationTests(unittest.TestCase):
@@ -3447,6 +3645,45 @@ index c18f405..0fd8f73 100644
  
      def test_open_tcp_failure_is_visible_beside_previous_recovered_duration(self):
          report = self.report(pair_d_tcp={'status': 'FAIL', 'streams': {
+@@ -101,6 +101,38 @@ class PresentationTests(unittest.TestCase):
+         self.assertEqual(text.count('soft reboot'), 2)
+         self.assertIn('Boot checks account for the recorded remediation reboots.', text)
+ 
++    def test_ns_broken_socket_details_are_visible_without_zero_outage_claim(self):
++        report = self.report(north_south={'status': 'FAIL', 'directions': {
++            'snat': {'held_session_preservation': 'FAIL', 'streams': {
++                'held': {'status': 'FAIL', 'attempts': 10, 'failures': 10,
++                    'open_failure_since': 120, 'longest_recovered_failure_seconds': None,
++                    'terminal_error': '[Errno 104] Connection reset by peer',
++                    'terminal_event': {'operation': 'receive', 'errno': 104, 'ts': 1700000000}},
++                'new': {'status': 'PASS', 'attempts': 30, 'failures': 2,
++                    'longest_recovered_failure_seconds': 1.5},
++            }}}})
++        text = render_text(report, pathlib.Path('/run'), modern=True)
++        ns = text.split('NORTH-SOUTH -')[1].split('4. VALIDATION RESOURCE CLEANUP')[0]
++        self.assertRegex(ns, r'held recovered probe failure\s+: UNAVAILABLE')
++        self.assertIn('held failure still open', ns)
++        self.assertIn('held first terminal error', ns)
++        self.assertIn('[Errno 104] Connection reset by peer', ns)
++        self.assertRegex(ns, r'held terminal operation\s+: receive')
++        self.assertRegex(ns, r'held terminal errno\s+: 104')
++        self.assertIn('1700000000', ns)
++        self.assertRegex(ns, r'new recovered probe failure\s+: 1\.500 s')
++
++    def test_historical_ns_error_is_not_claimed_to_be_original_error(self):
++        report = self.report(north_south={'status': 'FAIL', 'directions': {
++            'snat': {'held_session_preservation': 'FAIL', 'streams': {
++                'held': {'status': 'FAIL', 'terminal_error':
++                         'held socket already closed; reconnect prohibited'},
++            }}}})
++        text = render_text(report, pathlib.Path('/run'), modern=True)
++        self.assertIn('held recorded terminal error', text)
++        self.assertNotIn('held first terminal error', text)
++        self.assertNotIn('held terminal epoch', text)
++
+     def test_missing_and_zero_times_remain_distinct_and_legacy_scope_is_honest(self):
+         for value, expected in [(None, 'UNAVAILABLE'), (0, '0.000 s'),
+                                 (float('nan'), 'UNAVAILABLE'), (True, 'UNAVAILABLE')]:
 diff --git a/tests/test_topology_pipeline.py b/tests/test_topology_pipeline.py
 new file mode 100644
 index 0000000..87f9c09

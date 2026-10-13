@@ -58,8 +58,26 @@ class Stats:
                           connection_attempts=0, first_session=None, last_session=None,
                           open_failure_since=None, longest_recovered_failure_seconds=0.0,
                           observed_peer_ips=[], held_broken=False, terminal_error=None,
+                          terminal_event=None,
                           recovered_failure_bursts=[])
         self.lock = threading.Lock()
+
+    def break_held(self, exc, operation, sequence, wire):
+        """Retain the first socket/identity failure, before closing the socket."""
+        with self.lock:
+            if self.value['held_broken']:
+                return
+            endpoints = {}
+            if wire:
+                for key, method in (('socket_local', 'getsockname'), ('socket_peer', 'getpeername')):
+                    try:
+                        endpoints[key] = list(getattr(wire.sock, method)())
+                    except OSError:
+                        endpoints[key] = None
+            self.value.update(held_broken=True, terminal_error=str(exc),
+                terminal_event=dict(error=str(exc), exception=type(exc).__name__,
+                    errno=getattr(exc, 'errno', None), operation=operation, sequence=sequence,
+                    mono=time.monotonic(), ts=time.time(), **endpoints))
 
     def record(self, start, response=None, error=None):
         with self.lock:
@@ -122,21 +140,26 @@ class Client:
                 started = time.monotonic()
                 response = None
                 error = None
+                operation = 'held_socket_guard'
                 try:
                     if name == 'held' and established and wire is None:
                         raise EOFError('held socket already closed; reconnect prohibited')
                     if wire is None:
+                        operation = 'connect'
                         wire = self.connect(stats)
                         if name == 'held':
                             established = True
                     request = dict(run=self.cfg['run'], probe=self.probe_id, seq=sequence)
+                    operation = 'send'
                     wire.sock.settimeout(self.cfg['timeout'])
                     wire.sock.sendall((json.dumps(request)+'\n').encode())
                     deadline = started+self.cfg['timeout']
                     while True:
+                        operation = 'receive'
                         response = wire.line(deadline)
                         if response.get('seq', 0) < sequence:
                             continue  # Drain late echoes, preserving the same held socket.
+                        operation = 'validate_echo'
                         if any(response.get(k) != val for k, val in request.items()):
                             raise ValueError('echo identity mismatch')
                         if response.get('peer') != self.cfg['expected_peer']:
@@ -153,8 +176,7 @@ class Client:
                 except (OSError, EOFError, ValueError, KeyError, TypeError) as exc:
                     error = str(exc)
                     if name == 'held' and established:
-                        with stats.lock:
-                            stats.value.update(held_broken=True, terminal_error=error)
+                        stats.break_held(exc, operation, sequence, wire)
                     if wire:
                         wire.sock.close()
                         wire = None

@@ -532,6 +532,7 @@ class Extended:
                     longest_recovered_failure_seconds=max((b['duration_seconds'] for b in bursts), default=0.0) if continuity and stats['open_failure_since'] is None else None,
                     recovered_failure_bursts=bursts, open_failure_since=stats['open_failure_since'],
                     terminal_error=stats['terminal_error'], first_session=old['last_session'], last_session=stats['last_session'],
+                    held_broken=stats['held_broken'], terminal_event=stats.get('terminal_event'),
                     observed_peer_ips=stats['observed_peer_ips'], connection_attempts=stats['connection_attempts'])
             results[direction] = dict(status='PASS' if len(streams)==2 and all(s['status']=='PASS' for s in streams.values()) else 'FAIL',
                 held_session_preservation=streams.get('held', {}).get('status', 'UNAVAILABLE'),

@@ -2,6 +2,7 @@ import copy
 import json
 from pathlib import Path
 import socket
+import struct
 import sys
 import tempfile
 import threading
@@ -131,6 +132,42 @@ class ExtensionTests(unittest.TestCase):
             self.assertEqual(row['streams']['new']['status'], 'PASS')
             self.assertIsNone(row['streams']['held']['longest_recovered_failure_seconds'])
 
+    def test_first_terminal_event_is_carried_into_results_without_changing_failure(self):
+        baseline = self.baseline()
+        rows = copy.deepcopy(baseline['clients'])
+        event = dict(error='socket closed', exception='EOFError', operation='receive',
+                     errno=None, mono=120, ts=1700000000, sequence=25)
+        for row in rows.values():
+            row['mono'] = 200
+            for stats in row['streams'].values():
+                stats['attempts'] = 40
+            row['streams']['held'].update(held_broken=True, consecutive_successes=0,
+                failures=10, open_failure_since=120, terminal_error='socket closed', terminal_event=event)
+        self.x.ns_results(rows, {}, baseline, ['held closed'])
+        result = json.loads((self.root/'ns-results.json').read_text())
+        self.assertEqual(result['status'], 'FAIL')
+        for row in result['directions'].values():
+            self.assertEqual(row['streams']['held']['terminal_event'], event)
+            self.assertTrue(row['streams']['held']['held_broken'])
+            self.assertEqual(row['streams']['new']['status'], 'PASS')
+
+    def test_historical_probe_without_terminal_event_still_builds_honest_result(self):
+        baseline = self.baseline()
+        rows = copy.deepcopy(baseline['clients'])
+        for row in rows.values():
+            row['mono'] = 200
+            for stats in row['streams'].values():
+                stats.pop('terminal_event')
+                stats['attempts'] = 40
+            row['streams']['held'].update(held_broken=True, consecutive_successes=0,
+                failures=10, open_failure_since=120,
+                terminal_error='held socket already closed; reconnect prohibited')
+        self.x.ns_results(rows, {}, baseline, ['held closed'])
+        result = json.loads((self.root/'ns-results.json').read_text())
+        self.assertEqual(result['status'], 'FAIL')
+        for row in result['directions'].values():
+            self.assertIsNone(row['streams']['held']['terminal_event'])
+
     def test_guest_restart_cannot_be_reported_as_same_epoch(self):
         baseline = self.baseline()
         rows = copy.deepcopy(baseline['clients'])
@@ -196,6 +233,9 @@ class TCPTests(unittest.TestCase):
                     try:
                         row=wire.line(time.monotonic()+1)
                         if mode == 'close': return
+                        if mode == 'reset':
+                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+                            return
                         if mode == 'delay' and row['seq']==2: time.sleep(.12)
                         row.update(server='expected',server_boot='boot',listener='listener',connection=connection,
                                    peer='127.0.0.2' if mode=='wrong-source' else '127.0.0.1')
@@ -234,6 +274,7 @@ class TCPTests(unittest.TestCase):
         self.assertGreater(result['held']['failures'],0)
         self.assertIsNone(result['held']['open_failure_since'])
         self.assertGreater(result['held']['longest_recovered_failure_seconds'],0)
+        self.assertIsNone(result['held']['terminal_event'])
 
     def test_closed_held_socket_never_reconnects(self):
         result=self.probe('close')
@@ -241,10 +282,38 @@ class TCPTests(unittest.TestCase):
         self.assertTrue(result['held']['held_broken'])
         self.assertGreater(result['new']['connection_attempts'],3)
 
+    def test_closed_held_socket_keeps_first_eof_after_repeated_failures(self):
+        result = self.probe('close')['held']
+        self.assertGreater(result['failures'], 2)
+        self.assertEqual(result['connection_attempts'], 1)
+        self.assertEqual(result['terminal_error'], 'socket closed')
+        event = result['terminal_event']
+        self.assertEqual(event['exception'], 'EOFError')
+        self.assertEqual(event['operation'], 'receive')
+        self.assertEqual(event['sequence'], 1)
+        self.assertIsNone(event['errno'])
+        self.assertGreater(event['mono'], 0)
+        self.assertGreater(event['ts'], 0)
+        self.assertEqual(event['socket_local'][0], '127.0.0.1')
+        self.assertEqual(event['socket_peer'][0], '127.0.0.1')
+
+    def test_tcp_reset_records_original_os_error_and_never_reconnects_held(self):
+        result = self.probe('reset')['held']
+        self.assertGreater(result['failures'], 2)
+        self.assertEqual(result['connection_attempts'], 1)
+        self.assertTrue(result['held_broken'])
+        event = result['terminal_event']
+        self.assertIn(event['exception'], ('ConnectionResetError', 'BrokenPipeError'))
+        self.assertIn(event['operation'], ('receive', 'send'))
+        self.assertGreater(event['errno'], 0)
+        self.assertEqual(event['error'], result['terminal_error'])
+        self.assertNotIn('reconnect prohibited', result['terminal_error'])
+
     def test_unexpected_source_is_not_success(self):
         result=self.probe('wrong-source')
         self.assertEqual(result['held']['successes'],0)
         self.assertEqual(result['new']['successes'],0)
+        self.assertEqual(result['held']['terminal_event']['operation'], 'validate_echo')
 
 
 if __name__ == '__main__':

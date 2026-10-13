@@ -18,6 +18,9 @@ xem [globals scope fix](docs/globals-scope-fix.md).
 Lỗi pipeline `rc=141` sau DB migration có route phục hồi riêng; xem
 [tiếp tục sau DB migration](docs/post-db-recovery.md).
 
+Lỗi chẩn đoán N-S ghi đè lỗi socket đầu tiên đã được sửa; xem
+[phân tích phiên SNAT bị mất](docs/ns-held-session-diagnostics.md).
+
 ## Cross-compute A/B/C/D update (thiết kế nền)
 
 Every pair now places member 1 on `compute1` and member 2 on `compute2`.

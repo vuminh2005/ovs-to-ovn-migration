@@ -101,6 +101,38 @@ class PresentationTests(unittest.TestCase):
         self.assertEqual(text.count('soft reboot'), 2)
         self.assertIn('Boot checks account for the recorded remediation reboots.', text)
 
+    def test_ns_broken_socket_details_are_visible_without_zero_outage_claim(self):
+        report = self.report(north_south={'status': 'FAIL', 'directions': {
+            'snat': {'held_session_preservation': 'FAIL', 'streams': {
+                'held': {'status': 'FAIL', 'attempts': 10, 'failures': 10,
+                    'open_failure_since': 120, 'longest_recovered_failure_seconds': None,
+                    'terminal_error': '[Errno 104] Connection reset by peer',
+                    'terminal_event': {'operation': 'receive', 'errno': 104, 'ts': 1700000000}},
+                'new': {'status': 'PASS', 'attempts': 30, 'failures': 2,
+                    'longest_recovered_failure_seconds': 1.5},
+            }}}})
+        text = render_text(report, pathlib.Path('/run'), modern=True)
+        ns = text.split('NORTH-SOUTH -')[1].split('4. VALIDATION RESOURCE CLEANUP')[0]
+        self.assertRegex(ns, r'held recovered probe failure\s+: UNAVAILABLE')
+        self.assertIn('held failure still open', ns)
+        self.assertIn('held first terminal error', ns)
+        self.assertIn('[Errno 104] Connection reset by peer', ns)
+        self.assertRegex(ns, r'held terminal operation\s+: receive')
+        self.assertRegex(ns, r'held terminal errno\s+: 104')
+        self.assertIn('1700000000', ns)
+        self.assertRegex(ns, r'new recovered probe failure\s+: 1\.500 s')
+
+    def test_historical_ns_error_is_not_claimed_to_be_original_error(self):
+        report = self.report(north_south={'status': 'FAIL', 'directions': {
+            'snat': {'held_session_preservation': 'FAIL', 'streams': {
+                'held': {'status': 'FAIL', 'terminal_error':
+                         'held socket already closed; reconnect prohibited'},
+            }}}})
+        text = render_text(report, pathlib.Path('/run'), modern=True)
+        self.assertIn('held recorded terminal error', text)
+        self.assertNotIn('held first terminal error', text)
+        self.assertNotIn('held terminal epoch', text)
+
     def test_missing_and_zero_times_remain_distinct_and_legacy_scope_is_honest(self):
         for value, expected in [(None, 'UNAVAILABLE'), (0, '0.000 s'),
                                 (float('nan'), 'UNAVAILABLE'), (True, 'UNAVAILABLE')]:

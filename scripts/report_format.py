@@ -221,6 +221,16 @@ def render_text(report, root, *, modern):
         for name, stream in value.get('streams', {}).items():
             field(name+' recovered probe failure', seconds(stream.get('longest_recovered_failure_seconds')), 4)
             field(name+' failed application probes', str(stream.get('failures'))+' / '+str(stream.get('attempts')), 4)
+            if stream.get('open_failure_since') is not None:
+                field(name+' failure still open', 'YES (client monotonic '+str(stream['open_failure_since'])+')', 4)
+            if stream.get('terminal_error'):
+                event = stream.get('terminal_event') or {}
+                label = ' first terminal error' if event else ' recorded terminal error'
+                field(name+label, stream['terminal_error'], 4)
+                if event:
+                    field(name+' terminal operation', str(event.get('operation')), 4)
+                    field(name+' terminal errno', str(event.get('errno')), 4)
+                    field(name+' terminal epoch', str(event.get('ts')), 4)
     if ns.get('reason'):
         field('Reason', ns['reason'], 2)
 

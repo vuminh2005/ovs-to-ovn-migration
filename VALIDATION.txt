@@ -1,7 +1,7 @@
 Validation — 2026-10-13
 Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
 
-365 unittest cases: PASS on SDK 4.21.0, no skipped tests.
+371 unittest cases: PASS on SDK 4.21.0, no skipped tests.
 Previous 348-case suite and quota HTTP cases also passed on SDK 3.0.0.
 Includes real localhost TCP normal, same-socket timeout/recovery,
 closed held socket without reconnect, unexpected source rejection;
@@ -45,3 +45,14 @@ Post-DB topology recovery correction:
   Post-DB checkpoint guard, unique selection, original session/clock preservation passed.
   Real Ansible recovery bootstrap passed; a restarted Neutron server is rejected.
   Recovery event is reported, including the pause in control-plane downtime.
+
+N-S terminal-error diagnostics correction:
+  Real localhost TCP EOF and reset retain the original terminal event/errno.
+  Repeated prohibited reconnect loops never replace that event; held stays one socket.
+  Same-socket echo timeout/recovery remains unchanged and passing.
+  Broken held still FAILs while recovered new-stream metrics are preserved.
+  Historical probe summaries without terminal_event remain readable without inventing it.
+  TXT surfaces open failure and terminal details; old messages are labeled recorded only.
+  Correct current schema-2 marker filenames are phase08.* and phase09.* (no underscore).
+  This is a diagnostics correction; no claim that it preserves NAT sessions or repairs
+  the already-closed held socket in live run 20261013-153114.
