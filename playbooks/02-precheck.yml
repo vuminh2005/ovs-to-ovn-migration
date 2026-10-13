@@ -125,8 +125,8 @@
     - name: Resolve source globals per host and verify effective tunnel interface
       ansible.builtin.assert:
         that:
-          - (lookup('template', hostvars['localhost']['kolla_globals_path']) | from_yaml).tunnel_interface == validation_effective_tunnel_interface
-          - inventory_hostname not in groups['network'] or (lookup('template', hostvars['localhost']['kolla_globals_path']) | from_yaml).neutron_external_interface == 'ns-ex'
+          - (lookup('template', kolla_globals_path) | from_yaml).tunnel_interface == validation_effective_tunnel_interface
+          - inventory_hostname not in groups['network'] or (lookup('template', kolla_globals_path) | from_yaml).neutron_external_interface == 'ns-ex'
       when:
         - validation_ns_enabled | bool
         - inventory_hostname in (groups['network'] + groups['compute'])

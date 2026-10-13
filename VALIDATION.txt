@@ -1,7 +1,8 @@
 Validation — 2026-10-13
 Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
 
-348 unittest cases: PASS on SDK 3.0.0 and 4.21.0, no skipped tests.
+350 unittest cases: PASS on SDK 4.21.0, no skipped tests.
+Previous 348-case suite and quota HTTP cases also passed on SDK 3.0.0.
 Includes real localhost TCP normal, same-socket timeout/recovery,
 closed held socket without reconnect, unexpected source rejection;
 SDK resource lifecycle, lost FIP reply recovery, UUID/ownership/mapping,
@@ -31,3 +32,8 @@ Quota compatibility correction after controller KeyError project_id:
   Explicit update URI project_id; only instances=20 in PUT body.
   Real local HTTP GET/PUT and 403 failure checks passed on both SDK versions.
   Final-validation resume verified: 9 tasks remain, same reset snapshot.
+
+Globals scope correction after phase-02 undefined hostvars variable:
+  Read kolla_globals_path from vars_files directly.
+  Real Ansible execution passed for network1/compute1/compute2 with implicit localhost.
+  Wrong external interface still rejected by the production assertion.

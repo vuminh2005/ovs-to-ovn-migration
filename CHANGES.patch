@@ -8,10 +8,10 @@ index 0000000..41c33c8
 +__pycache__/
 +*.pyc
 diff --git a/README.md b/README.md
-index af78e70..29498ac 100644
+index af78e70..f3295d6 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,6 +1,18 @@
+@@ -1,6 +1,21 @@
  # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
  
 -## Cross-compute A/B/C/D update
@@ -27,11 +27,14 @@ index af78e70..29498ac 100644
 +Lỗi quota `KeyError: project_id` trên SDK cũ đã được sửa; xem
 +[tiếp tục validation quota](docs/quota-fix-recovery.md).
 +
++Lỗi scope `hostvars[localhost].kolla_globals_path` ở phase 02 đã được sửa;
++xem [globals scope fix](docs/globals-scope-fix.md).
++
 +## Cross-compute A/B/C/D update (thiết kế nền)
  
  Every pair now places member 1 on `compute1` and member 2 on `compute2`.
  Precheck resolves inventory aliases to real Nova hosts, hypervisors and OVS
-@@ -14,7 +26,7 @@ Pair-A PCAP delegation uses this verified compute mapping.
+@@ -14,7 +29,7 @@ Pair-A PCAP delegation uses this verified compute mapping.
  Pair D is enabled automatically by default (`validation_pair_d_enabled: true`).
  A/B/D share the pre-migration two-network routed topology. C still creates its
  own two Geneve networks/subnets and router after migration. With D enabled the
@@ -40,7 +43,7 @@ index af78e70..29498ac 100644
  See [A/B/C/D lab instructions](docs/abcd-validation.md) for TCP semantics,
  checkpoints, cleanup and the current nested-lab commands.
  
-@@ -24,8 +36,7 @@ checkpoints, cleanup and the current nested-lab commands.
+@@ -24,8 +39,7 @@ checkpoints, cleanup and the current nested-lab commands.
  `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
  with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
  See [four-node reset instructions](docs/reset-four-nodes.md) for destructive
@@ -50,7 +53,7 @@ index af78e70..29498ac 100644
  
  V2 turns the lab-validated migration into a **single-invocation migration proof of concept** for its supported scope. It discovers the Kolla inventory path from the `-i` argument, finds `kolla-ansible` from the active execution environment, parses `/etc/kolla/globals.yml`, uses standard Kolla inventory groups to find control/network/compute/OVN hosts, and reads the generated ML2/OVN config to discover the real OVN NB/SB connection strings.
  
-@@ -80,14 +91,14 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
+@@ -80,14 +94,14 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
  - DVR off
  - Neutron agent HA off
  - provider networks off
@@ -71,14 +74,15 @@ index af78e70..29498ac 100644
  
 diff --git a/VALIDATION.txt b/VALIDATION.txt
 new file mode 100644
-index 0000000..2fc7ffb
+index 0000000..d4b6bc8
 --- /dev/null
 +++ b/VALIDATION.txt
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,39 @@
 +Validation — 2026-10-13
 +Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
 +
-+348 unittest cases: PASS on SDK 3.0.0 and 4.21.0, no skipped tests.
++350 unittest cases: PASS on SDK 4.21.0, no skipped tests.
++Previous 348-case suite and quota HTTP cases also passed on SDK 3.0.0.
 +Includes real localhost TCP normal, same-socket timeout/recovery,
 +closed held socket without reconnect, unexpected source rejection;
 +SDK resource lifecycle, lost FIP reply recovery, UUID/ownership/mapping,
@@ -108,6 +112,58 @@ index 0000000..2fc7ffb
 +  Explicit update URI project_id; only instances=20 in PUT body.
 +  Real local HTTP GET/PUT and 403 failure checks passed on both SDK versions.
 +  Final-validation resume verified: 9 tasks remain, same reset snapshot.
++
++Globals scope correction after phase-02 undefined hostvars variable:
++  Read kolla_globals_path from vars_files directly.
++  Real Ansible execution passed for network1/compute1/compute2 with implicit localhost.
++  Wrong external interface still rejected by the production assertion.
+diff --git a/docs/globals-scope-fix.md b/docs/globals-scope-fix.md
+new file mode 100644
+index 0000000..2892bb4
+--- /dev/null
++++ b/docs/globals-scope-fix.md
+@@ -0,0 +1,41 @@
++# Lỗi scope kolla_globals_path trong phase 02
++
++Task `Resolve source globals per host and verify effective tunnel interface`
++đã tham chiếu `hostvars['localhost']['kolla_globals_path']`. Biến này được nạp
++bằng `vars_files` trong từng play, không phải một host fact của localhost.
++Do đó Ansible báo undefined trước khi thực hiện assertion về interface.
++
++Hai tham chiếu trong `playbooks/02-precheck.yml` được thay bằng biến trực tiếp:
++
++```yaml
++- (lookup('template', kolla_globals_path) | from_yaml).tunnel_interface == validation_effective_tunnel_interface
++- inventory_hostname not in groups['network'] or (lookup('template', kolla_globals_path) | from_yaml).neutron_external_interface == 'ns-ex'
++```
++
++Đường dẫn vẫn lấy từ `KOLLA_GLOBALS` hoặc mặc định `/etc/kolla/globals.yml`.
++Template vẫn render trong context từng host để kiểm tra `br-underlay` trên
++network1, `eth1` trên hai compute và external `ns-ex` trên network1.
++
++Regression test chạy Ansible thực tế trong thư mục/inventory độc lập:
++
++- Chứng minh biến play không tồn tại trong hostvars localhost.
++- Thực thi chính assertion của production cho ba chassis; controller được skip.
++- Cấu hình external sai vẫn phải thất bại vì assertion, không vì scope/template.
++
++Lần migration bị dừng ở phase 02 chỉ chạy bootstrap/backup/precheck. Workload
++đo bắt đầu ở phase 04, staging ở phase 05, thay đổi MTU/config ở phase 06, freeze
++ở phase 07. Sau sửa có thể chạy lại entrypoint bình thường để tạo run mới:
++
++```bash
++cd /root/ovs-to-ovn-migration
++source /root/venvs/kolla-2024.1/bin/activate
++source /etc/kolla/admin-openrc.sh
++ansible-playbook -i /root/multinode migrate-to-ovn.yml
++```
++
++Không dùng `--start-at-task` với entrypoint migration trong tiến trình Ansible
++mới: các runtime facts của phase 00 không được phục hồi bằng cách đó. Backup của
++run precheck lỗi được giữ để đối chiếu. Không cần reset/deploy lại cho lỗi này.
++
++Nguồn scope Ansible:
++https://docs.ansible.com/projects/ansible/latest/playbook_guide/playbooks_vars_facts.html
 diff --git a/docs/ns-ew-matrix.md b/docs/ns-ew-matrix.md
 new file mode 100644
 index 0000000..6a28e80
@@ -420,7 +476,7 @@ index 0000000..c6f3ba3
 +ns_tcp_port: 18180
 +validation_ew_matrix_enabled: true
 diff --git a/playbooks/02-precheck.yml b/playbooks/02-precheck.yml
-index 667547e..4b849b4 100644
+index 667547e..f970946 100644
 --- a/playbooks/02-precheck.yml
 +++ b/playbooks/02-precheck.yml
 @@ -6,6 +6,7 @@
@@ -472,8 +528,8 @@ index 667547e..4b849b4 100644
 +    - name: Resolve source globals per host and verify effective tunnel interface
 +      ansible.builtin.assert:
 +        that:
-+          - (lookup('template', hostvars['localhost']['kolla_globals_path']) | from_yaml).tunnel_interface == validation_effective_tunnel_interface
-+          - inventory_hostname not in groups['network'] or (lookup('template', hostvars['localhost']['kolla_globals_path']) | from_yaml).neutron_external_interface == 'ns-ex'
++          - (lookup('template', kolla_globals_path) | from_yaml).tunnel_interface == validation_effective_tunnel_interface
++          - inventory_hostname not in groups['network'] or (lookup('template', kolla_globals_path) | from_yaml).neutron_external_interface == 'ns-ex'
 +      when:
 +        - validation_ns_enabled | bool
 +        - inventory_hostname in (groups['network'] + groups['compute'])
@@ -2476,6 +2532,67 @@ index 0000000..f55eefb
 +
 +if __name__ == '__main__':
 +    unittest.main()
+diff --git a/tests/test_globals_host_scope.py b/tests/test_globals_host_scope.py
+new file mode 100644
+index 0000000..ead6c2d
+--- /dev/null
++++ b/tests/test_globals_host_scope.py
+@@ -0,0 +1,55 @@
++"""Execute the production assertion with vars_files and implicit localhost."""
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import unittest
++import yaml
++
++ROOT=Path(__file__).resolve().parents[1]
++
++
++class GlobalsHostScopeTests(unittest.TestCase):
++    def run_assertion(self, bad_external=False):
++        with tempfile.TemporaryDirectory() as directory:
++            root=Path(directory)
++            globals_path=root/'globals.yml'
++            # Jinja is rendered before YAML parsing; retain the double-quoted
++            # representation emitted by the actual reset globals task.
++            external='wrong-ex' if bad_external else "{{ 'ns-ex' if inventory_hostname in groups['network'] else 'neutron-ext' }}"
++            globals_path.write_text('tunnel_interface: "{{ \'br-underlay\' if inventory_hostname in groups[\'network\'] else \'eth1\' }}"\n'
++                                    'neutron_external_interface: "'+external+'"\n')
++            inventory=root/'inventory.ini'
++            inventory.write_text('[control]\ncontroller ansible_connection=local\n[network]\nnetwork1 ansible_connection=local\n[compute]\ncompute1 ansible_connection=local\ncompute2 ansible_connection=local\n')
++            production=yaml.safe_load((ROOT/'playbooks/02-precheck.yml').read_text())
++            source=next(p for p in production if p['name']=='Phase 02 - Precheck Kolla hosts and OVS source dataplane')
++            task=next(t for t in source['tasks'] if t['name']=='Resolve source globals per host and verify effective tunnel interface')
++            vars_files=[str(ROOT/'group_vars/all.yml'),str(ROOT/'group_vars/ns-lab.yml')]
++            plays=[dict(name='Prove play variable is absent from localhost hostvars',hosts='localhost',gather_facts=False,
++                        vars_files=vars_files,tasks=[{'ansible.builtin.assert':{'that':["'kolla_globals_path' not in hostvars['localhost']"]}}]),
++                   dict(name='Execute production per-host assertion',hosts='control:network:compute',gather_facts=False,
++                        vars_files=vars_files,vars=source['vars'],tasks=[task])]
++            playbook=root/'check.yml';playbook.write_text(yaml.safe_dump(plays,sort_keys=False))
++            env=dict(os.environ,KOLLA_GLOBALS=str(globals_path),ANSIBLE_NOCOLOR='1')
++            result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i',str(inventory),str(playbook)],
++                                  capture_output=True,text=True,env=env,timeout=60)
++            return result.returncode,result.stdout+result.stderr
++
++    def test_real_ansible_vars_files_are_resolved_for_each_chassis(self):
++        rc,output=self.run_assertion()
++        self.assertEqual(rc,0,output)
++        for host in ('network1','compute1','compute2'):
++            self.assertIn('ok: ['+host+']',output)
++        self.assertIn('skipping: [controller]',output)
++
++    def test_wrong_network_external_interface_is_still_rejected(self):
++        rc,output=self.run_assertion(bad_external=True)
++        self.assertNotEqual(rc,0)
++        self.assertIn('fatal: [network1]',output)
++        self.assertIn('Assertion failed',output)
++        self.assertNotIn('template error',output)
++        self.assertNotIn("has no attribute 'kolla_globals_path'",output)
++
++
++if __name__=='__main__':unittest.main()
 diff --git a/tests/test_ns_lifecycle.py b/tests/test_ns_lifecycle.py
 new file mode 100644
 index 0000000..5803ab0

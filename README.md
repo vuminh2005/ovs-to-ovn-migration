@@ -12,6 +12,9 @@ Không có thao tác lab nào được chạy khi tạo bản cập nhật này.
 Lỗi quota `KeyError: project_id` trên SDK cũ đã được sửa; xem
 [tiếp tục validation quota](docs/quota-fix-recovery.md).
 
+Lỗi scope `hostvars[localhost].kolla_globals_path` ở phase 02 đã được sửa;
+xem [globals scope fix](docs/globals-scope-fix.md).
+
 ## Cross-compute A/B/C/D update (thiết kế nền)
 
 Every pair now places member 1 on `compute1` and member 2 on `compute2`.
