@@ -264,7 +264,7 @@
     - name: Verify NB logical topology and SB datapaths
       ansible.builtin.shell: |
         set -euo pipefail
-        docker exec ovn_northd ovn-nbctl --db='{{ hostvars['localhost']['ovn_nb_connection_runtime'] }}' show | grep -Eq 'switch|router'
+        docker exec ovn_northd ovn-nbctl --db='{{ hostvars['localhost']['ovn_nb_connection_runtime'] }}' show | grep -E 'switch|router' >/dev/null
         test "$(docker exec ovn_northd ovn-sbctl --db='{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}' list Datapath_Binding | grep -c '^_uuid')" -gt 0
       args:
         executable: /bin/bash

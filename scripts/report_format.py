@@ -38,7 +38,7 @@ JSON_GROUPS = (
     ('pair_d_tcp', 'ew_connectivity_matrix', 'north_south', 'workload_capacity', 'instance_quota'),
     ('existing_workload_cleanup', 'existing_workload_cleanup_evidence',
      'new_ovn_workload_cleanup'),
-    ('workload_checks', 'validation_orchestration', 'limitations'),
+    ('workload_checks', 'validation_orchestration', 'orchestration_recovery', 'limitations'),
 )
 
 
@@ -122,6 +122,8 @@ def render_text(report, root, *, modern):
         lines.extend(['Legacy total duration includes preparation, validation and resume waits;',
                       'excludes report/finalization and capture cleanup.'])
     lines.append('Port_Binding convergence and workload interruption have different scopes.')
+    if report.get('orchestration_recovery'):
+        lines.append('Resumed after DB migration: control-plane downtime includes the recovery pause.')
 
     section('2. RESOURCE AND NETWORK VALIDATION')
     consistency = report.get('resource_consistency') or {}

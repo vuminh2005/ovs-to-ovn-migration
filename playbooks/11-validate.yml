@@ -111,7 +111,7 @@
         set -euo pipefail
         ! docker exec openvswitch_vswitchd ovs-vsctl br-exists br-tun
         if [ {{ hostvars['localhost']['chassis_count_runtime'] | int }} -gt 1 ]; then
-          docker exec openvswitch_vswitchd ovs-vsctl --columns=name,type list Interface | grep -A1 -E 'name[[:space:]]*: ovn-' | grep -q geneve
+          docker exec openvswitch_vswitchd ovs-vsctl --columns=name,type list Interface | grep -A1 -E 'name[[:space:]]*: ovn-' | grep -F geneve >/dev/null
         fi
       args:
         executable: /bin/bash
@@ -129,8 +129,8 @@
     - name: Assert network chassis has gateway CMS option and no old namespaces
       ansible.builtin.shell: |
         set -euo pipefail
-        docker exec openvswitch_vswitchd ovs-vsctl get Open_vSwitch . external_ids:ovn-cms-options | grep -q enable-chassis-as-gw
-        ! ip netns list | grep -Eq '^(qrouter-|qdhcp-)'
+        docker exec openvswitch_vswitchd ovs-vsctl get Open_vSwitch . external_ids:ovn-cms-options | grep -F enable-chassis-as-gw >/dev/null
+        ! ip netns list | grep -E '^(qrouter-|qdhcp-)' >/dev/null
       args:
         executable: /bin/bash
       changed_when: false

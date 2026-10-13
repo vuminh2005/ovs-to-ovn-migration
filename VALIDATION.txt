@@ -1,7 +1,7 @@
 Validation — 2026-10-13
 Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
 
-350 unittest cases: PASS on SDK 4.21.0, no skipped tests.
+365 unittest cases: PASS on SDK 4.21.0, no skipped tests.
 Previous 348-case suite and quota HTTP cases also passed on SDK 3.0.0.
 Includes real localhost TCP normal, same-socket timeout/recovery,
 closed held socket without reconnect, unexpected source rejection;
@@ -13,9 +13,10 @@ Dependencies used for offline verification:
   Ansible-core 2.17.14
   Python 3.12
 
-6 Ansible syntax entrypoints: PASS
+7 Ansible syntax entrypoints: PASS
   migrate-to-ovn.yml
   reset-lab-to-ovs.yml
+  resume-after-db.yml
   resume-after-cleanup.yml
   retry-validation-preparation.yml
   playbooks/dataplane-capture-tasks.yml
@@ -37,3 +38,10 @@ Globals scope correction after phase-02 undefined hostvars variable:
   Read kolla_globals_path from vars_files directly.
   Real Ansible execution passed for network1/compute1/compute2 with implicit localhost.
   Wrong external interface still rejected by the production assertion.
+
+Post-DB topology recovery correction:
+  Old piped quiet-grep reproduced rc=141 with large output.
+  Full-input readers pass; genuine OVN producer rc=7 and absent topology remain failures.
+  Post-DB checkpoint guard, unique selection, original session/clock preservation passed.
+  Real Ansible recovery bootstrap passed; a restarted Neutron server is rejected.
+  Recovery event is reported, including the pause in control-plane downtime.

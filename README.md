@@ -15,6 +15,9 @@ Lỗi quota `KeyError: project_id` trên SDK cũ đã được sửa; xem
 Lỗi scope `hostvars[localhost].kolla_globals_path` ở phase 02 đã được sửa;
 xem [globals scope fix](docs/globals-scope-fix.md).
 
+Lỗi pipeline `rc=141` sau DB migration có route phục hồi riêng; xem
+[tiếp tục sau DB migration](docs/post-db-recovery.md).
+
 ## Cross-compute A/B/C/D update (thiết kế nền)
 
 Every pair now places member 1 on `compute1` and member 2 on `compute2`.

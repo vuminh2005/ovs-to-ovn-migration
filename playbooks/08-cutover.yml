@@ -145,8 +145,8 @@
             [ -n "$port" ] || continue
             out=$(docker exec ovn_northd ovn-sbctl --db='{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}' \
               --columns=logical_port,chassis,up find Port_Binding logical_port="$port")
-            echo "$out" | grep -Eq '^chassis[[:space:]]*:[[:space:]]*[0-9a-f-]+' || bad=$((bad+1))
-            echo "$out" | grep -Eq '^up[[:space:]]*:[[:space:]]*true' || bad=$((bad+1))
+            echo "$out" | grep -E '^chassis[[:space:]]*:[[:space:]]*[0-9a-f-]+' >/dev/null || bad=$((bad+1))
+            echo "$out" | grep -E '^up[[:space:]]*:[[:space:]]*true' >/dev/null || bad=$((bad+1))
           done < "$ports"
           [ "$bad" -eq 0 ] && exit 0
           [ "$(date +%s)" -lt "$deadline" ] || exit 1

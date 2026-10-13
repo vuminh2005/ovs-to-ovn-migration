@@ -8,10 +8,10 @@ index 0000000..41c33c8
 +__pycache__/
 +*.pyc
 diff --git a/README.md b/README.md
-index af78e70..f3295d6 100644
+index af78e70..2137e89 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,6 +1,21 @@
+@@ -1,6 +1,24 @@
  # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
  
 -## Cross-compute A/B/C/D update
@@ -30,11 +30,14 @@ index af78e70..f3295d6 100644
 +Lỗi scope `hostvars[localhost].kolla_globals_path` ở phase 02 đã được sửa;
 +xem [globals scope fix](docs/globals-scope-fix.md).
 +
++Lỗi pipeline `rc=141` sau DB migration có route phục hồi riêng; xem
++[tiếp tục sau DB migration](docs/post-db-recovery.md).
++
 +## Cross-compute A/B/C/D update (thiết kế nền)
  
  Every pair now places member 1 on `compute1` and member 2 on `compute2`.
  Precheck resolves inventory aliases to real Nova hosts, hypervisors and OVS
-@@ -14,7 +29,7 @@ Pair-A PCAP delegation uses this verified compute mapping.
+@@ -14,7 +32,7 @@ Pair-A PCAP delegation uses this verified compute mapping.
  Pair D is enabled automatically by default (`validation_pair_d_enabled: true`).
  A/B/D share the pre-migration two-network routed topology. C still creates its
  own two Geneve networks/subnets and router after migration. With D enabled the
@@ -43,7 +46,7 @@ index af78e70..f3295d6 100644
  See [A/B/C/D lab instructions](docs/abcd-validation.md) for TCP semantics,
  checkpoints, cleanup and the current nested-lab commands.
  
-@@ -24,8 +39,7 @@ checkpoints, cleanup and the current nested-lab commands.
+@@ -24,8 +42,7 @@ checkpoints, cleanup and the current nested-lab commands.
  `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
  with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
  See [four-node reset instructions](docs/reset-four-nodes.md) for destructive
@@ -53,7 +56,7 @@ index af78e70..f3295d6 100644
  
  V2 turns the lab-validated migration into a **single-invocation migration proof of concept** for its supported scope. It discovers the Kolla inventory path from the `-i` argument, finds `kolla-ansible` from the active execution environment, parses `/etc/kolla/globals.yml`, uses standard Kolla inventory groups to find control/network/compute/OVN hosts, and reads the generated ML2/OVN config to discover the real OVN NB/SB connection strings.
  
-@@ -80,14 +94,14 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
+@@ -80,14 +97,14 @@ V2 intentionally auto-detects and **fails before downtime** if the cloud is outs
  - DVR off
  - Neutron agent HA off
  - provider networks off
@@ -74,14 +77,14 @@ index af78e70..f3295d6 100644
  
 diff --git a/VALIDATION.txt b/VALIDATION.txt
 new file mode 100644
-index 0000000..d4b6bc8
+index 0000000..d34f2a9
 --- /dev/null
 +++ b/VALIDATION.txt
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,47 @@
 +Validation — 2026-10-13
 +Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
 +
-+350 unittest cases: PASS on SDK 4.21.0, no skipped tests.
++365 unittest cases: PASS on SDK 4.21.0, no skipped tests.
 +Previous 348-case suite and quota HTTP cases also passed on SDK 3.0.0.
 +Includes real localhost TCP normal, same-socket timeout/recovery,
 +closed held socket without reconnect, unexpected source rejection;
@@ -93,9 +96,10 @@ index 0000000..d4b6bc8
 +  Ansible-core 2.17.14
 +  Python 3.12
 +
-+6 Ansible syntax entrypoints: PASS
++7 Ansible syntax entrypoints: PASS
 +  migrate-to-ovn.yml
 +  reset-lab-to-ovs.yml
++  resume-after-db.yml
 +  resume-after-cleanup.yml
 +  retry-validation-preparation.yml
 +  playbooks/dataplane-capture-tasks.yml
@@ -117,6 +121,13 @@ index 0000000..d4b6bc8
 +  Read kolla_globals_path from vars_files directly.
 +  Real Ansible execution passed for network1/compute1/compute2 with implicit localhost.
 +  Wrong external interface still rejected by the production assertion.
++
++Post-DB topology recovery correction:
++  Old piped quiet-grep reproduced rc=141 with large output.
++  Full-input readers pass; genuine OVN producer rc=7 and absent topology remain failures.
++  Post-DB checkpoint guard, unique selection, original session/clock preservation passed.
++  Real Ansible recovery bootstrap passed; a restarted Neutron server is rejected.
++  Recovery event is reported, including the pause in control-plane downtime.
 diff --git a/docs/globals-scope-fix.md b/docs/globals-scope-fix.md
 new file mode 100644
 index 0000000..2892bb4
@@ -361,6 +372,104 @@ index 0000000..6a28e80
 +- https://docs.openstack.org/openstacksdk/latest/user/proxies/compute.html
 +- https://docs.openstack.org/openstacksdk/latest/user/resources/compute/v2/limits.html
 +- https://docs.openstack.org/openstacksdk/latest/user/resources/network/v2/floating_ip.html
+diff --git a/docs/post-db-recovery.md b/docs/post-db-recovery.md
+new file mode 100644
+index 0000000..f59e49c
+--- /dev/null
++++ b/docs/post-db-recovery.md
+@@ -0,0 +1,92 @@
++# Tiếp tục sau lỗi kiểm tra topology cuối phase 07
++
++Log `Mark DB migration end` thành công rồi task kiểm tra topology trả `141`
++phù hợp với SIGPIPE ở pipeline `ovn-nbctl show | grep -Eq ...`. `grep -q` dừng
++đọc khi thấy kết quả; producer có thể tiếp tục ghi và bị đóng pipe. `pipefail`
++biến tình huống đó thành lỗi orchestration dù output đã có switch/router.
++Điều này phụ thuộc lượng output và timing; không chứng minh DB topology thiếu.
++
++Đã thay reader bằng `grep -E ... >/dev/null` để đọc hết stdout. Lỗi thật của
++producer vẫn được giữ bởi pipefail, không bỏ guard hoặc dùng ignore-errors.
++Các guard piped quiet-grep tương tự ở precheck/cutover/cleanup/validation cũng
++được sửa; grep đọc trực tiếp file không cần đổi.
++
++## Chạy tiếp đúng run
++
++Tại thời điểm này Neutron đã freeze và DB migration đã chạy. Không chạy
++`migrate-to-ovn.yml` lại từ đầu, không chạy lại phase 07 DB migrate, không reset
++nếu mục tiêu là hoàn thành run và giữ evidence/phiên đo hiện có.
++
++Tải ZIP hiện hành vào `/root/playbook-ns-ew-matrix.zip` trên controller, rồi
++cài riêng các file cần sửa. Các group_vars, inventory, manifest, timestamp và
++collector/probe process hiện tại được giữ.
++
++```bash
++cd /root/ovs-to-ovn-migration
++source /root/venvs/kolla-2024.1/bin/activate
++source /etc/kolla/admin-openrc.sh
++
++python3 - <<'PY'
++from pathlib import Path
++from zipfile import ZipFile
++files = [
++    'resume-after-db.yml', 'scripts/post_db_recovery.py',
++    'scripts/migration_report.py', 'scripts/report_format.py',
++    'playbooks/02-precheck.yml', 'playbooks/07-migrate-db.yml',
++    'playbooks/08-cutover.yml', 'playbooks/09-cleanup.yml',
++    'playbooks/11-validate.yml',
++]
++with ZipFile('/root/playbook-ns-ew-matrix.zip') as archive:
++    contents = {name: archive.read('ovs-to-ovn-migration-ns/' + name) for name in files}
++for name, data in contents.items():
++    Path(name).write_bytes(data)
++print('POST_DB_RECOVERY_INSTALLED')
++PY
++
++ansible-playbook -i /root/multinode resume-after-db.yml --syntax-check
++post_db_run_dir=$(python3 scripts/post_db_recovery.py select \
++    /root/ovs-to-ovn-backup --inventory /root/multinode)
++ansible-playbook -i /root/multinode resume-after-db.yml \
++    -e "migration_resume_run_dir=$post_db_run_dir"
++```
++
++Dùng `set -euo pipefail` trong subshell khi chạy cả khối để dừng nếu một bước
++không đạt. `select` chỉ chọn khi có đúng một checkpoint hợp lệ. Nếu trả zero
++hoặc nhiều checkpoint, lệnh dừng và liệt kê trường hợp cần xác định, không đoán
++thư mục theo timestamp. Nếu backup root đã override, thay đường dẫn parent
++bằng root thực tế. Có thể dùng `inspect <đường-dẫn-run> --inventory ...` để xem
++điều kiện của một checkpoint cụ thể.
++
++## Guard và phạm vi tiếp tục
++
++- Kiểm tra runtime/schema v2, inventory không đổi, các marker preparation/freeze/DB
++  có thứ tự hợp lệ, log migrate `rc=0`, provider association đã PASS.
++- Từ chối nếu phase 08/cutover, cleanup hoặc API restoration đã bắt đầu.
++- Với workload bật, yêu cầu capture start ban đầu và TCP ARM/session cũng như
++  baseline N-S có evidence; không tạo lại hoặc re-arm probe.
++- Đọc đúng NB/SB endpoints từ `ml2_conf.ini.target` của run và phục hồi facts.
++- Kiểm tra live `neutron_server` vẫn stopped trên mọi control node.
++- Đọc lại topology NB/SB bằng reader không thoát sớm; chỉ khi đạt mới đóng phase
++  07 và tiếp tục phase 08, 09, 10, 11, 12, 13.
++
++Nếu checkpoint không hợp lệ hoặc topology thật không đạt, recovery dừng trước
++cutover. Route `resume-after-cleanup.yml` cũ chỉ dành cho checkpoint đã takeover
++sau phase 08, không dùng cho lỗi đang xảy ra.
++
++## Metric sau recovery
++
++Giữ nguyên `control_plane_downtime.start`, `db_migration.start/end`, capture
++anchors và phiên TCP ban đầu. Không đổi mốc bắt đầu để làm số liệu ngắn lại.
++`orchestration-recovery.json` ghi recovery; report TXT/JSON ghi nhận việc run
++đã bị gián đoạn. Control-plane downtime và tổng thời gian run sẽ gồm thời gian
++dừng xử lý lỗi; DB migration duration không bị chạy/ghi lại. Vì vậy cần phân
++biệt run này với các lần chạy hoàn toàn liền mạch khi so sánh benchmark.
++
++Kiểm tra offline: tái lập pipeline cũ `rc=141` với stdout 16 MiB, pipeline mới
++PASS, producer rc=7 vẫn FAIL, thiếu NB/SB vẫn FAIL. Có tests checkpoint,
++inventory/clock/phiên đo và Ansible thực tế cho phục hồi facts, server frozen,
++bảo toàn timestamps và từ chối nếu server đã được khởi động lại.
++
++Nguồn:
++https://www.gnu.org/software/grep/manual/html_node/Usage.html
++https://www.gnu.org/software/bash/manual/html_node/Exit-Status.html
 diff --git a/docs/quota-fix-recovery.md b/docs/quota-fix-recovery.md
 new file mode 100644
 index 0000000..fc3d41a
@@ -476,7 +585,7 @@ index 0000000..c6f3ba3
 +ns_tcp_port: 18180
 +validation_ew_matrix_enabled: true
 diff --git a/playbooks/02-precheck.yml b/playbooks/02-precheck.yml
-index 667547e..f970946 100644
+index 667547e..b34dd1a 100644
 --- a/playbooks/02-precheck.yml
 +++ b/playbooks/02-precheck.yml
 @@ -6,6 +6,7 @@
@@ -518,8 +627,9 @@ index 667547e..f970946 100644
        ansible.builtin.shell: |
          set -euo pipefail
 -        iface='{{ hostvars['localhost']['source_kolla_globals'].tunnel_interface }}'
+-        ip -4 -o addr show dev "$iface" | grep -q ' inet '
 +        iface='{{ validation_effective_tunnel_interface }}'
-         ip -4 -o addr show dev "$iface" | grep -q ' inet '
++        ip -4 -o addr show dev "$iface" | grep -F ' inet ' >/dev/null
        args:
          executable: /bin/bash
        when: inventory_hostname in (groups['network'] + groups['compute'])
@@ -619,7 +729,7 @@ index 667547e..f970946 100644
  - name: Phase 02 - Verify DB sync utility on first control host
    hosts: control
    any_errors_fatal: true
-@@ -232,6 +297,7 @@
+@@ -232,12 +297,13 @@
    become: true
    vars_files:
      - ../group_vars/all.yml
@@ -627,6 +737,13 @@ index 667547e..f970946 100644
    tasks:
      - name: Verify migration utility and migrate mode
        ansible.builtin.shell: |
+         set -euo pipefail
+         docker exec neutron_server test -x /var/lib/kolla/venv/bin/neutron-ovn-db-sync-util
+-        docker exec neutron_server neutron-ovn-db-sync-util --help 2>&1 | grep -q ovn-neutron_sync_mode
++        docker exec neutron_server neutron-ovn-db-sync-util --help 2>&1 | grep -F ovn-neutron_sync_mode >/dev/null
+       args:
+         executable: /bin/bash
+       run_once: true
 diff --git a/playbooks/04-validation-workloads.yml b/playbooks/04-validation-workloads.yml
 index d5a76a8..7e2e7a4 100644
 --- a/playbooks/04-validation-workloads.yml
@@ -654,11 +771,61 @@ index d5a76a8..7e2e7a4 100644
        ansible.builtin.shell: |
          set -euo pipefail
          source {{ openrc_path | quote }}
+diff --git a/playbooks/07-migrate-db.yml b/playbooks/07-migrate-db.yml
+index 6be1106..0946fa1 100644
+--- a/playbooks/07-migrate-db.yml
++++ b/playbooks/07-migrate-db.yml
+@@ -264,7 +264,7 @@
+     - name: Verify NB logical topology and SB datapaths
+       ansible.builtin.shell: |
+         set -euo pipefail
+-        docker exec ovn_northd ovn-nbctl --db='{{ hostvars['localhost']['ovn_nb_connection_runtime'] }}' show | grep -Eq 'switch|router'
++        docker exec ovn_northd ovn-nbctl --db='{{ hostvars['localhost']['ovn_nb_connection_runtime'] }}' show | grep -E 'switch|router' >/dev/null
+         test "$(docker exec ovn_northd ovn-sbctl --db='{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}' list Datapath_Binding | grep -c '^_uuid')" -gt 0
+       args:
+         executable: /bin/bash
+diff --git a/playbooks/08-cutover.yml b/playbooks/08-cutover.yml
+index 3de385f..0ec253d 100644
+--- a/playbooks/08-cutover.yml
++++ b/playbooks/08-cutover.yml
+@@ -145,8 +145,8 @@
+             [ -n "$port" ] || continue
+             out=$(docker exec ovn_northd ovn-sbctl --db='{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}' \
+               --columns=logical_port,chassis,up find Port_Binding logical_port="$port")
+-            echo "$out" | grep -Eq '^chassis[[:space:]]*:[[:space:]]*[0-9a-f-]+' || bad=$((bad+1))
+-            echo "$out" | grep -Eq '^up[[:space:]]*:[[:space:]]*true' || bad=$((bad+1))
++            echo "$out" | grep -E '^chassis[[:space:]]*:[[:space:]]*[0-9a-f-]+' >/dev/null || bad=$((bad+1))
++            echo "$out" | grep -E '^up[[:space:]]*:[[:space:]]*true' >/dev/null || bad=$((bad+1))
+           done < "$ports"
+           [ "$bad" -eq 0 ] && exit 0
+           [ "$(date +%s)" -lt "$deadline" ] || exit 1
+diff --git a/playbooks/09-cleanup.yml b/playbooks/09-cleanup.yml
+index 3b8d8b8..ed8f2f8 100644
+--- a/playbooks/09-cleanup.yml
++++ b/playbooks/09-cleanup.yml
+@@ -70,7 +70,7 @@
+     - name: Verify legacy namespaces are gone without requiring local OVN metadata namespaces
+       ansible.builtin.shell: |
+         set -euo pipefail
+-        ! ip netns list | grep -Eq '^(qrouter-|qdhcp-)'
++        ! ip netns list | grep -E '^(qrouter-|qdhcp-)' >/dev/null
+         # ovnmeta-* is intentionally not deleted. It is chassis/local-datapath
+         # dependent and therefore is not required to exist on every network node.
+         ip netns list | awk '{print $1}' | grep '^ovnmeta-' || true
 diff --git a/playbooks/11-validate.yml b/playbooks/11-validate.yml
-index 8072d2a..5e2b508 100644
+index 8072d2a..3a1e324 100644
 --- a/playbooks/11-validate.yml
 +++ b/playbooks/11-validate.yml
-@@ -124,6 +124,7 @@
+@@ -111,7 +111,7 @@
+         set -euo pipefail
+         ! docker exec openvswitch_vswitchd ovs-vsctl br-exists br-tun
+         if [ {{ hostvars['localhost']['chassis_count_runtime'] | int }} -gt 1 ]; then
+-          docker exec openvswitch_vswitchd ovs-vsctl --columns=name,type list Interface | grep -A1 -E 'name[[:space:]]*: ovn-' | grep -q geneve
++          docker exec openvswitch_vswitchd ovs-vsctl --columns=name,type list Interface | grep -A1 -E 'name[[:space:]]*: ovn-' | grep -F geneve >/dev/null
+         fi
+       args:
+         executable: /bin/bash
+@@ -124,16 +124,23 @@
    become: true
    vars_files:
      - ../group_vars/all.yml
@@ -666,7 +833,12 @@ index 8072d2a..5e2b508 100644
    tasks:
      - name: Assert network chassis has gateway CMS option and no old namespaces
        ansible.builtin.shell: |
-@@ -134,6 +135,12 @@
+         set -euo pipefail
+-        docker exec openvswitch_vswitchd ovs-vsctl get Open_vSwitch . external_ids:ovn-cms-options | grep -q enable-chassis-as-gw
+-        ! ip netns list | grep -Eq '^(qrouter-|qdhcp-)'
++        docker exec openvswitch_vswitchd ovs-vsctl get Open_vSwitch . external_ids:ovn-cms-options | grep -F enable-chassis-as-gw >/dev/null
++        ! ip netns list | grep -E '^(qrouter-|qdhcp-)' >/dev/null
+       args:
          executable: /bin/bash
        changed_when: false
  
@@ -900,6 +1072,109 @@ index a50ffc5..38d94e9 100644
            - "{{ reset_completion.stdout_lines }}"
 -          - "Run ansible-playbook -i {{ ansible_inventory_sources[0] }} migrate-to-ovn.yml; the A/B/C/D defaults discover managed image/flavor names. Fresh UUID evidence is in {{ reset_run_dir }}/migration-lab.yml."
 +          - "Run ansible-playbook -i {{ ansible_inventory_sources[0] }} migrate-to-ovn.yml; the EW/NS defaults discover managed image/flavor names. Fresh UUID evidence is in {{ reset_run_dir }}/migration-lab.yml."
+diff --git a/resume-after-db.yml b/resume-after-db.yml
+new file mode 100644
+index 0000000..b547a94
+--- /dev/null
++++ b/resume-after-db.yml
+@@ -0,0 +1,97 @@
++---
++- name: Recover only a completed DB migration before dataplane cutover
++  hosts: localhost
++  gather_facts: false
++  become: true
++  any_errors_fatal: true
++  vars_files:
++    - group_vars/all.yml
++  tasks:
++    - name: Require explicit checkpoint and the full original inventory
++      ansible.builtin.assert:
++        that:
++          - migration_resume_run_dir is match('^/')
++          - ansible_inventory_sources | length == 1
++          - ansible_limit | default('') | length == 0
++          - not ansible_check_mode
++    - name: Require committed successful DB migration and no cutover markers
++      ansible.builtin.command:
++        argv: [python3, "{{ playbook_dir }}/scripts/post_db_recovery.py", inspect, "{{ migration_resume_run_dir }}", --inventory, "{{ ansible_inventory_sources[0] }}"]
++      register: post_db_checkpoint
++      changed_when: false
++    - name: Restore the same run runtime and endpoints without repeating freeze or migration
++      ansible.builtin.set_fact:
++        post_db_runtime: "{{ (post_db_checkpoint.stdout | from_json).runtime }}"
++        post_db_workload: "{{ (post_db_checkpoint.stdout | from_json).workload_config }}"
++        migration_run_dir: "{{ (post_db_checkpoint.stdout | from_json).root }}"
++        migration_run_id: "{{ (post_db_checkpoint.stdout | from_json).runtime.run_id }}"
++        kolla_inventory_runtime: "{{ (post_db_checkpoint.stdout | from_json).runtime.inventory }}"
++        kolla_ansible_bin_runtime: "{{ (post_db_checkpoint.stdout | from_json).runtime.kolla_ansible }}"
++        kolla_globals_path: "{{ (post_db_checkpoint.stdout | from_json).runtime.globals }}"
++        openrc_path: "{{ (post_db_checkpoint.stdout | from_json).runtime.openrc }}"
++        ovn_cli_host_runtime: "{{ (post_db_checkpoint.stdout | from_json).runtime.ovn_cli_host }}"
++        db_sync_host_runtime: "{{ (post_db_checkpoint.stdout | from_json).runtime.db_sync_host }}"
++        ovn_nb_connection_runtime: "{{ (post_db_checkpoint.stdout | from_json).nb }}"
++        ovn_sb_connection_runtime: "{{ (post_db_checkpoint.stdout | from_json).sb }}"
++        source_network_count_runtime: "{{ (post_db_checkpoint.stdout | from_json).source_network_count }}"
++        chassis_hosts_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | list }}"
++        chassis_count_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | length }}"
++        validation_workloads_enabled: "{{ (post_db_checkpoint.stdout | from_json).workloads_enabled }}"
++    - name: Require unchanged topology before resuming the original streams
++      ansible.builtin.assert:
++        that:
++          - groups['control'] | sort == post_db_runtime.control_hosts | sort
++          - groups['network'] | sort == post_db_runtime.network_hosts | sort
++          - groups['compute'] | sort == post_db_runtime.compute_hosts | sort
++    - name: Restore workload validation settings from the original checkpoint
++      ansible.builtin.set_fact:
++        target_geneve_mtu: "{{ post_db_workload.target_mtu }}"
++        validation_allow_post_cutover_guest_reboot: "{{ post_db_workload.allow_post_cutover_guest_reboot | bool }}"
++        validation_post_cutover_dhcp_timeout_seconds: "{{ post_db_workload.post_cutover_timeout | int }}"
++        validation_ns_enabled: "{{ post_db_workload.get('ns', {}).get('enabled', false) | bool }}"
++      when: validation_workloads_enabled | bool
++
++- name: Verify Neutron remains frozen on every original control host
++  hosts: control
++  gather_facts: false
++  become: true
++  any_errors_fatal: true
++  tasks:
++    - name: Require neutron-server to remain stopped before OVN takeover
++      ansible.builtin.shell: |
++        set -euo pipefail
++        docker inspect neutron_server | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is False'
++      args:
++        executable: /bin/bash
++      changed_when: false
++
++- name: Recheck migrated topology before continuing into phase 08
++  hosts: localhost
++  gather_facts: false
++  become: true
++  any_errors_fatal: true
++  tasks:
++    - name: Verify NB logical topology and SB datapaths without an early-closing reader
++      ansible.builtin.shell: |
++        set -euo pipefail
++        docker exec ovn_northd ovn-nbctl --db={{ ovn_nb_connection_runtime | quote }} show | grep -E 'switch|router' >/dev/null
++        test "$(docker exec ovn_northd ovn-sbctl --db={{ ovn_sb_connection_runtime | quote }} list Datapath_Binding | grep -c '^_uuid')" -gt 0
++      args:
++        executable: /bin/bash
++      delegate_to: "{{ ovn_cli_host_runtime }}"
++      changed_when: false
++    - name: Record recovery pause without modifying the original measurement timestamps
++      ansible.builtin.command:
++        argv: [python3, "{{ playbook_dir }}/scripts/post_db_recovery.py", record, "{{ migration_run_dir }}", --inventory, "{{ kolla_inventory_runtime }}"]
++      changed_when: true
++    - name: Complete phase 07 only after migrated topology is verified
++      ansible.builtin.command:
++        argv: [python3, "{{ playbook_dir }}/scripts/phase_schema.py", mark, "{{ migration_run_dir }}", '07', end]
++      changed_when: false
++
++- import_playbook: playbooks/08-cutover.yml
++- import_playbook: playbooks/09-cleanup.yml
++- import_playbook: playbooks/10-restore-neutron.yml
++- import_playbook: playbooks/11-validate.yml
++- import_playbook: playbooks/12-workload-validation.yml
++- import_playbook: playbooks/13-report.yml
 diff --git a/retry-validation-preparation.yml b/retry-validation-preparation.yml
 index ccf7071..6a77107 100644
 --- a/retry-validation-preparation.yml
@@ -1560,10 +1835,10 @@ index 0000000..28001c7
 +        self.commit()
 +        save(self.root/'extended-cleanup.json', dict(status='PASS'))
 diff --git a/scripts/migration_report.py b/scripts/migration_report.py
-index bed174a..2ee3e6a 100644
+index bed174a..813f957 100644
 --- a/scripts/migration_report.py
 +++ b/scripts/migration_report.py
-@@ -35,7 +35,7 @@ report={
+@@ -35,13 +35,16 @@ report={
    'new_network_smoke':smoke,
    'limitations':[
       'Tenant packet evidence is required; PortBinding convergence is separate.',
@@ -1572,7 +1847,16 @@ index bed174a..2ee3e6a 100644
       'Guest static MTU cannot be changed automatically; existing VXLAN network MTUs are reduced by the configured VXLAN-to-Geneve delta.'
    ]
  }
-@@ -73,12 +73,19 @@ report['workload_placement'] = evidence('workload-placement.json') or {'status':
+ def evidence(name):
+     p=root/name
+     return json.loads(p.read_text()) if p.exists() else None
++report['orchestration_recovery']=evidence('orchestration-recovery.json')
++if report['orchestration_recovery']:
++    report['limitations'].append('This run resumed after completed DB migration; original measurement clocks are preserved and control-plane downtime includes the recovery pause.')
+ def status(name, keys):
+     rows=evidence(name)
+     if not rows: return 'NOT TESTED'
+@@ -73,12 +76,19 @@ report['workload_placement'] = evidence('workload-placement.json') or {'status':
  report['pair_d_tcp'] = (evidence('pair-d-tcp.json') or {'status': 'UNAVAILABLE'}) if cfg.get('pair_d_enabled') else {'status': 'DISABLED', 'enabled': False}
  report['pair_d_tcp']['baseline'] = evidence('pair-d-baseline.json')
  report['pair_d_tcp']['trigger'] = evidence('pair-d-trigger.json')
@@ -1593,7 +1877,7 @@ index bed174a..2ee3e6a 100644
  state = evidence('validation-resources.json') or {}
  modern = state.get('schema_version') == 2 and not state.get('historical_dual_pair')
  automatic = evidence('existing-mtu-automatic.json') or {}
-@@ -168,7 +175,9 @@ if orchestration.get('semantics_rc',0) or orchestration.get('workload_rc',0):
+@@ -168,7 +178,9 @@ if orchestration.get('semantics_rc',0) or orchestration.get('workload_rc',0):
  if report['result']=='SUCCESS' and post_remediation.get('remediation_action')=='soft reboot' and post_remediation.get('status')=='PASS':
      report['result']='SUCCESS_WITH_REMEDIATION'
      report['existing_workload_migration']['status']='PASS AFTER REMEDIATION'
@@ -2019,11 +2303,143 @@ index 0000000..3b6c267
 +
 +if __name__ == '__main__':
 +    main()
+diff --git a/scripts/post_db_recovery.py b/scripts/post_db_recovery.py
+new file mode 100644
+index 0000000..e134113
+--- /dev/null
++++ b/scripts/post_db_recovery.py
+@@ -0,0 +1,126 @@
++#!/usr/bin/env python3
++"""Read-only post-DB/pre-cutover checkpoint selection and guarded recovery notes."""
++import argparse
++import configparser
++import json
++from pathlib import Path
++import re
++import sys
++import time
++
++from phase_schema import timestamp
++from provider_associations import verification
++from workload_validation import save
++
++
++def read(root, name):
++    value=json.loads((root/name).read_text())
++    if not isinstance(value,dict):
++        raise ValueError('Malformed checkpoint: '+name)
++    return value
++
++
++def inspect(root, inventory):
++    root=Path(root).resolve()
++    runtime=read(root,'runtime.json')
++    if runtime.get('phase_marker_schema_version') != 2:
++        raise ValueError('Recovery requires marker schema v2')
++    if Path(runtime['inventory']).resolve() != Path(inventory).resolve():
++        raise ValueError('Recovery inventory differs from the original run')
++    if Path(runtime['run_id']).name != root.name:
++        raise ValueError('Runtime run ID differs from checkpoint directory')
++    if (root/'inventory.before').read_bytes() != Path(inventory).read_bytes():
++        raise ValueError('Kolla inventory changed after source snapshot')
++    metrics=root/'metrics'
++    times={name:timestamp(metrics/name) for name in ('phase06.end','phase07.start',
++        'control_plane_downtime.start','db_migration.start','db_migration.end')}
++    if any(value is None for value in times.values()):
++        raise ValueError('Missing preparation/freeze/completed DB migration markers')
++    if not (times['phase06.end'] <= times['phase07.start'] <= times['control_plane_downtime.start'] <= times['db_migration.start'] <= times['db_migration.end']):
++        raise ValueError('Inconsistent migration marker order')
++    for name in ('phase08.start','phase08.end','phase09.start','phase10.start','control_plane_downtime.end','total.end'):
++        if (metrics/name).exists():
++            raise ValueError('Cutover/cleanup/API restoration already began: '+name)
++    # DB migration is never repeated by this recovery route.
++    log=(root/'db-sync-migrate.log').read_text()
++    if not re.match(r'\Areturncode:\s*0\s*\n',log):
++        raise ValueError('Authoritative DB migration did not report rc=0')
++    if read(root,'provider-associations-verification.json').get('status') != 'PASS':
++        raise ValueError('L3 provider association verification is not PASS')
++    if verification(json.loads((root/'provider-associations.after.json').read_text()))['status'] != 'PASS':
++        raise ValueError('Provider snapshot still contains legacy associations')
++    if not (root/'compute-port-ids.txt').is_file():
++        raise ValueError('Pre-existing compute port ID checkpoint is absent')
++    counts=read(root,'resource-counts.before.json')
++    config=configparser.ConfigParser(interpolation=None)
++    if not config.read(root/'ml2_conf.ini.target'):
++        raise ValueError('Target ML2 configuration checkpoint is absent')
++    nb=config.get('ovn','ovn_nb_connection')
++    sb=config.get('ovn','ovn_sb_connection')
++    if not nb or not sb:
++        raise ValueError('Checkpointed OVN endpoints are empty')
++    cfg=read(root,'validation-config.json') if (root/'validation-resources.json').exists() else {}
++    if cfg:
++        if cfg.get('run') != runtime['run_id']:
++            raise ValueError('Workload run identity differs')
++        state=read(root,'validation-resources.json')
++        if any(state.get(stage,{}).get('cleanup_started') for stage in ('pre','post')):
++            raise ValueError('Owned workload cleanup already began')
++        if cfg.get('capture_enabled') and not read(root,'validation-window.json').get('pcap_start'):
++            raise ValueError('Original ICMP capture anchor is absent')
++        if cfg.get('pair_d_enabled'):
++            trigger=read(root,'pair-d-trigger.json')
++            baseline=read(root,'pair-d-baseline.json')
++            if (trigger.get('status') != 'PASS' or trigger.get('ack',{}).get('session_id') != baseline.get('session_id') or
++                not times['control_plane_downtime.start'] <= trigger.get('acknowledged_at',0) <= times['db_migration.end']):
++                raise ValueError('Original TCP ARM/session/freeze evidence is absent')
++        if cfg.get('ns',{}).get('enabled'):
++            if read(root,'ns-baseline.json').get('status') != 'PASS' or read(root,'ns-precutover.json').get('status') != 'PASS':
++                raise ValueError('Original NS baseline/precutover evidence is absent')
++    return dict(status='POST_DB_PRE_CUTOVER_CHECKPOINT', root=str(root), runtime=runtime,
++                nb=nb,sb=sb,source_network_count=counts['networks'],workload_config=cfg,
++                workloads_enabled=bool(cfg),original_timestamps=times)
++
++
++def select(parent, inventory):
++    matches=[]
++    for root in sorted(Path(parent).iterdir()):
++        if not root.is_dir():continue
++        try:
++            inspect(root,inventory)
++            matches.append(root.resolve())
++        except (OSError,ValueError,KeyError,TypeError,configparser.Error):
++            continue
++    if len(matches) != 1:
++        raise ValueError('Expected exactly one eligible post-DB checkpoint; found '+str(len(matches))+': '+', '.join(map(str,matches)))
++    return matches[0]
++
++
++def record(root):
++    path=Path(root)/'orchestration-recovery.json'
++    prior=read(Path(root),path.name) if path.exists() else {'events':[]}
++    if not any(event.get('route')=='post-db-pre-cutover' for event in prior['events']):
++        prior['events'].append(dict(route='post-db-pre-cutover',resumed_at=time.time(),
++            reason='Topology verification interrupted after successful DB migration',
++            timing='Original freeze/DB/capture start markers retained; control-plane downtime includes recovery pause'))
++        save(path,prior)
++
++
++def main():
++    parser=argparse.ArgumentParser()
++    parser.add_argument('action',choices=('inspect','select','record'))
++    parser.add_argument('path',type=Path)
++    parser.add_argument('--inventory',required=True)
++    args=parser.parse_args()
++    if args.action=='select':
++        print(select(args.path,args.inventory))
++    else:
++        result=inspect(args.path,args.inventory)
++        if args.action=='record':record(args.path)
++        print(json.dumps(result))
++
++
++if __name__=='__main__':
++    try:main()
++    except (OSError,ValueError,KeyError,TypeError,configparser.Error) as exc:
++        raise SystemExit('STOP: '+str(exc))
 diff --git a/scripts/report_format.py b/scripts/report_format.py
-index 3bf6da2..e21eb04 100644
+index 3bf6da2..e637b54 100644
 --- a/scripts/report_format.py
 +++ b/scripts/report_format.py
-@@ -35,7 +35,7 @@ JSON_GROUPS = (
+@@ -35,10 +35,10 @@ JSON_GROUPS = (
       'new_ovn_workload_geneve', 'new_ovn_workload_bindings',
       'new_ovn_workload_dhcp', 'new_ovn_workload_mtu',
       'new_ovn_workload_metadata', 'new_ovn_workload_connectivity'),
@@ -2031,7 +2447,11 @@ index 3bf6da2..e21eb04 100644
 +    ('pair_d_tcp', 'ew_connectivity_matrix', 'north_south', 'workload_capacity', 'instance_quota'),
      ('existing_workload_cleanup', 'existing_workload_cleanup_evidence',
       'new_ovn_workload_cleanup'),
-     ('workload_checks', 'validation_orchestration', 'limitations'),
+-    ('workload_checks', 'validation_orchestration', 'limitations'),
++    ('workload_checks', 'validation_orchestration', 'orchestration_recovery', 'limitations'),
+ )
+ 
+ 
 @@ -97,7 +97,7 @@ def render_text(report, root, *, modern):
               f"Result : {report['result']}", f"Run    : {report['run_id']}", '']
      lines.append({
@@ -2041,7 +2461,16 @@ index 3bf6da2..e21eb04 100644
          'MIGRATED_VALIDATION_INCOMPLETE': 'Migration completed; validation or cleanup is incomplete.',
      }.get(report['result'], 'See JSON report for the recorded result.'))
  
-@@ -133,7 +133,7 @@ def render_text(report, root, *, modern):
+@@ -122,6 +122,8 @@ def render_text(report, root, *, modern):
+         lines.extend(['Legacy total duration includes preparation, validation and resume waits;',
+                       'excludes report/finalization and capture cleanup.'])
+     lines.append('Port_Binding convergence and workload interruption have different scopes.')
++    if report.get('orchestration_recovery'):
++        lines.append('Resumed after DB migration: control-plane downtime includes the recovery pause.')
+ 
+     section('2. RESOURCE AND NETWORK VALIDATION')
+     consistency = report.get('resource_consistency') or {}
+@@ -133,7 +135,7 @@ def render_text(report, root, *, modern):
      section('3. WORKLOAD VALIDATION')
      probe = report.get('dataplane_probe') or {}
      continuity = report.get('dataplane_continuity') or {}
@@ -2050,7 +2479,7 @@ index 3bf6da2..e21eb04 100644
      field('Result', check(continuity.get('status')), 2)
      field('Packet loss', packet_loss(probe), 2)
      field('Longest packet outage', seconds(probe.get('actual_dataplane_outage_seconds'))
-@@ -143,7 +143,7 @@ def render_text(report, root, *, modern):
+@@ -143,7 +145,7 @@ def render_text(report, root, *, modern):
            else 'UNAVAILABLE', 2)
  
      existing = report.get('existing_workload_migration') or {}
@@ -2059,7 +2488,7 @@ index 3bf6da2..e21eb04 100644
                    else 'EXISTING WORKLOAD - Legacy VM1/VM2 migration'])
      field('Result', check(existing.get('status')), 2)
      result('Initial validation on OVS', 'initial_ovs_workload_validation')
-@@ -168,7 +168,7 @@ def render_text(report, root, *, modern):
+@@ -168,7 +170,7 @@ def render_text(report, root, *, modern):
      if report.get('pre_cutover_remediation_action') == 'soft reboot' or report.get('post_cutover_remediation_action') == 'soft reboot':
          lines.extend(['', '  Boot checks account for the recorded remediation reboots.'])
  
@@ -2068,7 +2497,7 @@ index 3bf6da2..e21eb04 100644
      field('Result', check((report.get('fresh_ovn_provisioning') or {}).get('status')), 2)
      for label, key in [('Provisioning', 'new_ovn_workload_provisioning'),
                         ('Geneve networks', 'new_ovn_workload_geneve'),
-@@ -179,7 +179,7 @@ def render_text(report, root, *, modern):
+@@ -179,7 +181,7 @@ def render_text(report, root, *, modern):
          result(label, key)
  
      tcp = report.get('pair_d_tcp') or {}
@@ -2077,7 +2506,7 @@ index 3bf6da2..e21eb04 100644
      field('Result', check(tcp.get('status')), 2)
      if tcp.get('status') == 'DISABLED':
          lines.append('  TCP validation disabled for this run.')
-@@ -201,14 +201,37 @@ def render_text(report, root, *, modern):
+@@ -201,14 +203,37 @@ def render_text(report, root, *, modern):
              lines.extend(['', '  New listener opening during the Neutron freeze was not proven.'])
          lines.append('  TCP durations measure application probe failures.')
  
@@ -2758,6 +3187,160 @@ index 0000000..5803ab0
 +
 +
 +if __name__=='__main__':unittest.main()
+diff --git a/tests/test_post_db_recovery.py b/tests/test_post_db_recovery.py
+new file mode 100644
+index 0000000..9059d45
+--- /dev/null
++++ b/tests/test_post_db_recovery.py
+@@ -0,0 +1,148 @@
++import copy
++import json
++import os
++from pathlib import Path
++import sys
++import subprocess
++import tempfile
++import unittest
++import yaml
++
++ROOT=Path(__file__).resolve().parents[1]
++sys.path.insert(0,str(ROOT/'scripts'))
++from post_db_recovery import inspect, select, record
++
++
++class PostDBRecoveryTests(unittest.TestCase):
++    def setUp(self):
++        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
++        self.parent=Path(self.temp.name)
++        self.inventory=self.parent/'inventory';self.inventory.write_text('full original Kolla inventory')
++        self.root=self.parent/'run-one';self.root.mkdir()
++        self.make(self.root)
++
++    def make(self,root):
++        def put(name,value): (root/name).write_text(json.dumps(value))
++        put('runtime.json',dict(phase_marker_schema_version=2,run_id=root.name,inventory=str(self.inventory),
++            kolla_ansible='/venv/bin/kolla-ansible',globals='/etc/kolla/globals.yml',openrc='/etc/kolla/admin-openrc.sh',
++            control_hosts=['controller'],network_hosts=['network1'],compute_hosts=['compute1','compute2'],
++            ovn_cli_host='controller',db_sync_host='controller'))
++        (root/'inventory.before').write_bytes(self.inventory.read_bytes())
++        metrics=root/'metrics';metrics.mkdir()
++        for name,value in [('phase06.end',1),('phase07.start',2),('control_plane_downtime.start',2.2),
++                           ('db_migration.start',3),('db_migration.end',4)]:
++            (metrics/name).write_text(str(value))
++        (root/'db-sync-migrate.log').write_text('returncode: 0\n--- stdout ---\nsuccess\n')
++        put('provider-associations-verification.json',{'status':'PASS'})
++        put('provider-associations.after.json',[{'resource_id':'router','provider_name':'ovn'}])
++        (root/'compute-port-ids.txt').write_text('port0\nport1\n')
++        put('resource-counts.before.json',{'networks':6})
++        (root/'ml2_conf.ini.target').write_text('[ovn]\novn_nb_connection=tcp:controller:6641\novn_sb_connection=tcp:controller:6642\n')
++
++    def test_successful_db_frozen_before_cutover_is_selected(self):
++        value=inspect(self.root,self.inventory)
++        self.assertEqual(value['runtime']['run_id'],'run-one')
++        self.assertEqual(value['nb'],'tcp:controller:6641')
++        self.assertEqual(select(self.parent,self.inventory),self.root)
++
++    def test_started_cutover_or_restored_api_is_rejected(self):
++        for name in ('phase08.start','phase08.end','phase09.start','phase10.start','control_plane_downtime.end','total.end'):
++            marker=self.root/'metrics'/name;marker.write_text('5')
++            with self.subTest(name=name),self.assertRaisesRegex(ValueError,'already began'):
++                inspect(self.root,self.inventory)
++            marker.unlink()
++
++    def test_failed_or_unfinished_db_migration_is_rejected(self):
++        (self.root/'db-sync-migrate.log').write_text('returncode: 1\n')
++        with self.assertRaisesRegex(ValueError,'rc=0'):inspect(self.root,self.inventory)
++        (self.root/'db-sync-migrate.log').write_text('returncode: 0\n')
++        (self.root/'metrics/db_migration.end').unlink()
++        with self.assertRaisesRegex(ValueError,'Missing'):inspect(self.root,self.inventory)
++
++    def test_uncommitted_provider_associations_are_rejected(self):
++        (self.root/'provider-associations.after.json').write_text(json.dumps([{'resource_id':'router','provider_name':'single_node'}]))
++        with self.assertRaisesRegex(ValueError,'legacy'):inspect(self.root,self.inventory)
++
++    def test_changed_inventory_cannot_resume(self):
++        self.inventory.write_text('changed inventory')
++        with self.assertRaisesRegex(ValueError,'changed'):inspect(self.root,self.inventory)
++
++    def test_two_eligible_runs_are_not_silently_selected(self):
++        another=self.parent/'run-two';another.mkdir();self.make(another)
++        with self.assertRaisesRegex(ValueError,'found 2'):select(self.parent,self.inventory)
++
++    def test_original_capture_and_tcp_session_are_required(self):
++        cfg=dict(run='run-one',capture_enabled=True,pair_d_enabled=True,ns={'enabled':True})
++        (self.root/'validation-resources.json').write_text('{}')
++        (self.root/'validation-config.json').write_text(json.dumps(cfg))
++        (self.root/'validation-window.json').write_text(json.dumps({'pcap_start':{'index':5}}))
++        (self.root/'pair-d-baseline.json').write_text(json.dumps({'session_id':'original-session'}))
++        (self.root/'pair-d-trigger.json').write_text(json.dumps({'status':'PASS','ack':{'session_id':'original-session'},'acknowledged_at':2.5}))
++        for name in ('ns-baseline.json','ns-precutover.json'):
++            (self.root/name).write_text(json.dumps({'status':'PASS'}))
++        self.assertTrue(inspect(self.root,self.inventory)['workloads_enabled'])
++        (self.root/'pair-d-trigger.json').write_text(json.dumps({'status':'PASS','ack':{'session_id':'replaced'},'acknowledged_at':2.5}))
++        with self.assertRaisesRegex(ValueError,'session'):inspect(self.root,self.inventory)
++
++    def test_recovery_record_does_not_rebase_original_timestamps(self):
++        before={p.name:p.read_bytes() for p in (self.root/'metrics').iterdir()}
++        record(self.root);record(self.root)
++        self.assertEqual({p.name:p.read_bytes() for p in (self.root/'metrics').iterdir()},before)
++        data=json.loads((self.root/'orchestration-recovery.json').read_text())
++        self.assertEqual(len(data['events']),1)
++
++    def test_entrypoint_starts_at_verification_and_phase08(self):
++        plays=yaml.safe_load((ROOT/'resume-after-db.yml').read_text())
++        imports=[p['import_playbook'] for p in plays if 'import_playbook' in p]
++        self.assertEqual(imports,[f'playbooks/{f}' for f in ('08-cutover.yml','09-cleanup.yml','10-restore-neutron.yml',
++            '11-validate.yml','12-workload-validation.yml','13-report.yml')])
++        before=str(plays[:3])
++        self.assertNotIn('neutron-ovn-db-sync-util',before)
++        self.assertNotIn('d-arm',before)
++        self.assertNotIn('freeze-start',before)
++        self.assertTrue(all(p['any_errors_fatal'] for p in plays[:3]))
++
++    def execute_bootstrap(self, frozen=True):
++        # Run the production recovery plays, stopping before real cutover imports.
++        self.inventory.write_text('[control]\ncontroller ansible_connection=local\n[network]\nnetwork1 ansible_connection=local\n[compute]\ncompute1 ansible_connection=local\ncompute2 ansible_connection=local\n')
++        (self.root/'inventory.before').write_bytes(self.inventory.read_bytes())
++        plays=yaml.safe_load((ROOT/'resume-after-db.yml').read_text())[:3]
++        harness=self.parent/'harness';harness.mkdir()
++        (harness/'scripts').symlink_to(ROOT/'scripts',target_is_directory=True)
++        for play in plays:
++            play['become']=False
++            if 'vars_files' in play:
++                play['vars_files']=[str(ROOT/file) for file in play['vars_files']]
++        plays.append(dict(name='Check recovered facts',hosts='localhost',gather_facts=False,tasks=[
++            {'ansible.builtin.assert':{'that':["migration_run_id == 'run-one'", "ovn_nb_connection_runtime == 'tcp:controller:6641'",
++               "chassis_count_runtime | int == 3", "not validation_workloads_enabled | bool"]}}]))
++        playbook=harness/'recover.yml';playbook.write_text(yaml.safe_dump(plays,sort_keys=False))
++        binaries=harness/'bin';binaries.mkdir()
++        docker=binaries/'docker'
++        docker.write_text('#!/usr/bin/env python3\nimport json,sys\n'
++            'if sys.argv[1:3]==["inspect","neutron_server"]: print(json.dumps([{"State":{"Running":'+str(not frozen)+'}}]))\n'
++            'elif "ovn-nbctl" in sys.argv: print("switch recovered\\nrouter recovered")\n'
++            'elif "ovn-sbctl" in sys.argv: print("_uuid : recovered")\n'
++            'else: raise SystemExit(9)\n')
++        docker.chmod(0o700)
++        env=dict(os.environ,PATH=str(binaries)+':'+os.environ['PATH'],ANSIBLE_NOCOLOR='1')
++        return subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i',str(self.inventory),str(playbook),
++            '-e','migration_resume_run_dir='+str(self.root)],capture_output=True,text=True,env=env,timeout=60)
++
++    def test_real_ansible_restores_runtime_and_keeps_original_db_freeze_timestamps(self):
++        before={name:(self.root/'metrics'/name).read_bytes() for name in ('phase07.start','control_plane_downtime.start','db_migration.start','db_migration.end')}
++        result=self.execute_bootstrap()
++        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
++        self.assertTrue((self.root/'metrics/phase07.end').exists())
++        self.assertFalse((self.root/'metrics/phase08.start').exists())
++        self.assertEqual({name:(self.root/'metrics'/name).read_bytes() for name in before},before)
++
++    def test_real_ansible_refuses_if_neutron_was_restarted(self):
++        result=self.execute_bootstrap(frozen=False)
++        self.assertNotEqual(result.returncode,0)
++        self.assertIn('Require neutron-server to remain stopped',result.stdout)
++        self.assertFalse((self.root/'metrics/phase07.end').exists())
++        self.assertFalse((self.root/'orchestration-recovery.json').exists())
++
++
++if __name__=='__main__':unittest.main()
 diff --git a/tests/test_quota_http.py b/tests/test_quota_http.py
 new file mode 100644
 index 0000000..2a66528
@@ -2864,3 +3447,63 @@ index c18f405..0fd8f73 100644
  
      def test_open_tcp_failure_is_visible_beside_previous_recovered_duration(self):
          report = self.report(pair_d_tcp={'status': 'FAIL', 'streams': {
+diff --git a/tests/test_topology_pipeline.py b/tests/test_topology_pipeline.py
+new file mode 100644
+index 0000000..87f9c09
+--- /dev/null
++++ b/tests/test_topology_pipeline.py
+@@ -0,0 +1,54 @@
++"""Exercise the actual topology shell check with output larger than pipe buffers."""
++import os
++from pathlib import Path
++import subprocess
++import tempfile
++import unittest
++import yaml
++
++ROOT=Path(__file__).resolve().parents[1]
++
++
++class TopologyPipelineTests(unittest.TestCase):
++    def setUp(self):
++        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
++        directory=Path(self.temp.name)
++        docker=directory/'docker'
++        docker.write_text('''#!/usr/bin/env python3
++import os, signal, sys
++signal.signal(signal.SIGPIPE, signal.SIG_DFL)
++case=os.environ.get('TOPOLOGY_CASE','valid')
++if 'ovn-nbctl' in sys.argv:
++    first=b'switch abc\\n' if case!='no-nb' else b'empty logical database\\n'
++    os.write(1,first)
++    for i in range(2048):os.write(1,b'x'*8191+b'\\n')
++    if case=='nb-error':sys.exit(7)
++elif 'ovn-sbctl' in sys.argv:
++    os.write(1,b'_uuid : datapath\\n' if case!='no-sb' else b'\\n')
++else:sys.exit(9)
++''')
++        docker.chmod(0o700)
++        self.env=dict(os.environ,PATH=str(directory)+':'+os.environ['PATH'])
++        plays=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
++        task=next(t for p in plays for t in p['tasks'] if t['name']=='Verify NB logical topology and SB datapaths')
++        self.shell=task['ansible.builtin.shell'].replace("{{ hostvars['localhost']['ovn_nb_connection_runtime'] }}",'tcp:controller:6641').replace("{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}",'tcp:controller:6642')
++
++    def run_check(self,case='valid',original=False):
++        shell=self.shell.replace("grep -E 'switch|router' >/dev/null","grep -Eq 'switch|router'") if original else self.shell
++        return subprocess.run(['bash','-c',shell],env=dict(self.env,TOPOLOGY_CASE=case),capture_output=True,text=True,timeout=20)
++
++    def test_original_quiet_reader_reproduces_rc141(self):
++        self.assertEqual(self.run_check(original=True).returncode,141)
++
++    def test_fixed_reader_consumes_large_topology_and_passes(self):
++        self.assertEqual(self.run_check().returncode,0)
++
++    def test_real_nb_failure_is_not_ignored(self):
++        self.assertEqual(self.run_check('nb-error').returncode,7)
++
++    def test_missing_logical_topology_or_datapaths_is_rejected(self):
++        for case in ('no-nb','no-sb'):
++            with self.subTest(case=case):self.assertNotEqual(self.run_check(case).returncode,0)
++
++
++if __name__=='__main__':unittest.main()
