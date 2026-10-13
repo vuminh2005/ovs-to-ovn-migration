@@ -1,7 +1,7 @@
 Validation — 2026-10-13
 Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
 
-371 unittest cases: PASS on SDK 4.21.0, no skipped tests.
+378 unittest cases: PASS on SDK 4.21.0, no skipped tests.
 Previous 348-case suite and quota HTTP cases also passed on SDK 3.0.0.
 Includes real localhost TCP normal, same-socket timeout/recovery,
 closed held socket without reconnect, unexpected source rejection;
@@ -56,3 +56,14 @@ N-S terminal-error diagnostics correction:
   Correct current schema-2 marker filenames are phase08.* and phase09.* (no underscore).
   This is a diagnostics correction; no claim that it preserves NAT sessions or repairs
   the already-closed held socket in live run 20261013-153114.
+
+Reset after retained N-S validation failure:
+  Stop checkpointed controller snat-server/fip-client before Kolla destroy.
+  Preserve migration evidence; write process-stop evidence only in the new reset snapshot.
+  Config/run/cmdline ownership and PID/boot/start_ticks are validated before signaling.
+  Stale identity/foreign command/unknown role are never signaled; a foreign live candidate
+  blocks all signaling. Ignored SIGTERM blocks Kolla destroy, with no forced kill.
+  Seven tests cover actual child listeners, SIGTERM and port release. The executor has
+  virtual child PIDs with a different /proc view, so proc/pidfd identity boundaries are
+  modeled in this test fixture; no live controller process was stopped during validation.
+  All 7 Ansible syntax entrypoints and Python/YAML checks pass for this revision.

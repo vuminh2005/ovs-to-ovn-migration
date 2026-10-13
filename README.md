@@ -20,6 +20,8 @@ Lỗi pipeline `rc=141` sau DB migration có route phục hồi riêng; xem
 
 Lỗi chẩn đoán N-S ghi đè lỗi socket đầu tiên đã được sửa; xem
 [phân tích phiên SNAT bị mất](docs/ns-held-session-diagnostics.md).
+Reset cũng dừng đúng probe N-S cũ trên controller theo checkpoint để tránh
+listener cũ giữ cổng 18180 khi tạo lần thử mới; evidence migration cũ được giữ.
 
 ## Cross-compute A/B/C/D update (thiết kế nền)
 

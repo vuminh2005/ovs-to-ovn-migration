@@ -22,6 +22,13 @@ Cleanup workload được giữ lại để phục vụ kiểm tra; không hạ 
 - Summary đầu tiên *còn trong bản console được gửi* ghi socket đã đóng lúc
   `16:58:57.183 +07:00`. Không coi đây là thời điểm socket thực sự đóng.
 
+Marker bổ sung do người dùng cung cấp: phase 08 chạy từ `16:39:32.217` đến
+`16:41:23.288`; phase 09 từ `16:41:23.520` đến `16:41:26.058` (+07:00).
+Đợt mất phản hồi bắt đầu trong phase 08, khoảng 59 giây trước phase 09. Do đó
+xóa qrouter ở phase 09 không gây đợt mất phản hồi ban đầu. Thời điểm đóng
+socket thực sự chưa biết; chưa loại trừ tác động của cleanup lên khả năng
+phục hồi của phiên cũ.
+
 Lỗi probe cũ: sau khi socket đóng, mỗi vòng lặp tiếp theo ghi đè terminal_error
 bằng `held socket already closed; reconnect prohibited`. Vì vậy bản evidence
 cũ không xác định được lỗi đầu tiên là reset, broken pipe, EOF hay lỗi kiểm tra
@@ -48,6 +55,11 @@ Thay code trên controller không cập nhật process đang chạy trong guest 
 không thể phục hồi một socket đã đóng. Bản sửa được dùng khi dựng probe ở lần
 thử tiếp theo. Không chạy lại migration hoặc restart probe để đổi kết quả
 lịch sử của run này.
+
+Khi quyết định thử một run mới, dùng bản reset mới: nó dừng đúng probe N-S
+controller theo checkpoint trước Kolla destroy. Controller không reboot nên
+run FAIL có thể để lại listener cũ chiếm cổng 18180. Reset giữ nguyên evidence
+migration cũ và lưu `local-probes-stop.json` trong snapshot reset mới.
 
 ## Đọc marker đúng của run hiện tại
 

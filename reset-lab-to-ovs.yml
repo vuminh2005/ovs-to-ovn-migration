@@ -100,6 +100,7 @@
     - name: Publish this reset's snapshot path
       ansible.builtin.set_fact:
         reset_run_dir: "{{ reset_snapshot_root }}/{{ reset_snapshot_id }}"
+        reset_backup_root_runtime: "{{ reset_backup_root }}"
 
     - name: Preserve the full four-node Kolla inventory
       ansible.builtin.copy:
@@ -242,6 +243,16 @@
       args:
         executable: /bin/bash
       changed_when: false
+
+    - name: Stop only checkpointed controller N-S probes before Kolla destroy
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/scripts/reset_local_probes.py"
+          - "{{ reset_backup_root_runtime }}"
+          - "{{ reset_run_dir }}/local-probes-stop.json"
+      register: reset_local_probes
+      changed_when: reset_local_probes.rc == 0 and (reset_local_probes.stdout | from_json).stopped | length > 0
 
     - name: Run kolla-ansible destroy
       ansible.builtin.shell: |

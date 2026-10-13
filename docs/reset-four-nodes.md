@@ -30,6 +30,13 @@ cache Ubuntu trên host và migration evidence. Controller không reboot;
 network1/compute1/compute2 reboot lần lượt. Mặc định
 `reset_delete_migration_backups: false`; chỉ đổi khi thực sự muốn xóa evidence cũ.
 
+Trước Kolla destroy, reset dừng các process `snat-server`/`fip-client` trên
+controller có checkpoint N-S hợp lệ. Controller không reboot nên listener của
+run FAIL có thể còn giữ cổng 18180. Bước này kiểm tra run/config/cmdline cùng
+PID, boot và start_ticks; chỉ gửi SIGTERM tới đúng process qua pidfd. Không xóa
+log/metrics run cũ. Evidence dừng process nằm trong snapshot reset ở
+`local-probes-stop.json`; ownership không khớp sẽ dừng trước Kolla destroy.
+
 Network1 giữ IP `10.1.0.90/24` và MAC của eth1 trên `br-underlay`;
 Netplan và service veth tạo lại `ns-uplink ↔ ns-ex` qua reboot. Tunnel trên
 network1 dùng `br-underlay`, hai compute dùng `eth1`. Sau deploy reset đặt
