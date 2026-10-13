@@ -283,6 +283,8 @@ def validation_ready(root):
         role_ready = role_ready and read_evidence(root, 'ew-matrix-results.json').get('status') == 'PASS'
     if cfg.get('ns', {}).get('enabled'):
         role_ready = role_ready and read_evidence(root, 'ns-results.json').get('status') == 'PASS'
+        if cfg['ns'].get('diagnostics_enabled'):
+            role_ready = role_ready and read_evidence(root, 'ns-diagnostics.json').get('status') == 'PASS'
     return (role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
             workload_pass(read_evidence(root, 'pre-workload-checks.json'), 'geneve') and
             workload_pass(read_evidence(root, 'post-workload-checks.json'), 'geneve') and
@@ -1328,6 +1330,10 @@ def main():
         if extended:
             extended.matrix_ready()
             extended.ns_wait()
+            from ns_diagnostics import Diagnostics
+            diagnostics = Diagnostics(extended)
+            diagnostics.ready()
+            diagnostics.snapshot_conntrack('pre-freeze')
     elif args.action == 'finalize':
         v.finalize()
     elif args.action == 'pre':

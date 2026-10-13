@@ -254,6 +254,16 @@
       register: reset_local_probes
       changed_when: reset_local_probes.rc == 0 and (reset_local_probes.stdout | from_json).stopped | length > 0
 
+    - name: Stop and archive checkpointed N-S TCP captures before Kolla destroy
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/scripts/ns_diagnostics.py"
+          - reset-stop
+          - "{{ reset_backup_root_runtime }}"
+          - "{{ reset_run_dir }}/ns-diagnostic-captures-stop.json"
+      changed_when: false
+
     - name: Run kolla-ansible destroy
       ansible.builtin.shell: |
         set -euo pipefail

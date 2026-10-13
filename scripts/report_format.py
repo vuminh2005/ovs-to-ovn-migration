@@ -223,6 +223,10 @@ def render_text(report, root, *, modern):
             field(name+' failed application probes', str(stream.get('failures'))+' / '+str(stream.get('attempts')), 4)
             if stream.get('open_failure_since') is not None:
                 field(name+' failure still open', 'YES (client monotonic '+str(stream['open_failure_since'])+')', 4)
+            if stream.get('first_local_endpoint'):
+                field(name+' guest/client endpoint', str(stream['first_local_endpoint']), 4)
+            if stream.get('first_peer_endpoint'):
+                field(name+' endpoint seen by server', str(stream['first_peer_endpoint']), 4)
             if stream.get('terminal_error'):
                 event = stream.get('terminal_event') or {}
                 label = ' first terminal error' if event else ' recorded terminal error'
@@ -233,6 +237,12 @@ def render_text(report, root, *, modern):
                     field(name+' terminal epoch', str(event.get('ts')), 4)
     if ns.get('reason'):
         field('Reason', ns['reason'], 2)
+
+    diagnostics = report.get('north_south_diagnostics', {})
+    if diagnostics.get('status') not in (None, 'DISABLED'):
+        field('N-S TCP diagnostic capture', check(diagnostics.get('status')))
+        for error in diagnostics.get('errors', []):
+            field('Capture evidence issue', error, 2)
 
     section('4. VALIDATION RESOURCE CLEANUP')
     cleanup_label = ('Existing ICMP / DHCP workloads' if tcp.get('status') == 'DISABLED'

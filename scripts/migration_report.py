@@ -86,6 +86,7 @@ matrix = evidence('ew-matrix-results.json') or {'status': 'UNAVAILABLE', 'flows'
 report['ew_connectivity_matrix'] = {'status': matrix['status'] if cfg.get('ew_matrix_enabled') else 'PARTIAL',
     'flows': dict({'ew_different_compute_different_subnet': report['dataplane_probe']}, **matrix.get('flows', {}))}
 report['north_south'] = (evidence('ns-results.json') or {'status':'UNAVAILABLE'}) if cfg.get('ns', {}).get('enabled') else {'status':'DISABLED'}
+report['north_south_diagnostics'] = (evidence('ns-diagnostics.json') or {'status':'UNAVAILABLE'}) if cfg.get('ns', {}).get('diagnostics_enabled') and cfg.get('ns', {}).get('enabled') else {'status':'DISABLED'}
 report['extended_cleanup'] = (evidence('extended-cleanup.json') or {}).get('status', 'NOT TESTED') if cfg.get('ew_matrix_enabled') or cfg.get('ns', {}).get('enabled') else 'DISABLED'
 report['workload_capacity'] = evidence('workload-capacity.json')
 report['instance_quota'] = evidence('quota-instances.json')
@@ -179,6 +180,9 @@ if report['result']=='SUCCESS' and post_remediation.get('remediation_action')=='
     report['result']='SUCCESS_WITH_REMEDIATION'
     report['existing_workload_migration']['status']='PASS AFTER REMEDIATION'
 report['limitations'][0]='ICMP metrics require a continuous drop-free compute-tap PCAP, endpoints and request cadence; gaps or unrecovered loss yield UNAVAILABLE. Console packet history is secondary only. PortBinding convergence remains separate.'
+if report['result'] in ('SUCCESS', 'SUCCESS_WITH_REMEDIATION') and report['north_south_diagnostics']['status'] not in ('PASS', 'DISABLED'):
+    report['result'] = 'MIGRATED_VALIDATION_INCOMPLETE'
+
 if report['result'] in ('SUCCESS', 'SUCCESS_WITH_REMEDIATION') and report['extended_cleanup'] not in ('PASS', 'DISABLED'):
     report['result']='MIGRATED_VALIDATION_INCOMPLETE'
 report = ordered_report(report)

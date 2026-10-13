@@ -391,6 +391,10 @@ class Extended:
             self.commit()
         directory = self.root/'ns'
         directory.mkdir(mode=0o700, exist_ok=True)
+        from ns_diagnostics import Diagnostics
+        diagnostics = Diagnostics(self)
+        # Endpoint capture starts before either N-S client creates a session.
+        diagnostics.start('endpoint')
         self.local_process('snat-server', 'serve', self.ns_config(bind=cfg['endpoint_ip'], server='external-endpoint',
             console=False, output=str(directory/'snat-server.jsonl')))
         deadline = time.monotonic()+self.cfg['timeout']
@@ -409,6 +413,9 @@ class Extended:
         self.local_process('fip-client', 'client', self.ns_config(source=cfg['endpoint_ip'], target=cfg['fip_ip'],
             expected_peer=cfg['endpoint_ip'], expected_server=vms['1']['server'], label='fip',
             console=False, output=str(directory/'fip-client.jsonl')))
+        # Exact Neutron UUIDs and placement are audited before selecting taps.
+        diagnostics.start('guest-snat')
+        diagnostics.start('guest-fip')
         # Diagnostic evidence identifies the MACs that an outer whitelist must permit.
         ports = list(self.cloud.network.ports(device_id=router.id, network_id=ext.id))
         save(self.root/'ns-outer-policy.json', dict(router_uuid=router.id,
@@ -533,6 +540,8 @@ class Extended:
                     recovered_failure_bursts=bursts, open_failure_since=stats['open_failure_since'],
                     terminal_error=stats['terminal_error'], first_session=old['last_session'], last_session=stats['last_session'],
                     held_broken=stats['held_broken'], terminal_event=stats.get('terminal_event'),
+                    **{key:stats.get(key) for key in ('first_local_endpoint', 'last_local_endpoint',
+                        'first_peer_endpoint', 'last_peer_endpoint')},
                     observed_peer_ips=stats['observed_peer_ips'], connection_attempts=stats['connection_attempts'])
             results[direction] = dict(status='PASS' if len(streams)==2 and all(s['status']=='PASS' for s in streams.values()) else 'FAIL',
                 held_session_preservation=streams.get('held', {}).get('status', 'UNAVAILABLE'),

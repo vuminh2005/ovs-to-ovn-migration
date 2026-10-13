@@ -15,3 +15,7 @@ ns_inbound_ip: 10.233.0.20
 # Dedicated port, independent of the manually started baseline services.
 ns_tcp_port: 18180
 validation_ew_matrix_enabled: true
+
+# Preserve the NAT profile while recording TCP tuples and resets.
+ns_diagnostics_enabled: true
+ns_capture_interface: eth1

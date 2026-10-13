@@ -59,6 +59,8 @@ class Stats:
                           open_failure_since=None, longest_recovered_failure_seconds=0.0,
                           observed_peer_ips=[], held_broken=False, terminal_error=None,
                           terminal_event=None,
+                          first_local_endpoint=None, last_local_endpoint=None,
+                          first_peer_endpoint=None, last_peer_endpoint=None,
                           recovered_failure_bursts=[])
         self.lock = threading.Lock()
 
@@ -79,7 +81,7 @@ class Stats:
                     errno=getattr(exc, 'errno', None), operation=operation, sequence=sequence,
                     mono=time.monotonic(), ts=time.time(), **endpoints))
 
-    def record(self, start, response=None, error=None):
+    def record(self, start, response=None, error=None, local_endpoint=None):
         with self.lock:
             v = self.value
             v['attempts'] += 1
@@ -101,6 +103,15 @@ class Stats:
                 if v['first_session'] is None:
                     v['first_session'] = session
                 v['last_session'] = session
+                if local_endpoint:
+                    if v['first_local_endpoint'] is None:
+                        v['first_local_endpoint'] = local_endpoint
+                    v['last_local_endpoint'] = local_endpoint
+                if type(response.get('peer_port')) is int and 0 < response['peer_port'] <= 65535:
+                    peer_endpoint = [response['peer'], response['peer_port']]
+                    if v['first_peer_endpoint'] is None:
+                        v['first_peer_endpoint'] = peer_endpoint
+                    v['last_peer_endpoint'] = peer_endpoint
                 if response['peer'] not in v['observed_peer_ips']:
                     v['observed_peer_ips'].append(response['peer'])
 
@@ -140,6 +151,7 @@ class Client:
                 started = time.monotonic()
                 response = None
                 error = None
+                local_endpoint = None
                 operation = 'held_socket_guard'
                 try:
                     if name == 'held' and established and wire is None:
@@ -150,6 +162,7 @@ class Client:
                         if name == 'held':
                             established = True
                     request = dict(run=self.cfg['run'], probe=self.probe_id, seq=sequence)
+                    local_endpoint = list(wire.sock.getsockname())
                     operation = 'send'
                     wire.sock.settimeout(self.cfg['timeout'])
                     wire.sock.sendall((json.dumps(request)+'\n').encode())
@@ -180,7 +193,7 @@ class Client:
                     if wire:
                         wire.sock.close()
                         wire = None
-                stats.record(started, response, error)
+                stats.record(started, response, error, local_endpoint)
                 if name == 'new' and wire:
                     wire.sock.close()
                     wire = None
@@ -211,15 +224,24 @@ def serve(cfg):
         with sock:
             wire = Wire(sock)
             connection = str(uuid.uuid4())
+            last_request = None
+            if cfg.get('output'):
+                emit(cfg, dict(kind='connection-open', connection=connection, listener=listener_id,
+                               server=cfg['server'], peer=list(peer), local=list(sock.getsockname())))
             while True:
                 try:
                     row = wire.line(time.monotonic()+cfg['lifetime'])
+                    last_request = {k: row.get(k) for k in ('run', 'probe', 'seq')}
                     if row.get('run') != cfg['run']:
                         return
                     row.update(server=cfg['server'], server_boot=boot_id(), listener=listener_id,
-                               connection=connection, peer=peer[0])
+                               connection=connection, peer=peer[0], peer_port=peer[1])
                     sock.sendall((json.dumps(row)+'\n').encode())
-                except (OSError, EOFError, ValueError):
+                except (OSError, EOFError, ValueError) as exc:
+                    if cfg.get('output'):
+                        emit(cfg, dict(kind='connection-close', connection=connection, listener=listener_id,
+                                       peer=list(peer), last_request=last_request, error=str(exc),
+                                       errno=getattr(exc, 'errno', None)))
                     return
     with socket.socket() as listener:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

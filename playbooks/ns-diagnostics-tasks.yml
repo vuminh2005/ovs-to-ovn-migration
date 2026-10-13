@@ -1,0 +1,57 @@
+---
+- name: Operate checkpointed N-S TCP diagnostics without changing network state
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Prepare owned diagnostic capture directory
+      ansible.builtin.file:
+        path: "{{ ns_diag_checkpoint.config.directory }}"
+        state: directory
+        mode: '0700'
+      delegate_to: "{{ ns_diag_checkpoint.host }}"
+      when: ns_diag_action == 'start'
+
+    - name: Stage diagnostic helpers
+      ansible.builtin.copy:
+        src: "../scripts/{{ item }}"
+        dest: "{{ ns_diag_checkpoint.config.directory }}/{{ item }}"
+        mode: '0700'
+      loop: [ns_diagnostics.py, dataplane_capture.py]
+      delegate_to: "{{ ns_diag_checkpoint.host }}"
+      when: ns_diag_action == 'start'
+
+    - name: Operate the original TCP capture only
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ ns_diag_checkpoint.config.directory }}/ns_diagnostics.py"
+          - "agent-{{ ns_diag_action }}"
+          - "{{ ns_diag_checkpoint.config.directory }}"
+          - "{{ ns_diag_checkpoint.config | to_json }}"
+      register: ns_diag_operation
+      delegate_to: "{{ ns_diag_checkpoint.host }}"
+      when: ns_diag_action != 'conntrack'
+
+    - name: Read legacy and OVN conntrack tuples without modifying either
+      ansible.builtin.script:
+        cmd: "../scripts/ns_diagnostics.py conntrack /tmp {{ ns_diag_checkpoint.config | to_json | quote }}"
+        executable: python3
+      register: ns_diag_conntrack
+      delegate_to: "{{ ns_diag_checkpoint.host }}"
+      when: ns_diag_action == 'conntrack'
+
+    - name: Persist diagnostic operation result
+      ansible.builtin.copy:
+        dest: "{{ ns_diag_local_directory }}/operation.json"
+        content: "{{ ns_diag_conntrack.stdout if ns_diag_action == 'conntrack' else ns_diag_operation.stdout }}"
+        mode: '0600'
+
+    - name: Archive stopped TCP PCAP and capture logs on deployment host
+      ansible.builtin.fetch:
+        src: "{{ ns_diag_checkpoint.config.directory }}/{{ item }}"
+        dest: "{{ ns_diag_local_directory }}/{{ item }}"
+        flat: true
+      loop: [tcp.pcap, tcpdump.log, tcp-capture-state.json, supervisor.log]
+      delegate_to: "{{ ns_diag_checkpoint.host }}"
+      when: ns_diag_action == 'stop'

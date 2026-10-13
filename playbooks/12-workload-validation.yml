@@ -160,6 +160,30 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Archive post-validation N-S conntrack even after workload failure
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/ns_diagnostics.py"
+          - post-validation
+          - "{{ migration_run_dir }}"
+      register: ns_diag_snapshot_result
+      changed_when: false
+      failed_when: false
+      when: validation_workloads_enabled | bool
+
+    - name: Stop and archive N-S TCP captures on both PASS and FAIL
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/ns_diagnostics.py"
+          - finish
+          - "{{ migration_run_dir }}"
+      register: ns_diag_finish_result
+      changed_when: false
+      failed_when: false
+      when: validation_workloads_enabled | bool
+
     - name: Stop owned compute capture fetch raw PCAP and calculate strict metrics
       ansible.builtin.shell: |
         set -euo pipefail
