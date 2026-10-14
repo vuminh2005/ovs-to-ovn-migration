@@ -122,13 +122,22 @@ Playbook in kết quả, run ID và đường dẫn hai report ở cuối. Mở 
 cat '/root/ovs-to-ovn-backup/<run-id>/migration-report.txt'
 ```
 
-Bản text có các nhóm ngăn cách rõ: thời gian migration, tài nguyên/mạng,
-workload A/B/C/D, cleanup và vị trí report. Pair B vẫn hiện automatic convergence
-và remediation trước/sau cutover. Pair D hiện kết quả của ba luồng TCP và thời
-gian lỗi probe dài nhất đã phục hồi; D bị tắt chỉ hiện `DISABLED`.
-Thời gian làm tròn 3 chữ số thập phân, tỷ lệ mất gói 4 chữ số thập phân.
-JSON giữ đầy đủ key, độ chính xác, phase timing, counter và evidence hiện có,
-sắp thứ tự theo các nhóm tương ứng. Các điều kiện PASS/FAIL và cleanup giữ nguyên.
+Bản text chỉ hiện ba thời gian `Total run duration`, `Control-plane downtime`,
+`Dataplane downtime`, rồi hai nhóm East–West và North–South. Nhãn `Dataplane downtime`
+giữ giá trị convergence/Port_Binding hiện có; gián đoạn lưu lượng được đo riêng
+ở từng luồng. ICMP hiện result, packet loss, failure burst count và longest packet
+outage. TCP dùng probe failure rate và longest probe failure, vì đây là phép đo
+application probe. Lỗi chưa phục hồi hiện `UNRECOVERED`; counter cũ chưa có hiện
+`UNAVAILABLE`. Thời gian làm tròn 3 chữ số thập phân, tỷ lệ 4 chữ số thập phân.
+JSON vẫn lưu đầy đủ DHCP/MTU/provisioning/remediation/cleanup, key, độ chính xác,
+phase timing, counter và evidence. Điều kiện PASS/FAIL và cleanup giữ nguyên.
+
+Timestamp từng task được lưu riêng trong `<run>/task-timings/`, mỗi lần chạy/resume
+có cặp `<invocation-id>.jsonl` và `.json`. JSONL ghi ngay start/end; JSON tổng hợp
+theo host khi Ansible kết thúc, gồm cả task lỗi/skip và handler. Có UTC, Unix epoch,
+thời lượng monotonic, tên task, host, trạng thái; không lưu args/output/fact.
+Chạy từ thư mục repo để nạp `ansible.cfg` mới. Xem chi tiết và giới hạn phép đo
+trong phần “Per-task timestamps” của README.
 
 Thay `<run-id>` bằng giá trị vừa in. Không chọn tùy tiện run cũ. Evidence bổ sung:
 

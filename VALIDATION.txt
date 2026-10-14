@@ -1,3 +1,27 @@
+Report/task timing update — 2026-10-14
+Source: migration.zip; report-only changes plus additive TCP burst counters and task-timing callback.
+
+421 unittest cases: PASS, no skips (OpenStackSDK 4.21.0, ansible-core 2.17.14).
+Includes real Ansible execution with bootstrap buffering, parallel local hosts,
+loop tasks, handlers, delegation, skipped/ignored/fatal/unreachable statuses,
+nested child playbooks from another cwd, repeated invocations on the same run,
+secret/output exclusion, and interrupted execution retaining durable JSONL starts.
+Per-task durations use controller monotonic time; UTC/epoch timestamps are also saved.
+Meta/controller-only dispatches have no fabricated runner completion timestamp.
+
+9 Ansible syntax entrypoints: PASS (migration/reset/resume/retries and 3 helpers).
+Python AST: 55 files PASS; YAML: 30 files PASS; callback DOCUMENTATION YAML PASS.
+TXT checks cover ordering, all EW/NS streams, accurate TCP probe terminology,
+UNRECOVERED/UNAVAILABLE, existing Dataplane downtime value and JSON integrity.
+Complete report JSON retains precise evidence, hidden checks and phase timing.
+
+The uploaded ns-lab.yml already selected ns_preserve_snat_source_port=true.
+It is unchanged. The stale test forcing false now verifies the gate for both modes.
+No source NAT policy or migration/validation/cleanup gate was changed.
+No live reset, Kolla deployment or cloud migration was executed for this revision.
+
+Prior validation history (superseded TXT presentation assertions):
+
 Validation — 2026-10-13
 Source: uploaded playbook(1).zip (no interrupted-edit checkpoint found).
 

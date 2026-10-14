@@ -502,8 +502,9 @@ class ThreePairsTests(unittest.TestCase):
         self.assertEqual(report['automatic_mtu_convergence'],'FAIL')
         self.assertTrue(report['remediation_required']); self.assertEqual(report['remediation_action'],'soft reboot')
         self.assertEqual(report['dataplane_continuity']['measurement_workload'],'Pair A')
-        self.assertRegex(text,r'Automatic MTU convergence\s+: FAIL')
-        self.assertRegex(text,r'MTU readiness after action\s+: PASS')
+        self.assertNotIn('Automatic MTU convergence',text)
+        self.assertNotIn('MTU readiness after action',text)
+        self.assertEqual(report['pre_cutover_mtu_readiness'],'PASS')
 
     def test_failure_preserves_all_owned_resources(self):
         s=self.scenario(); self.assertFalse(s.obj.finalize())

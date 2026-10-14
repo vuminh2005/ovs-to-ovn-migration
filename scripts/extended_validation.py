@@ -562,6 +562,8 @@ class Extended:
                     failed_probe_percent=100*failed/attempts if attempts else None,
                     longest_recovered_failure_seconds=max((b['duration_seconds'] for b in bursts), default=0.0) if continuity and stats['open_failure_since'] is None else None,
                     recovered_failure_bursts=bursts, open_failure_since=stats['open_failure_since'],
+                    failure_burst_count=(len(bursts) + int(stats['open_failure_since'] is not None
+                        and stats['open_failure_since'] >= old_row['mono'])) if continuity else None,
                     terminal_error=stats['terminal_error'], first_session=old['last_session'], last_session=stats['last_session'],
                     held_broken=stats['held_broken'], terminal_event=stats.get('terminal_event'),
                     successful_echo_source_port_match=port_status,

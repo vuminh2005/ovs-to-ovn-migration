@@ -350,8 +350,9 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(report['existing_workload_post_migration_validation'],'PASS')
             self.assertEqual(report['initial_ovs_workload_validation'],'PASS')
             text=(root/'migration-report.txt').read_text()
-            self.assertIn('Legacy VM1/VM2 migration',text)
-            self.assertRegex(text,r'Initial validation on OVS\s+: PASS')
+            self.assertNotIn('Legacy VM1/VM2 migration',text)
+            self.assertNotIn('Initial validation on OVS',text)
+            self.assertEqual(report['existing_workload_cleanup'],'PASS')
 
 
 if __name__=='__main__':

@@ -90,179 +90,98 @@ def packet_loss(probe):
     return output
 
 
-def render_text(report, root, *, modern):
-    major = '=' * 70
-    minor = '-' * 70
-    lines = [major, 'OVS -> OVN MIGRATION REPORT'.center(70).rstrip(), major,
-             f"Result : {report['result']}", f"Run    : {report['run_id']}", '']
-    lines.append({
-        'SUCCESS': 'Migration and validation passed.',
-        'SUCCESS_WITH_REMEDIATION': 'Migration passed. Existing DHCP workload required guest reboot remediation.',
-        'MIGRATED_VALIDATION_INCOMPLETE': 'Migration completed; validation or cleanup is incomplete.',
-    }.get(report['result'], 'See JSON report for the recorded result.'))
+def counter(value):
+    return str(value) if type(value) is int and value >= 0 else 'UNAVAILABLE'
 
-    def section(title):
-        lines.extend(['', minor, title, minor])
+
+def probe_failure_rate(stream):
+    value = stream.get('failed_probe_percent')
+    failed, attempted = stream.get('failures'), stream.get('attempts')
+    counts_valid = (type(failed) is int and type(attempted) is int
+                    and 0 <= failed <= attempted and attempted > 0)
+    if not numeric(value) or value > 100:
+        value = 100 * failed / attempted if counts_valid else None
+    if value is None:
+        return 'UNAVAILABLE'
+    output = f'{value:.4f}%'
+    if counts_valid:
+        output += f' ({failed} / {attempted} probes)'
+    return output
+
+
+def render_text(report, root, *, modern):
+    """Traffic summary only; the JSON remains the complete validation report.
+
+    Keep the historical Dataplane downtime label and its existing Port_Binding
+    convergence value. Per-flow metrics below measure traffic interruption.
+    """
+    lines = []
 
     def field(label, value, indent=0):
-        lines.append(' ' * indent + f'{label:<32}: {value}')
+        lines.append(' ' * indent + f'{label:<26}: {value}')
 
-    def result(label, key):
-        field(label, check(report.get(key)), 2)
+    def heading(label, indent=0):
+        lines.extend(['', ' ' * indent + label])
 
-    section('1. MIGRATION TIMING')
+    def icmp(label, flow, result=None):
+        heading(label, 2)
+        field('Result', check(result or flow.get('status')), 4)
+        field('Packet loss', packet_loss(flow), 4)
+        field('Failure burst count', counter(flow.get('failure_burst_count'))
+              if flow.get('status') == 'PASS' else 'UNAVAILABLE', 4)
+        field('Longest packet outage', seconds(flow.get('actual_dataplane_outage_seconds'))
+              if flow.get('status') == 'PASS' else 'UNAVAILABLE', 4)
+
+    def tcp(label, value, names):
+        heading(label, 2)
+        status = value.get('status')
+        if status in ('DISABLED', 'NOT TESTED'):
+            field('Result', status, 4)
+            return
+        for key, name in names:
+            stream = (value.get('streams') or {}).get(key) or {}
+            heading(name, 4)
+            field('Result', check(stream.get('status')), 6)
+            field('Probe failure rate', probe_failure_rate(stream), 6)
+            field('Failure burst count', counter(stream.get('failure_burst_count')), 6)
+            field('Longest probe failure', 'UNRECOVERED'
+                  if stream.get('open_failure_since') is not None
+                  else seconds(stream.get('longest_recovered_failure_seconds')), 6)
+
     field('Total run duration', total_time(report.get('total_duration_seconds')))
-    field('Neutron control-plane downtime', seconds(report.get('control_plane_downtime_seconds')))
-    field('DB migration', seconds(report.get('db_migration_seconds')))
-    field('OVN Port_Binding convergence', seconds(report.get('ovn_portbinding_convergence_seconds')))
-    lines.append('')
-    if report.get('phase_marker_schema_version') == 2:
-        lines.append('Total duration includes preparation, validation, cleanup and resume waits.')
-    else:
-        lines.extend(['Legacy total duration includes preparation, validation and resume waits;',
-                      'excludes report/finalization and capture cleanup.'])
-    lines.append('Port_Binding convergence and workload interruption have different scopes.')
-    if report.get('orchestration_recovery'):
-        lines.append('Resumed after DB migration: control-plane downtime includes the recovery pause.')
+    field('Control-plane downtime', seconds(report.get('control_plane_downtime_seconds')))
+    field('Dataplane downtime', seconds(report.get('ovn_portbinding_convergence_seconds',
+                                                report.get('dataplane_convergence_seconds'))))
 
-    section('2. RESOURCE AND NETWORK VALIDATION')
-    consistency = report.get('resource_consistency') or {}
-    preserved = ('PASS' if all(row.get('unchanged') for row in consistency.values()) else 'FAIL') if consistency else 'UNAVAILABLE'
-    field('Resource identity preservation', preserved)
-    field('Existing VXLAN -> Geneve checks', check(report.get('existing_network_vxlan_geneve_semantics')))
-    field('Cross-compute workload placement', check((report.get('workload_placement') or {}).get('status')))
-
-    section('3. WORKLOAD VALIDATION')
-    probe = report.get('dataplane_probe') or {}
-    continuity = report.get('dataplane_continuity') or {}
-    lines.extend(['', 'EW - Different compute / different subnet (ICMP)'])
-    field('Result', check(continuity.get('status')), 2)
-    field('Packet loss', packet_loss(probe), 2)
-    field('Longest packet outage', seconds(probe.get('actual_dataplane_outage_seconds'))
-          if probe.get('status') == 'PASS' else 'UNAVAILABLE', 2)
-    field('Guest boot continuity', check(continuity.get('pair_a_boot_continuity')), 2)
-    field('Evidence', 'Compute-tap PCAP' if probe.get('evidence_source') == 'compute-tap-pcap'
-          else 'UNAVAILABLE', 2)
-
-    existing = report.get('existing_workload_migration') or {}
-    lines.extend(['', 'EXISTING WORKLOAD - DHCP / MTU / metadata' if modern
-                  else 'EXISTING WORKLOAD - Legacy VM1/VM2 migration'])
-    field('Result', check(existing.get('status')), 2)
-    result('Initial validation on OVS', 'initial_ovs_workload_validation')
-    result('Server UUID preservation', 'server_uuid_preserved')
-    result('Port UUID preservation', 'port_uuid_preserved')
-    result('Fixed IP preservation', 'fixed_ip_preserved')
-    field('DHCP', combined_check(report.get('existing_workload_dhcp_availability'),
-                                 report.get('existing_workload_dhcp_convergence')), 2)
-    for label, key in [('MTU', 'existing_workload_mtu'), ('Metadata', 'existing_workload_metadata'),
-                       ('Routed connectivity', 'existing_workload_post_migration_connectivity'),
-                       ('Boot check against baseline', 'existing_workload_boot_continuity')]:
-        result(label, key)
-
-    lines.extend(['', '  Remediation:', '    Before cutover:'])
-    field('Automatic MTU convergence', check(report.get('automatic_guest_mtu_convergence')), 6)
-    field('Action', check(report.get('pre_cutover_remediation_action')), 6)
-    field('MTU readiness after action', check(report.get('pre_cutover_mtu_readiness')), 6)
-    lines.extend(['', '    After cutover:'])
-    field('Automatic DHCP convergence', check(report.get('automatic_post_cutover_dhcp_convergence')), 6)
-    field('Action', check(report.get('post_cutover_remediation_action')), 6)
-    field('DHCP readiness after action', check(report.get('post_cutover_dhcp_ready')), 6)
-    if report.get('pre_cutover_remediation_action') == 'soft reboot' or report.get('post_cutover_remediation_action') == 'soft reboot':
-        lines.extend(['', '  Boot checks account for the recorded remediation reboots.'])
-
-    lines.extend(['', 'FRESH OVN - Provisioning / DHCP / metadata'])
-    field('Result', check((report.get('fresh_ovn_provisioning') or {}).get('status')), 2)
-    for label, key in [('Provisioning', 'new_ovn_workload_provisioning'),
-                       ('Geneve networks', 'new_ovn_workload_geneve'),
-                       ('OVN binding', 'new_ovn_workload_bindings'),
-                       ('DHCP', 'new_ovn_workload_dhcp'), ('MTU', 'new_ovn_workload_mtu'),
-                       ('Metadata', 'new_ovn_workload_metadata'),
-                       ('Routed connectivity', 'new_ovn_workload_connectivity')]:
-        result(label, key)
-
-    tcp = report.get('pair_d_tcp') or {}
-    lines.extend(['', 'EW TCP - Session continuity and new connections'])
-    field('Result', check(tcp.get('status')), 2)
-    if tcp.get('status') == 'DISABLED':
-        lines.append('  TCP validation disabled for this run.')
-    else:
-        streams = tcp.get('streams') or {}
-        lines.extend(['', '  Stream                        Result        Longest recovered probe failure'])
-        names = [('held', 'Existing TCP session'),
-                 ('new_old', 'New connection / old listener'),
-                 ('new_listener', 'New connection / new listener')]
-        for key, label in names:
-            stream = streams.get(key) or {}
-            lines.append(f"  {label:<30}{check(stream.get('status')):<14}{seconds(stream.get('longest_recovered_failure_seconds'))}")
-        open_failures = [label for key, label in names if (streams.get(key) or {}).get('open_failure_since') is not None]
-        if open_failures:
-            lines.append('  Unrecovered probe failure: ' + '; '.join(open_failures))
-        if tcp.get('listener_opened_during_freeze') is True:
-            lines.extend(['', '  The new listener was opened during the Neutron freeze window.'])
-        elif tcp.get('listener_opened_during_freeze') is False:
-            lines.extend(['', '  New listener opening during the Neutron freeze was not proven.'])
-        lines.append('  TCP durations measure application probe failures.')
-
+    heading('1. EAST - WEST')
     matrix = report.get('ew_connectivity_matrix') or {}
-    for name, flow in (matrix.get('flows') or {}).items():
-        if name == 'ew_different_compute_different_subnet':
-            continue
-        lines.extend(['', name.replace('_', ' ').upper()+' (ICMP)'])
-        field('Result', check(flow.get('status')), 2)
-        field('Packet loss', packet_loss(flow), 2)
-        field('Longest packet outage', seconds(flow.get('actual_dataplane_outage_seconds')) if flow.get('status')=='PASS' else 'UNAVAILABLE', 2)
-        field('Boot continuity', check(flow.get('boot_continuity')), 2)
+    flows = matrix.get('flows') or {}
+    primary = report.get('dataplane_probe') or flows.get('ew_different_compute_different_subnet') or {}
+    icmp('Different compute / different subnet (ICMP)', primary,
+         (report.get('dataplane_continuity') or {}).get('status'))
+    for key, name in (
+        ('ew_different_compute_same_subnet', 'Different compute / same subnet (ICMP)'),
+        ('ew_same_compute_different_subnet', 'Same compute / different subnet (ICMP)'),
+        ('ew_same_compute_same_subnet', 'Same compute / same subnet (ICMP)'),
+    ):
+        flow = flows.get(key) or {}
+        if matrix.get('status') in ('DISABLED', 'NOT TESTED'):
+            flow = {'status': matrix['status']}
+        icmp(name, flow)
+    tcp('Different compute / different subnet (TCP)', report.get('pair_d_tcp') or {}, (
+        ('held', 'Existing TCP session'),
+        ('new_old', 'Old listener / new connection every probe'),
+        ('new_listener', 'New listener / new connection every probe'),
+    ))
+
+    heading('2. NORTH - SOUTH')
     ns = report.get('north_south') or {}
-    lines.extend(['', 'NORTH-SOUTH - SNAT outbound / FIP inbound'])
-    field('Result', check(ns.get('status')), 2)
-    if ns.get('source_snat_profile', {}).get('preserve_snat_source_port_requested'):
-        field('Source SNAT experiment', 'use_random_fully=false; no conntrack transfer', 2)
-    for direction, value in (ns.get('directions') or {}).items():
-        lines.append('  '+direction.upper())
-        field('Held session preservation', check(value.get('held_session_preservation')), 4)
-        for name, stream in value.get('streams', {}).items():
-            field(name+' recovered probe failure', seconds(stream.get('longest_recovered_failure_seconds')), 4)
-            field(name+' failed application probes', str(stream.get('failures'))+' / '+str(stream.get('attempts')), 4)
-            if stream.get('open_failure_since') is not None:
-                field(name+' failure still open', 'YES (client monotonic '+str(stream['open_failure_since'])+')', 4)
-            if stream.get('first_local_endpoint'):
-                field(name+' guest/client endpoint', str(stream['first_local_endpoint']), 4)
-            if stream.get('first_peer_endpoint'):
-                field(name+' endpoint seen by server', str(stream['first_peer_endpoint']), 4)
-            if direction == 'snat' and ns.get('source_snat_profile', {}).get('preserve_snat_source_port_requested'):
-                field(name+' successful-echo port match', check(stream.get('successful_echo_source_port_match')), 4)
-            if stream.get('terminal_error'):
-                event = stream.get('terminal_event') or {}
-                label = ' first terminal error' if event else ' recorded terminal error'
-                field(name+label, stream['terminal_error'], 4)
-                if event:
-                    field(name+' terminal operation', str(event.get('operation')), 4)
-                    field(name+' terminal errno', str(event.get('errno')), 4)
-                    field(name+' terminal epoch', str(event.get('ts')), 4)
-    if ns.get('reason'):
-        field('Reason', ns['reason'], 2)
-
-    diagnostics = report.get('north_south_diagnostics', {})
-    if diagnostics.get('status') not in (None, 'DISABLED'):
-        field('N-S TCP diagnostic capture', check(diagnostics.get('status')))
-        for error in diagnostics.get('errors', []):
-            field('Capture evidence issue', error, 2)
-
-    section('4. VALIDATION RESOURCE CLEANUP')
-    cleanup_label = ('Existing ICMP / DHCP workloads' if tcp.get('status') == 'DISABLED'
-                     else 'Existing ICMP / DHCP / TCP workloads') if modern else 'Existing workloads (legacy)'
-    field(cleanup_label,
-          check(report.get('existing_workload_cleanup')))
-    field('Fresh OVN workloads' if modern else 'Fresh OVN workloads (legacy)',
-          check(report.get('new_ovn_workload_cleanup')))
-
-    field('Extended EW / NS cleanup', check(report.get('extended_cleanup')))
-
-    section('5. REPORT FILES')
-    field('Directory', str(root) + '/')
-    field('Text', 'migration-report.txt')
-    field('JSON', 'migration-report.json')
-    lines.append(major)
+    for direction, name in (('snat', 'Outbound (SNAT, TCP)'), ('fip', 'Inbound (FIP, TCP)')):
+        value = (ns.get('directions') or {}).get(direction) or {}
+        if ns.get('status') in ('DISABLED', 'NOT TESTED'):
+            value = {'status': ns['status']}
+        tcp(name, value, (('held', 'Existing TCP session'),
+                          ('new', 'New connection every probe')))
     return '\n'.join(lines) + '\n'
 
 

@@ -40,109 +40,119 @@ class PresentationTests(unittest.TestCase):
         self.assertLess(keys.index('dataplane_probe'), keys.index('pair_d_tcp'))
         self.assertIn('extra_metric', keys)
 
+    def text(self, **changes):
+        return render_text(self.report(**changes), pathlib.Path('/run'), modern=True)
+
     def test_missing_evidence_never_looks_like_zero_loss_or_zero_duration(self):
-        report = self.report()
-        text = render_text(report, pathlib.Path('/run'), modern=True)
-        self.assertRegex(text, r'Total run duration\s+: UNAVAILABLE')
-        self.assertRegex(text, r'Packet loss\s+: UNAVAILABLE')
-        self.assertRegex(text, r'Longest packet outage\s+: UNAVAILABLE')
-        self.assertRegex(text, r'Resource identity preservation\s+: UNAVAILABLE')
-        self.assertIn('Migration completed; validation or cleanup is incomplete.', text)
-        self.assertNotIn('Migration and validation passed.', text)
+        text = self.text()
+        for label in ('Total run duration', 'Packet loss', 'Longest packet outage',
+                      'Failure burst count', 'Probe failure rate'):
+            self.assertRegex(text, label + r'\s+: UNAVAILABLE')
+        self.assertNotIn('0.000 s', text)
 
     def test_valid_packet_numbers_survive_independent_workload_failure(self):
         report = self.report(
             dataplane_probe={'status': 'PASS', 'evidence_source': 'compute-tap-pcap',
                              'packet_loss_percent': 0.1835985312117503,
                              'actual_dataplane_outage_seconds': 4.985532999038696,
-                             'packets_failed': 24, 'packets_attempted': 13072},
-            existing_workload_metadata='FAIL',
-        )
+                             'packets_failed': 24, 'packets_attempted': 13072,
+                             'failure_burst_count': 3},
+            existing_workload_metadata='FAIL')
         before = copy.deepcopy(report)
         text = render_text(report, pathlib.Path('/run'), modern=True)
         self.assertIn('0.1836% (24 / 13072 probes)', text)
         self.assertIn('4.986 s', text)
-        self.assertRegex(text, r'Metadata\s+: FAIL')
+        self.assertRegex(text, r'Failure burst count\s+: 3')
+        self.assertNotIn('Metadata', text)
         self.assertEqual(report, before)
 
-    def test_disabled_tcp_does_not_emit_pass_or_counter_table(self):
-        report = self.report(pair_d_tcp={'status': 'DISABLED', 'streams': {
-            'held': {'status': 'PASS', 'longest_recovered_failure_seconds': 0}}})
-        text = render_text(report, pathlib.Path('/run'), modern=True)
-        tcp = text.split('EW TCP -')[1].split('NORTH-SOUTH -')[0]
+    def test_fixed_flow_and_direction_order_with_identical_fields_for_fip(self):
+        stream = dict(status='PASS', attempts=100, failures=2, failure_burst_count=1,
+                      longest_recovered_failure_seconds=1.23456789)
+        text = self.text(pair_d_tcp={'status':'PASS', 'streams':{
+            k: stream for k in ('held','new_old','new_listener')}}, north_south={
+            'status':'PASS', 'directions':{k:{'streams':{'held':stream,'new':stream}}
+                                         for k in ('fip','snat')}})
+        labels = ['Different compute / different subnet (ICMP)',
+                  'Different compute / same subnet (ICMP)',
+                  'Same compute / different subnet (ICMP)',
+                  'Same compute / same subnet (ICMP)',
+                  'Different compute / different subnet (TCP)',
+                  'Outbound (SNAT, TCP)', 'Inbound (FIP, TCP)']
+        self.assertEqual([text.index(label) for label in labels],
+                         sorted(text.index(label) for label in labels))
+        self.assertEqual(text.count('2.0000% (2 / 100 probes)'), 7)
+        self.assertEqual(text.count('1.235 s'), 7)
+        self.assertEqual(text.count('Probe failure rate'), 7)
+        self.assertEqual(text.count('Longest probe failure'), 7)
+        self.assertEqual(text.count('Packet loss'), 4)
+
+    def test_disabled_tcp_does_not_use_stale_pass_counters(self):
+        text = self.text(pair_d_tcp={'status':'DISABLED', 'streams':{
+            'held':{'status':'PASS','longest_recovered_failure_seconds':0}}})
+        tcp = text.split('Different compute / different subnet (TCP)')[1].split('2. NORTH')[0]
         self.assertRegex(tcp, r'Result\s+: DISABLED')
         self.assertNotIn('PASS', tcp)
         self.assertNotIn('Existing TCP session', tcp)
-        self.assertIn('Existing ICMP / DHCP workloads', text)
-        self.assertNotIn('Existing ICMP / DHCP / TCP workloads', text)
 
-    def test_open_tcp_failure_is_visible_beside_previous_recovered_duration(self):
-        report = self.report(pair_d_tcp={'status': 'FAIL', 'streams': {
-            'held': {'status': 'FAIL', 'longest_recovered_failure_seconds': 6.666414792,
-                     'open_failure_since': 1200},
-        }})
-        text = render_text(report, pathlib.Path('/run'), modern=True)
-        self.assertRegex(text, r'Existing TCP session\s+FAIL\s+6\.666 s')
-        self.assertIn('Unrecovered probe failure: Existing TCP session', text)
-        self.assertNotIn('The new listener was opened during', text)
+    def test_open_tcp_failure_takes_precedence_over_earlier_recovery(self):
+        text = self.text(pair_d_tcp={'status':'FAIL','streams':{'held':{
+            'status':'FAIL','longest_recovered_failure_seconds':6.666414792,
+            'open_failure_since':1200,'failure_burst_count':2,
+            'attempts':10,'failures':4}}})
+        held = text.split('Existing TCP session')[1].split('Old listener')[0]
+        self.assertRegex(held, r'Result\s+: FAIL')
+        self.assertRegex(held, r'Longest probe failure\s+: UNRECOVERED')
+        self.assertRegex(held, r'Failure burst count\s+: 2')
+        self.assertIn('40.0000% (4 / 10 probes)', held)
+        self.assertNotIn('6.666 s', text)
 
-    def test_automatic_fail_and_remediation_are_not_hidden_by_success(self):
-        report = self.report(
-            result='SUCCESS_WITH_REMEDIATION',
-            existing_workload_migration={'status': 'PASS AFTER REMEDIATION'},
+    def test_only_traffic_summary_in_text_and_all_other_values_preserved(self):
+        report = self.report(result='SUCCESS_WITH_REMEDIATION',
+            existing_workload_migration={'status':'PASS AFTER REMEDIATION'},
             automatic_guest_mtu_convergence='FAIL',
-            pre_cutover_remediation_action='soft reboot', pre_cutover_mtu_readiness='PASS',
-            automatic_post_cutover_dhcp_convergence='FAIL',
-            post_cutover_remediation_action='soft reboot', post_cutover_dhcp_ready='PASS',
-        )
+            pre_cutover_remediation_action='soft reboot',
+            new_ovn_workload_provisioning='PASS', existing_workload_cleanup='PASS',
+            phase_timings=[{'duration_seconds':1.23456789}],
+            north_south_diagnostics={'status':'PASS'})
+        before = copy.deepcopy(report)
         text = render_text(report, pathlib.Path('/run'), modern=True)
-        self.assertRegex(text, r'Automatic MTU convergence\s+: FAIL')
-        self.assertRegex(text, r'Automatic DHCP convergence\s+: FAIL')
-        self.assertEqual(text.count('soft reboot'), 2)
-        self.assertIn('Boot checks account for the recorded remediation reboots.', text)
+        for hidden in ('DHCP','MTU','Metadata','metadata','provisioning','Provisioning',
+                       'cleanup','CLEANUP','remediation','soft reboot','diagnostic',
+                       'REPORT FILES','DB migration','Boot continuity'):
+            self.assertNotIn(hidden, text)
+        self.assertEqual(report, before)
+        self.assertEqual(ordered_report(report), before)
 
-    def test_ns_broken_socket_details_are_visible_without_zero_outage_claim(self):
-        report = self.report(north_south={'status': 'FAIL', 'directions': {
-            'snat': {'held_session_preservation': 'FAIL', 'streams': {
-                'held': {'status': 'FAIL', 'attempts': 10, 'failures': 10,
-                    'open_failure_since': 120, 'longest_recovered_failure_seconds': None,
-                    'terminal_error': '[Errno 104] Connection reset by peer',
-                    'terminal_event': {'operation': 'receive', 'errno': 104, 'ts': 1700000000}},
-                'new': {'status': 'PASS', 'attempts': 30, 'failures': 2,
-                    'longest_recovered_failure_seconds': 1.5},
-            }}}})
-        text = render_text(report, pathlib.Path('/run'), modern=True)
-        ns = text.split('NORTH-SOUTH -')[1].split('4. VALIDATION RESOURCE CLEANUP')[0]
-        self.assertRegex(ns, r'held recovered probe failure\s+: UNAVAILABLE')
-        self.assertIn('held failure still open', ns)
-        self.assertIn('held first terminal error', ns)
-        self.assertIn('[Errno 104] Connection reset by peer', ns)
-        self.assertRegex(ns, r'held terminal operation\s+: receive')
-        self.assertRegex(ns, r'held terminal errno\s+: 104')
-        self.assertIn('1700000000', ns)
-        self.assertRegex(ns, r'new recovered probe failure\s+: 1\.500 s')
+    def test_ns_broken_socket_is_unrecovered_but_details_stay_in_json(self):
+        text = self.text(north_south={'status':'FAIL','directions':{
+            'snat':{'streams':{'held':{'status':'FAIL','attempts':10,'failures':10,
+                'failure_burst_count':1, 'open_failure_since':120,
+                'terminal_error':'[Errno 104] Connection reset by peer',
+                'terminal_event':{'operation':'receive','ts':1700000000}}}}}})
+        ns = text.split('Outbound (SNAT, TCP)')[1].split('Inbound')[0]
+        self.assertRegex(ns, r'Longest probe failure\s+: UNRECOVERED')
+        self.assertIn('100.0000% (10 / 10 probes)', ns)
+        self.assertNotIn('Connection reset', text)
+        self.assertNotIn('1700000000', text)
 
-    def test_historical_ns_error_is_not_claimed_to_be_original_error(self):
-        report = self.report(north_south={'status': 'FAIL', 'directions': {
-            'snat': {'held_session_preservation': 'FAIL', 'streams': {
-                'held': {'status': 'FAIL', 'terminal_error':
-                         'held socket already closed; reconnect prohibited'},
-            }}}})
-        text = render_text(report, pathlib.Path('/run'), modern=True)
-        self.assertIn('held recorded terminal error', text)
-        self.assertNotIn('held first terminal error', text)
-        self.assertNotIn('held terminal epoch', text)
+    def test_historical_tcp_missing_burst_counter_is_unavailable(self):
+        text = self.text(pair_d_tcp={'status':'PASS','streams':{
+            'held':{'status':'PASS','attempts':30,'failures':2,
+                    'longest_recovered_failure_seconds':1.5}}})
+        held = text.split('Existing TCP session')[1].split('Old listener')[0]
+        self.assertRegex(held, r'Failure burst count\s+: UNAVAILABLE')
+        self.assertRegex(held, r'Longest probe failure\s+: 1.500 s')
 
-    def test_missing_and_zero_times_remain_distinct_and_legacy_scope_is_honest(self):
-        for value, expected in [(None, 'UNAVAILABLE'), (0, '0.000 s'),
-                                (float('nan'), 'UNAVAILABLE'), (True, 'UNAVAILABLE')]:
+    def test_dataplane_label_keeps_existing_value_and_missing_differs_from_zero(self):
+        for value, expected in [(None,'UNAVAILABLE'),(0,'0.000 s'),
+                                (float('nan'),'UNAVAILABLE'),(True,'UNAVAILABLE'),
+                                (114.17412345,'114.174 s')]:
             with self.subTest(value=value):
-                report = self.report(db_migration_seconds=value, phase_marker_schema_version=1)
-                text = render_text(report, pathlib.Path('/run'), modern=False)
-                self.assertRegex(text, r'DB migration\s+: ' + expected)
-                self.assertIn('excludes report/finalization and capture cleanup.', text)
-                self.assertIn('Legacy VM1/VM2 migration', text)
-                self.assertNotIn('Total duration includes preparation, validation, cleanup', text)
+                text = self.text(ovn_portbinding_convergence_seconds=value)
+                self.assertRegex(text, r'Dataplane downtime\s+: ' + expected)
+        text = self.text(dataplane_convergence_seconds=2.5)
+        self.assertRegex(text, r'Dataplane downtime\s+: 2.500 s')
 
     def test_terminal_summary_contains_only_result_run_and_paths(self):
         report = self.report()

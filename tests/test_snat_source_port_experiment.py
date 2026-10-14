@@ -116,13 +116,20 @@ class SourcePortExperimentTests(unittest.TestCase):
             self.assertEqual(parser.has_option('AGENT','use_random_fully'),enabled)
             if enabled:self.assertFalse(parser.getboolean('AGENT','use_random_fully'))
 
-    def test_effective_source_gate_runs_before_workload_creation_and_default_is_off(self):
-        variables=yaml.safe_load((ROOT/'group_vars/ns-lab.yml').read_text())
-        self.assertFalse(variables['ns_preserve_snat_source_port'])
+    def test_effective_source_gate_is_conditional_before_workload_creation(self):
         precheck=yaml.safe_load((ROOT/'playbooks/02-precheck.yml').read_text())
         gate=next(p for p in precheck if 'SNAT experiment' in p['name'])
         self.assertEqual(gate['hosts'],'network')
         self.assertIn('ns_preserve_snat_source_port',str(gate['tasks'][0]['when']))
+        # ns-lab.yml is operator-selected; verify both modes rather than forcing
+        # the uploaded lab profile back to the original false setting.
+        env=jinja2.Environment();env.filters['bool']=bool
+        for enabled in (False,True):
+            for ns_enabled in (False,True):
+                active=all(env.compile_expression(condition)(
+                    validation_ns_enabled=ns_enabled,ns_preserve_snat_source_port=enabled)
+                    for condition in gate['tasks'][0]['when'])
+                self.assertEqual(active,enabled and ns_enabled)
         tasks=yaml.safe_load((ROOT/'playbooks/ns-source-profile-tasks.yml').read_text())
         self.assertIn('common.register_iptables_opts',tasks[0]['ansible.builtin.shell'])
         self.assertIn('use_random_fully == false',str(tasks[2]['ansible.builtin.assert']['that']))

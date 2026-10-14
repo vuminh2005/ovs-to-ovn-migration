@@ -47,7 +47,8 @@ class Stats:
     def __init__(self):
         self.value = dict(attempts=0, successes=0, failures=0, consecutive_successes=0,
                           first_failure_mono=None, last_success_mono=None,
-                          longest_recovered_failure_seconds=0.0, open_failure_since=None)
+                          longest_recovered_failure_seconds=0.0, open_failure_since=None,
+                          failure_burst_count=0)
 
     def record(self, ok, started, completed):
         v = self.value
@@ -65,6 +66,7 @@ class Stats:
                 v['first_failure_mono'] = started
             if v['open_failure_since'] is None:
                 v['open_failure_since'] = started
+                v['failure_burst_count'] += 1
 
 
 class TCPServer(socketserver.ThreadingTCPServer):

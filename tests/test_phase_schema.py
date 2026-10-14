@@ -192,7 +192,8 @@ class PhaseSchemaTests(unittest.TestCase):
         self.assertEqual(report['phase_timings'][13]['availability'],'INCOMPLETE')
         self.assertNotIn('Phase 03',text)
         self.assertNotIn('Phase 13',text)
-        self.assertIn('Legacy total duration',text)
+        self.assertNotIn('Legacy total duration',text)
+        self.assertIn('total_duration_scope',report)
 
     def test_new_reports_cover_all_fourteen_phases_and_keep_dedicated_metrics(self):
         self.version(2)

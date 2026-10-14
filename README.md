@@ -206,20 +206,60 @@ It contains `migration-report.json` with all timing, validation and evidence fie
 - resource identity preservation for networks, subnets, routers, servers and compute ports
 - result of a temporary post-migration Geneve network smoke test
 
-`migration-report.txt` is the concise human-readable view. Separators distinguish
-migration timing, resource/network validation, workload A/B/C/D validation,
-validation-resource cleanup, and report locations. It shows the four main timers,
-Pair-A PCAP loss/outage, selected functional checks, Pair-B automatic convergence
-and remediation, and the three Pair-D TCP stream results/recovered failure times.
-Repeated check fields, raw JSON objects, phase timings and diagnostic counters
-remain in JSON. Text rounds seconds to three decimals and packet-loss percent to
-four decimals; JSON preserves the original precision and all existing keys.
-JSON keys are ordered by run, timing, resources/network, A/B/C/D, cleanup and
-diagnostics rather than alphabetically; existing nested evidence is preserved.
+`migration-report.txt` contains only the three timers (`Total run duration`,
+`Control-plane downtime`, `Dataplane downtime`) and the East–West/North–South
+traffic summary. East–West lists all four ICMP placement/subnet combinations,
+then the three TCP streams. North–South lists outbound SNAT and inbound FIP,
+each with held-session and new-connection streams.
 
-The final terminal output contains only result, run ID and the two report paths.
-Read the text report with `cat /root/ovs-to-ovn-backup/<run-id>/migration-report.txt`.
-Report formatting does not change measurements, validation gates or cleanup.
+ICMP shows result, packet loss, failure burst count and longest packet outage.
+TCP shows result, **probe failure rate**, failure burst count and **longest probe
+failure**: these application echoes do not measure TCP packet loss. A burst is
+one consecutive sequence of failed probes; an unrecovered burst is included in
+the count and displayed as `UNRECOVERED` for its duration. Historical TCP evidence
+without a burst counter displays `UNAVAILABLE`, never an inferred zero.
+
+The requested `Dataplane downtime` label retains the existing
+`ovn_portbinding_convergence_seconds` value (legacy alias:
+`dataplane_convergence_seconds`). It measures the Port_Binding convergence window,
+not an aggregate of the per-flow traffic outages shown below. All metric boundaries
+and validation/cleanup gates remain unchanged.
+
+DHCP, MTU, provisioning, remediation, identities, cleanup, diagnostics, phase timing
+and all other evidence remain complete in JSON. Text rounds seconds to three
+decimals and percentages to four; JSON preserves precision and existing keys.
+JSON keys are grouped by run, timing, resources/network, workloads, cleanup and
+diagnostics; existing nested evidence is preserved. The final terminal output
+still contains result, run ID and both report paths. Read the text with
+`cat /root/ovs-to-ovn-backup/<run-id>/migration-report.txt`.
+
+### Per-task timestamps
+
+Run Ansible from this repository directory so its `ansible.cfg` enables
+`callback_plugins/migration_task_timing.py`. If selecting a config explicitly,
+use `ANSIBLE_CONFIG=/absolute/path/to/ovs-to-ovn-migration/ansible.cfg`.
+Each invocation writes into the same backup run:
+
+- `task-timings/<invocation-id>.jsonl`: append-only events, flushed after each task
+  start/end. Bootstrap events are buffered until `migration_run_dir` is resolved.
+- `task-timings/<invocation-id>.json`: final per-host task records with UTC ISO and
+  Unix timestamps, monotonic duration, task name/source, action, host/delegate,
+  status and changed/ignored flags. It includes failed, skipped and unreachable
+  tasks, loops as a whole, and handlers. `task_dispatches` also records controller
+  instructions (for example `meta`) that have no per-host runner end callback.
+
+Retries/resumes create new invocation IDs and retain earlier files. Nested local
+Ansible/Kolla processes inherit callback activation and the run directory; their
+files carry `parent_invocation_id`. Timings are observed on the controller and
+include Ansible/transport overhead; parallel host tasks overlap and must not be
+summed. They do not alter phase markers, total-duration boundaries or downtime
+metrics. If Ansible is killed, JSONL retains observed starts/ends; no missing end
+or final JSON is invented. Attempts made before this callback was installed cannot
+be reconstructed.
+
+Task arguments, module output, loop item values and fact contents are not logged;
+`no_log` task names are redacted. Timing files use mode `0600`. Persistence errors
+produce an Ansible warning; they do not interrupt a migration after cutover.
 
 ### Versioned phase timing and checkpoints
 

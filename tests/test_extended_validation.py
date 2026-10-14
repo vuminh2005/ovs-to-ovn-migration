@@ -115,6 +115,7 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(result['status'], 'PASS')
         self.assertEqual(result['directions']['snat']['streams']['held']['longest_recovered_failure_seconds'], 1)
         self.assertEqual(result['directions']['snat']['streams']['new']['attempts'], 20)
+        self.assertEqual(result['directions']['snat']['streams']['held']['failure_burst_count'], 1)
 
     def test_held_closed_reports_fail_and_keeps_new_connection_metrics(self):
         baseline = self.baseline()
@@ -131,6 +132,16 @@ class ExtensionTests(unittest.TestCase):
             self.assertEqual(row['held_session_preservation'], 'FAIL')
             self.assertEqual(row['streams']['new']['status'], 'PASS')
             self.assertIsNone(row['streams']['held']['longest_recovered_failure_seconds'])
+            self.assertEqual(row['streams']['held']['failure_burst_count'], 1)
+            self.assertEqual(row['streams']['new']['failure_burst_count'], 0)
+
+    def test_ns_restarted_client_has_no_burst_count(self):
+        baseline = self.baseline()
+        rows = copy.deepcopy(baseline['clients'])
+        rows['snat']['probe_id'] = 'new-process'
+        self.x.ns_results(rows, {}, baseline, ['client restarted'])
+        result = json.loads((self.root/'ns-results.json').read_text())
+        self.assertIsNone(result['directions']['snat']['streams']['held']['failure_burst_count'])
 
     def test_first_terminal_event_is_carried_into_results_without_changing_failure(self):
         baseline = self.baseline()

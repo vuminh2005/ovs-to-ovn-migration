@@ -367,6 +367,13 @@ class TCPWireTests(unittest.TestCase):
         self.assertEqual(stats.value['longest_recovered_failure_seconds'], 4.5)
         self.assertEqual(stats.value['failures'], 2)
         self.assertIsNone(stats.value['open_failure_since'])
+        self.assertEqual(stats.value['failure_burst_count'], 1)
+        stats.record(True, 15, 15.5)
+        stats.record(False, 16, 17)
+        stats.record(False, 18, 19)
+        self.assertEqual(stats.value['failure_burst_count'], 2)
+        self.assertEqual(stats.value['open_failure_since'], 16)
+        self.assertEqual(stats.value['longest_recovered_failure_seconds'], 4.5)
 
 
 class SummaryFenceTests(unittest.TestCase):
