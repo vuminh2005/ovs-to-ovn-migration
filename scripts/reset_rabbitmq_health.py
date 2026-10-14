@@ -13,6 +13,8 @@ import uuid
 
 
 RAFT_ERROR = re.compile(r'cluster_not_formed|already_started|failed to form a new cluster', re.I)
+CSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
+DEC_GRAPHICS = re.compile(r'\x1b\(0(.*?)\x1b\([AB]', re.S)
 
 
 def utc():
@@ -62,11 +64,18 @@ def queue_issues(rows):
     return issues
 
 
+def terminal_text(output):
+    # Captured RabbitMQ output can use DEC special graphics: ESC(0xESC(B
+    # represents a vertical rule, not a literal 'x'. Translate inside those
+    # explicitly marked spans only; never change characters in node names.
+    output = DEC_GRAPHICS.sub(lambda match: match.group(1).replace('x', '|'), output)
+    return CSI.sub('', output)
+
+
 def parse_quorum(output, node):
-    # RabbitMQ 3.13 quorum_status prints a Unicode or pipe-separated table.
-    # Parse only actual member rows, not its prose or headers.
+    # Parse member rows after normalizing ANSI styling and DEC table rules.
     members = []
-    for line in output.splitlines():
+    for line in terminal_text(output).splitlines():
         fields = [part.strip() for part in re.split('[│|]', line) if part.strip()]
         if fields and fields[0].startswith('rabbit@'):
             if len(fields) < 3:
@@ -112,13 +121,18 @@ class LogCursor:
 def command(args, deadline, timeout):
     remaining = deadline-time.monotonic()
     if remaining <= 0:
-        return dict(rc=124, stdout='', stderr='Overall readiness deadline reached')
+        return dict(rc=124, stdout='', stderr='Overall readiness deadline reached', timeout_scope='overall')
+    budget = min(timeout, remaining)
     try:
         result = subprocess.run(['docker', 'exec', 'rabbitmq', *args],
-            capture_output=True, text=True, timeout=min(timeout, remaining))
-        return dict(rc=result.returncode, stdout=result.stdout, stderr=result.stderr)
+            capture_output=True, text=True, timeout=budget)
+        return dict(rc=result.returncode, stdout=result.stdout, stderr=result.stderr,
+                    timeout_seconds=budget)
     except subprocess.TimeoutExpired:
-        return dict(rc=124, stdout='', stderr='RabbitMQ read-only command timed out')
+        overall = remaining < timeout
+        return dict(rc=124, stdout='', stderr='Overall readiness deadline reached during command'
+                    if overall else 'RabbitMQ read-only command timed out',
+                    timeout_scope='overall' if overall else 'command', timeout_seconds=budget)
     except OSError as error:
         return dict(rc=127, stdout='', stderr=type(error).__name__)
 
@@ -209,7 +223,8 @@ def main():
     parser.add_argument('--stable-seconds', type=int, default=15)
     args = parser.parse_args()
     result = wait(args.evidence, args.log, timeout=args.timeout, stable_seconds=args.stable_seconds)
-    print(json.dumps(dict(status=result['status'], evidence=str(args.evidence), samples=len(result['samples']))))
+    print(json.dumps(dict(status=result['status'], evidence=str(args.evidence), samples=len(result['samples']),
+        last_issues=(result['samples'][-1]['issues'] if result['samples'] else []))))
     return 0 if result['status'] == 'PASS' else 1
 
 

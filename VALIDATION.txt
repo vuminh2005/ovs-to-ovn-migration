@@ -1,3 +1,21 @@
+RabbitMQ ANSI/DEC parser correction — 2026-10-14
+Source: current migration.zip; previous report/timing/reset checks retained.
+
+Reproduced the false FAIL from Pasted text(4): three successful quorum_status
+outputs contain ANSI CSI styling and DEC special-graphics vertical rules.
+All three now parse as rabbit@controller leader/voter. No health condition is
+relaxed; malformed/duplicate/wrong-node/follower/non-voter results still fail.
+The exact three outputs are regression fixtures; the real-Ansible gate test
+now uses the captured terminal output instead of only a Unicode fixture.
+Command timeouts distinguish the overall readiness deadline from command budget.
+Terminal summary prints the last sample's issues.
+
+438 full-suite tests PASS; 17 focused RabbitMQ tests PASS.
+No live RabbitMQ/reset/migration executed; Ansible integration uses a CLI fixture.
+The remaining live recheck and post-deploy steps are not claimed complete.
+
+Prior validation history:
+
 RabbitMQ reset readiness correction — 2026-10-14
 Source: current migration.zip with the report/task-timing update retained.
 

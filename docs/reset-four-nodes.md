@@ -194,3 +194,32 @@ Nguồn đối chiếu:
 - oslo.messaging có retry cho lỗi queue declare AMQP 541; đây là cơ chế có thể
   phục hồi lỗi, không chứng minh chính xác race của lab:
   https://github.com/openstack/oslo.messaging/blob/master/oslo_messaging/_drivers/impl_rabbit.py
+
+### Sửa parser ANSI/DEC sau run 20261014T112120609523272
+
+Trong run này deploy rc=0, RabbitMQ running, không local alarm hay lỗi Raft mới.
+Các queue chính đều running với 5 consumer. `quorum_status` trả rc=0 và dòng
+leader/voter hợp lệ, nhưng stdout dùng ANSI styling và DEC special graphics
+(`ESC(0x ESC(B`) thay vì ký tự Unicode `│`. Parser ban đầu không nhận ra ranh giới
+cột nên trả danh sách member rỗng và làm gate FAIL sai. Đây là lỗi helper,
+không phải bằng chứng cache cũ hay Raft không có leader.
+
+Parser mới chuẩn hóa DEC vertical rules và bỏ ANSI CSI styling trước khi tách
+cột; chỉ chuyển ký tự trong vùng DEC, không sửa tên node. Ba stdout thành công
+nguyên bản được giữ trong `tests/fixtures/rabbitmq-quorum-terminal.json` và được
+chạy qua kiểm thử parser cùng gate Ansible. Follower, sai node/member và lỗi CLI
+vẫn bị từ chối. Timeout command giờ ghi rõ `timeout_scope` là `command` hoặc
+`overall`, tránh nhầm ngân sách cuối của toàn bộ vòng chờ với queue bị treo.
+
+Sau khi cập nhật code, kiểm tra lại riêng helper trên deployment hiện tại,
+lưu evidence mới để giữ nguyên file FAIL cũ:
+
+```bash
+cd /root/ovs-to-ovn-migration
+python3 scripts/reset_rabbitmq_health.py \
+  /root/kolla-reset-snapshots/20261014T112120609523272/rabbitmq-health-recheck.json
+```
+
+Lệnh này chỉ đọc RabbitMQ/log và ghi file bằng chứng. PASS xác nhận RabbitMQ
+readiness tại lần kiểm tra mới; không tự chạy `post-deploy`, các bước hoàn thiện
+baseline, hay đánh dấu toàn bộ reset hoàn tất.

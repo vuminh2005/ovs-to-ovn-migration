@@ -25,6 +25,7 @@ QUORUM = '''Status of quorum queue scheduler on node rabbit@controller ...
 │ rabbit@controller │ leader     │ voter      │
 └───────────────────┴────────────┴────────────┘
 '''
+CAPTURED_QUORUM = json.loads((ROOT/'tests/fixtures/rabbitmq-quorum-terminal.json').read_text())
 
 
 class Clock:
@@ -136,6 +137,25 @@ class HealthTests(unittest.TestCase):
             with self.subTest(output=output),self.assertRaises(ValueError):
                 health.parse_quorum(output,'rabbit@controller')
 
+    def test_real_captured_ansi_dec_member_rows_are_recognized(self):
+        for name,output in CAPTURED_QUORUM.items():
+            with self.subTest(capture=name):
+                self.assertIn('\x1b(0x\x1b(B',output)
+                self.assertEqual(health.parse_quorum(output,'rabbit@controller'),[
+                    {'node':'rabbit@controller','state':'leader','membership':'voter'}])
+
+    def test_ansi_styles_and_ascii_rules_keep_same_validation(self):
+        output=QUORUM.replace('│','|').replace('leader','\x1b[1;32mleader\x1b[0m')
+        self.assertEqual(health.parse_quorum(output,'rabbit@controller')[0]['state'],'leader')
+        self.assertEqual(health.terminal_text('rabbit@extra-x'),'rabbit@extra-x')
+
+    def test_captured_output_cannot_hide_a_follower_wrong_node_or_extra_member(self):
+        for output in CAPTURED_QUORUM.values():
+            for bad in (output.replace('leader','follower'),output.replace('voter','promotable'),
+                        output.replace('rabbit@controller','rabbit@other'),output+output):
+                with self.subTest(output=bad[:40]),self.assertRaises(ValueError):
+                    health.parse_quorum(bad,'rabbit@controller')
+
     def test_deadline_caps_subprocess_and_cli_failure_is_retained(self):
         with patch.object(health.time,'monotonic',return_value=98), patch.object(health.subprocess,'run',return_value=subprocess.CompletedProcess([],7,'','failure')) as run:
             result=health.command(['rabbitmqctl','cluster_status'],100,15)
@@ -146,7 +166,13 @@ class HealthTests(unittest.TestCase):
             self.assertEqual(health.command([],100,15)['rc'],124)
             run.assert_not_called()
         with patch.object(health.subprocess,'run',side_effect=subprocess.TimeoutExpired('docker',1)):
-            self.assertEqual(health.command([],health.time.monotonic()+10,1)['rc'],124)
+            result=health.command([],health.time.monotonic()+10,1)
+            self.assertEqual(result['rc'],124)
+            self.assertEqual(result['timeout_scope'],'command')
+        with patch.object(health.time,'monotonic',return_value=99.5),patch.object(health.subprocess,'run',side_effect=subprocess.TimeoutExpired('docker',.5)):
+            result=health.command([],100,15)
+            self.assertEqual(result['timeout_scope'],'overall')
+            self.assertEqual(result['timeout_seconds'],.5)
 
     def test_invalid_timings_do_not_enter_polling_loop(self):
         for kwargs in ({'timeout':5,'stable_seconds':5},{'interval':0},{'timeout':float('nan')}):
@@ -183,7 +209,7 @@ class PlaybookIntegrationTests(unittest.TestCase):
             log=root/'rabbit.log';log.write_text('earlier cluster_not_formed\n')
             shim=root/'docker'
             shim.write_text('#!'+sys.executable+'\nimport sys\nargs=sys.argv\n'
-                +'print('+repr(QUEUES)+' if "list_queues" in args else '+repr(QUORUM)+')\n')
+                +'print('+repr(QUEUES)+' if "list_queues" in args else '+repr(CAPTURED_QUORUM['sample1_conductor'])+')\n')
             shim.chmod(0o700)
             env=dict(os.environ,PATH=str(root)+os.pathsep+os.environ['PATH'],ANSIBLE_CONFIG=str(ROOT/'ansible.cfg'))
             for deploy_rc in (0,2):
