@@ -18,6 +18,10 @@ xem [globals scope fix](docs/globals-scope-fix.md).
 Lỗi pipeline `rc=141` sau DB migration có route phục hồi riêng; xem
 [tiếp tục sau DB migration](docs/post-db-recovery.md).
 
+Phase 05 dùng image local đúng reference và chỉ tải image thiếu trước target
+config/MTU/downtime. Nếu registry lỗi khi pull, dùng route giữ nguyên run và
+workload: [image cache và tiếp tục phase 05](docs/image-cache-recovery.md).
+
 Lỗi chẩn đoán N-S ghi đè lỗi socket đầu tiên đã được sửa; xem
 [phân tích phiên SNAT bị mất](docs/ns-held-session-diagnostics.md).
 Reset cũng dừng đúng probe N-S cũ trên controller theo checkpoint để tránh

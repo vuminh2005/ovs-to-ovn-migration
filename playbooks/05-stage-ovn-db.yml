@@ -1,6 +1,7 @@
 ---
 - name: Phase 05 - Stage OVN central while Neutron remains ML2/OVS
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -28,12 +29,18 @@
         - { key: enable_ovn, value: 'yes' }
         - { key: neutron_plugin_agent, value: 'openvswitch' }
 
-    - name: Pull OVN DB images only
-      ansible.builtin.shell: |
-        set -euo pipefail
-        {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} pull --tags ovn-db
-      args:
-        executable: /bin/bash
+    - name: Ensure all target images before MTU changes or downtime using local images first
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/prepare_migration_images.py"
+          - "{{ migration_run_dir }}"
+          - --kolla-ansible
+          - "{{ kolla_ansible_bin_runtime }}"
+          - --inventory
+          - "{{ kolla_inventory_runtime }}"
+          - --globals
+          - "{{ kolla_globals_path }}"
 
     - name: Deploy OVN NB/SB DB and northd only
       ansible.builtin.shell: |
@@ -44,6 +51,7 @@
 
 - name: Phase 05 - Verify OVN central process is present
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:

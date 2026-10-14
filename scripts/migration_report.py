@@ -43,8 +43,16 @@ def evidence(name):
     p=root/name
     return json.loads(p.read_text()) if p.exists() else None
 report['orchestration_recovery']=evidence('orchestration-recovery.json')
+report['image_preflight']=[dict(json.loads(path.read_text()),
+    evidence_directory=str(path.parent),
+    image_identities={entry.name:json.loads(entry.read_text()) for entry in sorted(path.parent.glob('*.json')) if entry.name!='result.json'})
+    for path in sorted(root.glob('image-preflight/*/result.json'))]
 if report['orchestration_recovery']:
-    report['limitations'].append('This run resumed after completed DB migration; original measurement clocks are preserved and control-plane downtime includes the recovery pause.')
+    routes={event.get('route') for event in report['orchestration_recovery'].get('events',[])}
+    if 'pre-target-stage' in routes:
+        report['limitations'].append('This run resumed before target preparation; original workload/session clocks are preserved and total duration includes the recovery pause before freeze.')
+    if 'post-db-pre-cutover' in routes:
+        report['limitations'].append('This run resumed after completed DB migration; original measurement clocks are preserved and control-plane downtime includes the recovery pause.')
 def status(name, keys):
     rows=evidence(name)
     if not rows: return 'NOT TESTED'

@@ -76,13 +76,6 @@
       args:
         executable: /bin/bash
 
-    - name: Pull OVN controller image before downtime
-      ansible.builtin.shell: |
-        set -euo pipefail
-        {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} pull --tags ovn-controller
-      args:
-        executable: /bin/bash
-
 - name: Phase 06 - Discover generated OVN DB endpoints from authoritative target config
   hosts: control
   gather_facts: false

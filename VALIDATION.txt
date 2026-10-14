@@ -134,3 +134,18 @@ Reset after retained N-S validation failure:
   virtual child PIDs with a different /proc view, so proc/pidfd identity boundaries are
   modeled in this test fixture; no live controller process was stopped during validation.
   All 7 Ansible syntax entrypoints and Python/YAML checks pass for this revision.
+
+Image-cache / phase-05 recovery correction (14/10/2026):
+  448 tests passed; four image-policy tests also passed after the final globals.d
+  precedence correction. Tests execute real Ansible; Docker/registry are modeled.
+  An additional check executed the original Kolla 18.8.0 site, roles, service
+  filters and kolla_container/ensure_image code with a modeled Docker API:
+  all four hosts passed, eight per-host/role identity files persisted, and any
+  registry pull would have failed the check. No live container was changed.
+  Cached exact references pass despite registry 404; only missing images pull;
+  unavailable missing images still block target config/MTU/freeze.
+  Image IDs/digests and per-attempt logs are retained in each run backup/JSON.
+  The phase-05 resume keeps the original run, timers, ICMP/TCP/NS baselines and
+  workloads; changed inventory, live OVN config and later-phase/cleanup markers
+  are rejected before staging. Live OVS permits its normal l2population driver.
+  Existing report, task timing and RabbitMQ reset changes are retained.
