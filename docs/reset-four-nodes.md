@@ -128,3 +128,69 @@ Mỗi lần reset toàn bộ có snapshot mới; không dùng checkpoint một l
 - https://docs.openstack.org/kolla-ansible/2024.1/user/operating-kolla.html
 - https://docs.openstack.org/kolla-ansible/2024.1/admin/advanced-configuration.html
 - https://cloud-images.ubuntu.com/releases/noble/release/
+
+## RabbitMQ sau deploy: lỗi khởi tạo và trạng thái hiện tại
+
+Gate cũ từ chối mọi run có dòng `cluster_not_formed`, `already_started` hoặc
+`failed to form a new cluster` trong log kể từ trước deploy, kể cả queue đã
+phục hồi. Điều đó không chứng minh dữ liệu Mnesia/Raft của cloud cũ còn sót.
+
+Output ngày 2026-10-14 xác nhận: RabbitMQ 3.13.7 chỉ có `rabbit@controller`, không
+alarm/partition; 69 quorum queue đều running; `scheduler` có 3 consumer,
+`conductor` có 5 consumer. `scheduler` có một Raft leader/voter và commit/applied
+index đều bằng 5. Như vậy lỗi declare lúc 17:57:04 đã phục hồi tại thời điểm
+kiểm tra. Nguyên nhân trực tiếp khiến reset dừng là gate dựa trên lịch sử log.
+Thiếu toàn bộ log quanh 17:57 nên chưa xác định được race/bug nội bộ nào gây
+lần declare thất bại; không được gọi đó là cache cũ hay khẳng định đã vá RabbitMQ.
+
+Gate mới dùng `scripts/reset_rabbitmq_health.py`, chỉ đọc trạng thái:
+
+- RabbitMQ application phải running và không có local alarm.
+- Tất cả quorum queue hiện có phải running; `conductor` và `scheduler` phải là
+  quorum queue với ít nhất một consumer.
+- Cả hai queue chính phải có đúng leader/voter của lab một controller.
+- Các kiểm tra phải ổn định ít nhất 15 giây, không có lỗi Raft mới trong log.
+  Lỗi mới hoặc log bị rotate/truncate làm tính lại khoảng ổn định.
+- Hết 180 giây chưa đạt, lỗi đọc/parse CLI, thiếu log, hoặc deploy rc khác 0 vẫn
+  làm reset fail. Không restart RabbitMQ, delete queue hay xóa volume để làm PASS.
+
+`group_vars/reset.yml` có timeout/stability/log path. Bằng chứng nằm trong
+snapshot reset tại `/root/kolla-reset-snapshots/<id>/`:
+
+- `deploy-result.json`: exit code deploy và inventory.
+- `rabbitmq-health.json`: từng sample, queue/consumer, Raft membership, alarm,
+  lỗi CLI, lỗi Raft mới và khoảng ổn định.
+- `rabbitmq-deploy-raft-errors.log`: các dòng lỗi phát hiện từ giai đoạn deploy;
+  dữ liệu chẩn đoán, không thay thế kiểm tra live.
+- `rabbitmq-storage-after-destroy-<host>.json`: kết quả kiểm tra named volume
+  RabbitMQ sau destroy trên từng host. Docker lỗi sẽ dừng kiểm tra, không bị
+  `grep ... || true` che thành kết quả rỗng.
+
+Reset vẫn dùng Kolla destroy rồi chặn nếu còn named volume RabbitMQ; lần fail
+vừa phân tích đã qua gate đó. Chưa có bằng chứng cần thêm lệnh xóa. Kiểm tra
+named volume không chứng minh một custom bind mount bất kỳ đã được xóa. Nếu
+đổi `rabbitmq_datadir_volume` khỏi cấu hình chuẩn, phải xem mount thực tế trước
+khi kết luận storage sạch:
+
+```bash
+docker inspect --format '{{json .Mounts}}' rabbitmq
+```
+
+Không xóa volume/queue của deployment mới chỉ vì log có lỗi cũ đã phục hồi.
+Lỗi declare lúc khởi tạo vẫn có thể tái diễn; bản sửa tránh fail do lịch sử lỗi
+khi đã chứng minh live recovery, đồng thời vẫn chặn lỗi còn tiếp diễn. Chưa có
+live reset trên lab để cam kết tần suất hay khẳng định lỗi RabbitMQ hết hẳn.
+
+Run đang dừng tại gate RabbitMQ chưa chạy `post-deploy` và các bước hoàn thiện
+baseline phía sau; RabbitMQ healthy chưa đồng nghĩa đã đạt `OVS_4NODE_BASELINE_READY`.
+Không dùng `--start-at-task` để bỏ qua các checkpoint của reset.
+
+Nguồn đối chiếu:
+
+- RabbitMQ 3.13 monitoring (check_running/check_local_alarms):
+  https://www.rabbitmq.com/docs/3.13/monitoring
+- RabbitMQ 3.13 quorum_status:
+  https://www.rabbitmq.com/docs/3.13/man/rabbitmq-queues.8
+- oslo.messaging có retry cho lỗi queue declare AMQP 541; đây là cơ chế có thể
+  phục hồi lỗi, không chứng minh chính xác race của lab:
+  https://github.com/openstack/oslo.messaging/blob/master/oslo_messaging/_drivers/impl_rabbit.py

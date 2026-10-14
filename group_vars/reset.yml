@@ -22,3 +22,7 @@ reset_managed_flavor_name: ovn-validation.small
 reset_image_cache_dir: /var/cache/ovs-to-ovn-validation
 reset_image_download_timeout: 120
 reset_image_active_timeout: 900
+# Live readiness is separate from historical errors emitted during deployment.
+reset_rabbitmq_log_path: /var/log/kolla/rabbitmq/rabbit@controller.log
+reset_rabbitmq_health_timeout: 180
+reset_rabbitmq_stable_seconds: 15

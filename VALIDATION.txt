@@ -1,3 +1,28 @@
+RabbitMQ reset readiness correction — 2026-10-14
+Source: current migration.zip with the report/task-timing update retained.
+
+435 tests: PASS (full suite, no skips); 14 RabbitMQ-focused tests rerun after
+final deadline/partial-log refinements. 9 Ansible syntax checks PASS.
+Python AST 57 files / YAML 30 files PASS.
+
+Actual attached diagnostics parsed successfully: 144 queues, 69 quorum queues;
+all quorum queues running, scheduler consumers=3, conductor consumers=5,
+scheduler leader/voter rabbit@controller. The earlier deploy error had recovered.
+Root cause of reset exit: unconditional failure on earlier log errors.
+Precise cause of the earlier RabbitMQ queue-declare failure remains unproven;
+no full 17:57 startup trace or datastore mount audit was supplied.
+
+New gate: application running, no local alarms, running quorum queues, required
+scheduler/conductor consumers and single-node Raft leaders, stable quiet window,
+bounded deadline. Real Ansible integration uses a read-only Docker CLI fixture,
+not a live RabbitMQ broker. Tests cover recovered historical errors, live failures,
+new errors, log rotation/unavailability, malformed CLI, command deadlines, stale
+PASS replacement and failed deploy rejection. Named-volume residue detection
+still blocks reuse and no longer hides Docker failures; evidence is persisted.
+No queue/volume delete, service restart, live reset or migration was executed.
+
+Prior validation history:
+
 Report/task timing update — 2026-10-14
 Source: migration.zip; report-only changes plus additive TCP burst counters and task-timing callback.
 
