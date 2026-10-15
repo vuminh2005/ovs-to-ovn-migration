@@ -52,6 +52,7 @@
           - reset_kolla_inventory == ansible_inventory_sources[0]
           - ansible_limit | default('') | length == 0
           - not ansible_check_mode
+          - reset_nova_scheduler_workers | int >= 1
           - groups['control'] | sort == ['controller']
           - groups['network'] | sort == ['network1']
           - groups['compute'] | sort == ['compute1', 'compute2']
@@ -554,6 +555,7 @@
 
           nova_compute_virt_type: "qemu"
           nova_console: "novnc"
+          nova_scheduler_workers: {{ reset_nova_scheduler_workers | int }}
 
           ###############################################################################
           # OpenStack services
@@ -722,6 +724,12 @@
       register: reset_rabbitmq_log_offset
       changed_when: false
 
+    - name: Record reset-only RabbitMQ recovery policy before deployment
+      ansible.builtin.copy:
+        dest: "{{ reset_run_dir }}/reset-rabbitmq-policy.json"
+        mode: '0600'
+        content: "{{ {'scope': 'four-node-lab-reset', 'confirmed': reset_lab_confirm | bool, 'inventory': reset_kolla_inventory, 'control_hosts': groups['control'], 'scheduler_workers': reset_nova_scheduler_workers | int} | to_nice_json }}"
+
     - name: Deploy OpenStack
       ansible.builtin.shell: |
         set -euo pipefail
@@ -738,6 +746,18 @@
         dest: "{{ reset_run_dir }}/deploy-result.json"
         mode: '0600'
         content: "{{ {'rc': reset_deploy.rc, 'inventory': reset_kolla_inventory} | to_nice_json }}"
+
+    - name: Verify deployed Nova scheduler worker configuration
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/scripts/reset_rabbitmq_recovery.py"
+          - verify-workers
+          - "{{ reset_run_dir }}"
+          - --workers
+          - "{{ reset_nova_scheduler_workers | string }}"
+      changed_when: false
+      when: reset_deploy.rc == 0
 
     - name: Wait for stable live RabbitMQ queues and a quiet Raft window
       ansible.builtin.command:
@@ -778,6 +798,30 @@
         mode: '0600'
         content: "{{ reset_rabbitmq_raft_errors.stdout | default('') }}\n"
 
+    - name: Recover the evidenced scheduler Raft startup failure at most once
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/scripts/reset_rabbitmq_recovery.py"
+          - recover
+          - "{{ reset_run_dir }}"
+          - --workers
+          - "{{ reset_nova_scheduler_workers | string }}"
+          - --log
+          - "{{ reset_rabbitmq_log_path }}"
+          - --timeout
+          - "{{ reset_rabbitmq_health_timeout | string }}"
+          - --stable-seconds
+          - "{{ reset_rabbitmq_stable_seconds | string }}"
+      register: reset_rabbitmq_recovery
+      changed_when: >-
+        '"attempted": true' in (reset_rabbitmq_recovery.stdout | default(''))
+      failed_when: false
+      when:
+        - reset_deploy.rc == 0
+        - reset_rabbitmq_health.rc != 0
+        - reset_rabbitmq_recovery_enabled | bool
+
     - name: Show RabbitMQ diagnostics after deploy attempt
       ansible.builtin.debug:
         msg:
@@ -785,6 +829,8 @@
           - "RabbitMQ live readiness rc={{ reset_rabbitmq_health.rc }}"
           - "{{ reset_rabbitmq_health.stdout | default('') }}"
           - "{{ reset_rabbitmq_health.stderr | default('') }}"
+          - "RabbitMQ bounded recovery: {{ reset_rabbitmq_recovery.stdout | default('not attempted') }}"
+          - "{{ reset_rabbitmq_recovery.stderr | default('') }}"
           - "Live queue/quorum samples: {{ reset_run_dir }}/rabbitmq-health.json"
           - "Earlier deploy-time Raft errors (retained; live recovery decides readiness):"
           - "{{ reset_rabbitmq_raft_errors.stdout_lines | default([]) }}"
@@ -793,10 +839,11 @@
       ansible.builtin.assert:
         that:
           - reset_deploy.rc == 0
-          - reset_rabbitmq_health.rc == 0
+          - reset_rabbitmq_health.rc == 0 or (reset_rabbitmq_recovery.rc | default(1)) == 0
         fail_msg: >-
           Deployment failed or RabbitMQ did not reach stable live readiness.
-          Inspect {{ reset_run_dir }}/rabbitmq-health.json and
+          Inspect {{ reset_run_dir }}/rabbitmq-health.json,
+          rabbitmq-recovery.json, rabbitmq-health-after-recovery.json and
           rabbitmq-deploy-raft-errors.log. Earlier errors alone do not establish
           stale storage; missing/stuck queues, absent consumers, alarms or new
           Raft errors must recover within the bounded readiness window.

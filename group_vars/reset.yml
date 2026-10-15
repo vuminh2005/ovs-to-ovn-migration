@@ -26,3 +26,7 @@ reset_image_active_timeout: 900
 reset_rabbitmq_log_path: /var/log/kolla/rabbitmq/rabbit@controller.log
 reset_rabbitmq_health_timeout: 180
 reset_rabbitmq_stable_seconds: 15
+# Reduce concurrent first declarations of the scheduler quorum queue in this lab.
+# This is a mitigation to verify on fresh resets, not an upstream RabbitMQ fix.
+reset_nova_scheduler_workers: 1
+reset_rabbitmq_recovery_enabled: true

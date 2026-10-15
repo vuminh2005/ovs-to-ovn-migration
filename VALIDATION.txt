@@ -1,3 +1,42 @@
+RabbitMQ scheduler startup mitigation and bounded lab recovery — 2026-10-15
+Based on the delivered current-playbook.zip, retaining its N-S/diagnostics/report.
+Prior delivered ZIP SHA-256: 44e497d6234615c19bba563cec23d44da53dfda523cd465f8216f54d99e338b0
+
+476 tests PASS; 387 subtests PASS; no skips. 140 SDK deprecation warnings.
+9 Ansible entrypoint/helper syntax checks PASS. Python compile and diff checks PASS.
+42 focused reset/RabbitMQ tests PASS, including 41 focused subtests.
+
+Reset defaults to nova_scheduler_workers=1 before the initial Kolla deploy.
+The exact Kolla-Ansible 18.8.0 wheel was inspected: nova_scheduler_workers
+feeds [scheduler] workers; Kolla systemd units own container start/stop.
+Tests execute the actual source globals rendering and phase-06 target update
+with Ansible and confirm that the worker setting survives migration config.
+The effective container configuration is read back and must match the setting.
+
+Recovery requires the confirmed fresh single-controller reset, matching inventory,
+successful deploy, clean storage checkpoint, standard RabbitMQ named volume,
+correct Kolla systemd ownership and a recent isolated scheduler Raft failure.
+It preserves the original FAIL, before/after logs and command results, rechecks
+live state before intervention, and verifies all readiness conditions afterward.
+An exclusive fsynced marker prevents a second intervention after interruption.
+Healthy self-recovery performs no restart; other failures are rejected.
+
+Real subprocess fixtures model Docker and systemd. Actual Ansible production
+recovery/gate tasks are exercised against those fixtures. Tests include the
+observed not-running window after restart, persistent Raft failures, failed boot,
+wrong workers, foreign units, custom mounts, changed inventory, failed deploy,
+missing storage proof and deadline-only samples. No live Docker/systemd service,
+reset, migration or cloud API was operated in this revision.
+
+This mitigates concurrency and provides bounded recovery; it does not prove
+an upstream RabbitMQ fix or guarantee non-recurrence. Fresh lab resets are
+needed to measure first-attempt PASS vs recovery and compare worker counts.
+No reset-resume route was added because the user chose a fresh full reset.
+CHANGES.patch remains relative to the originally supplied current-playbook.zip.
+See docs/reset-rabbitmq-mitigation.md for policy and evidence details.
+
+Prior validation history:
+
 N-S traffic and continuous migration diagnostics — 2026-10-15
 Source: user-supplied current-playbook.zip (current run only).
 Source SHA-256: 26cf39192170b4718f78a15586f955265d660b236309642376fe122fea6c1e78

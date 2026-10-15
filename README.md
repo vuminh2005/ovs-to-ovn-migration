@@ -47,6 +47,10 @@ checkpoints, cleanup and the current nested-lab commands.
 
 ## Four-node reset update
 
+Reset RabbitMQ 15/10/2026: mặc định `nova_scheduler_workers: 1`, kiểm tra cấu
+hình trong container và phục hồi tối đa một lần cho đúng lỗi Raft scheduler
+trong reset lab. [Điều kiện, evidence và kiểm chứng](docs/reset-rabbitmq-mitigation.md).
+
 `reset-lab-to-ovs.yml` now resets the lab with `controller`, `network1`,
 `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
 with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.

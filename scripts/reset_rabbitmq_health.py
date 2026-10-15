@@ -215,6 +215,14 @@ def wait(evidence, log, *, timeout=180, stable_seconds=15, interval=5, command_t
     return result
 
 
+def last_complete(data):
+    """A deadline-only sample does not describe the queues' actual state."""
+    names = ('running', 'alarms', 'queues', 'conductor', 'scheduler')
+    return next((s for s in reversed(data.get('samples', []))
+                 if all(n in s.get('checks', {}) for n in names) and not any(
+                     c.get('timeout_scope') == 'overall' for c in s['checks'].values())), None)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('evidence', type=Path)
@@ -223,8 +231,10 @@ def main():
     parser.add_argument('--stable-seconds', type=int, default=15)
     args = parser.parse_args()
     result = wait(args.evidence, args.log, timeout=args.timeout, stable_seconds=args.stable_seconds)
+    complete = last_complete(result) or {}
     print(json.dumps(dict(status=result['status'], evidence=str(args.evidence), samples=len(result['samples']),
-        last_issues=(result['samples'][-1]['issues'] if result['samples'] else []))))
+        last_issues=(result['samples'][-1]['issues'] if result['samples'] else []),
+        last_complete_at=complete.get('observed_at'), last_complete_issues=complete.get('issues'))))
     return 0 if result['status'] == 'PASS' else 1
 
 

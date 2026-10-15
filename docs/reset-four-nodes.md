@@ -1,5 +1,9 @@
 # Reset lặp lại cụm 4 node về ML2/OVS
 
+Cập nhật 15/10/2026: reset đặt Nova scheduler 1 worker và có một lượt phục hồi
+giới hạn cho đúng lỗi Raft `scheduler` đã ghi nhận. Xem
+[cấu hình, điều kiện và cách kiểm chứng](reset-rabbitmq-mitigation.md).
+
 Bản reset này được sửa từ commit `a77af56`, dành cho lab hiện tại:
 
 | Group Kolla | Host | eth0 |
@@ -152,7 +156,9 @@ Gate mới dùng `scripts/reset_rabbitmq_health.py`, chỉ đọc trạng thái:
 - Các kiểm tra phải ổn định ít nhất 15 giây, không có lỗi Raft mới trong log.
   Lỗi mới hoặc log bị rotate/truncate làm tính lại khoảng ổn định.
 - Hết 180 giây chưa đạt, lỗi đọc/parse CLI, thiếu log, hoặc deploy rc khác 0 vẫn
-  làm reset fail. Không restart RabbitMQ, delete queue hay xóa volume để làm PASS.
+  làm reset fail. Bản 15/10 bổ sung một lượt restart có điều kiện trong reset
+  lab; trạng thái sau phục hồi vẫn phải qua toàn bộ gate. Không delete queue
+  hay xóa volume để làm PASS.
 
 `group_vars/reset.yml` có timeout/stability/log path. Bằng chứng nằm trong
 snapshot reset tại `/root/kolla-reset-snapshots/<id>/`:

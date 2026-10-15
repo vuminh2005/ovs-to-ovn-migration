@@ -1,8 +1,19 @@
 diff --git a/README.md b/README.md
-index 44807a1..8598871 100644
+index 44807a1..2cb144b 100644
 --- a/README.md
 +++ b/README.md
-@@ -832,3 +832,11 @@ remediation retains SUCCESS with its explicit fields. Any unresolved validation
+@@ -47,6 +47,10 @@ checkpoints, cleanup and the current nested-lab commands.
+ 
+ ## Four-node reset update
+ 
++Reset RabbitMQ 15/10/2026: mặc định `nova_scheduler_workers: 1`, kiểm tra cấu
++hình trong container và phục hồi tối đa một lần cho đúng lỗi Raft scheduler
++trong reset lab. [Điều kiện, evidence và kiểm chứng](docs/reset-rabbitmq-mitigation.md).
++
+ `reset-lab-to-ovs.yml` now resets the lab with `controller`, `network1`,
+ `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
+ with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
+@@ -832,3 +836,11 @@ remediation retains SUCCESS with its explicit fields. Any unresolved validation
  failure reports MIGRATED_VALIDATION_INCOMPLETE, preserves evidence/resources and
  never rolls back. Pair-A capture counts every actual Pair-A loss during either
  remediation; Pair-B packets never enter that metric.
@@ -15,10 +26,49 @@ index 44807a1..8598871 100644
 +`migration-report.txt`. Xem [thiết kế, cách đo và các file bằng chứng](docs/ns-observability.md).
 +Workflow và các tiêu chí bảo toàn phiên held vẫn giữ nguyên.
 diff --git a/VALIDATION.txt b/VALIDATION.txt
-index 19cb34f..f151887 100644
+index 19cb34f..0aefc82 100644
 --- a/VALIDATION.txt
 +++ b/VALIDATION.txt
-@@ -1,3 +1,34 @@
+@@ -1,3 +1,73 @@
++RabbitMQ scheduler startup mitigation and bounded lab recovery — 2026-10-15
++Based on the delivered current-playbook.zip, retaining its N-S/diagnostics/report.
++Prior delivered ZIP SHA-256: 44e497d6234615c19bba563cec23d44da53dfda523cd465f8216f54d99e338b0
++
++476 tests PASS; 387 subtests PASS; no skips. 140 SDK deprecation warnings.
++9 Ansible entrypoint/helper syntax checks PASS. Python compile and diff checks PASS.
++42 focused reset/RabbitMQ tests PASS, including 41 focused subtests.
++
++Reset defaults to nova_scheduler_workers=1 before the initial Kolla deploy.
++The exact Kolla-Ansible 18.8.0 wheel was inspected: nova_scheduler_workers
++feeds [scheduler] workers; Kolla systemd units own container start/stop.
++Tests execute the actual source globals rendering and phase-06 target update
++with Ansible and confirm that the worker setting survives migration config.
++The effective container configuration is read back and must match the setting.
++
++Recovery requires the confirmed fresh single-controller reset, matching inventory,
++successful deploy, clean storage checkpoint, standard RabbitMQ named volume,
++correct Kolla systemd ownership and a recent isolated scheduler Raft failure.
++It preserves the original FAIL, before/after logs and command results, rechecks
++live state before intervention, and verifies all readiness conditions afterward.
++An exclusive fsynced marker prevents a second intervention after interruption.
++Healthy self-recovery performs no restart; other failures are rejected.
++
++Real subprocess fixtures model Docker and systemd. Actual Ansible production
++recovery/gate tasks are exercised against those fixtures. Tests include the
++observed not-running window after restart, persistent Raft failures, failed boot,
++wrong workers, foreign units, custom mounts, changed inventory, failed deploy,
++missing storage proof and deadline-only samples. No live Docker/systemd service,
++reset, migration or cloud API was operated in this revision.
++
++This mitigates concurrency and provides bounded recovery; it does not prove
++an upstream RabbitMQ fix or guarantee non-recurrence. Fresh lab resets are
++needed to measure first-attempt PASS vs recovery and compare worker counts.
++No reset-resume route was added because the user chose a fresh full reset.
++CHANGES.patch remains relative to the originally supplied current-playbook.zip.
++See docs/reset-rabbitmq-mitigation.md for policy and evidence details.
++
++Prior validation history:
++
 +N-S traffic and continuous migration diagnostics — 2026-10-15
 +Source: user-supplied current-playbook.zip (current run only).
 +Source SHA-256: 26cf39192170b4718f78a15586f955265d660b236309642376fe122fea6c1e78
@@ -248,6 +298,140 @@ index 0000000..9e02b09
 +Không cần cài thư viện Python mới cho các probe/collector runtime. Các bài kiểm
 +tra phát triển dùng pytest, openstacksdk, SQLAlchemy và ansible-core. Bản này đã
 +được kiểm tra cục bộ; chưa thực thi migration trên lab của người dùng.
+diff --git a/docs/reset-four-nodes.md b/docs/reset-four-nodes.md
+index 0ea1e88..db6d52f 100644
+--- a/docs/reset-four-nodes.md
++++ b/docs/reset-four-nodes.md
+@@ -1,5 +1,9 @@
+ # Reset lặp lại cụm 4 node về ML2/OVS
+ 
++Cập nhật 15/10/2026: reset đặt Nova scheduler 1 worker và có một lượt phục hồi
++giới hạn cho đúng lỗi Raft `scheduler` đã ghi nhận. Xem
++[cấu hình, điều kiện và cách kiểm chứng](reset-rabbitmq-mitigation.md).
++
+ Bản reset này được sửa từ commit `a77af56`, dành cho lab hiện tại:
+ 
+ | Group Kolla | Host | eth0 |
+@@ -152,7 +156,9 @@ Gate mới dùng `scripts/reset_rabbitmq_health.py`, chỉ đọc trạng thái:
+ - Các kiểm tra phải ổn định ít nhất 15 giây, không có lỗi Raft mới trong log.
+   Lỗi mới hoặc log bị rotate/truncate làm tính lại khoảng ổn định.
+ - Hết 180 giây chưa đạt, lỗi đọc/parse CLI, thiếu log, hoặc deploy rc khác 0 vẫn
+-  làm reset fail. Không restart RabbitMQ, delete queue hay xóa volume để làm PASS.
++  làm reset fail. Bản 15/10 bổ sung một lượt restart có điều kiện trong reset
++  lab; trạng thái sau phục hồi vẫn phải qua toàn bộ gate. Không delete queue
++  hay xóa volume để làm PASS.
+ 
+ `group_vars/reset.yml` có timeout/stability/log path. Bằng chứng nằm trong
+ snapshot reset tại `/root/kolla-reset-snapshots/<id>/`:
+diff --git a/docs/reset-rabbitmq-mitigation.md b/docs/reset-rabbitmq-mitigation.md
+new file mode 100644
+index 0000000..c419d4a
+--- /dev/null
++++ b/docs/reset-rabbitmq-mitigation.md
+@@ -0,0 +1,103 @@
++# Giảm lỗi khởi tạo queue scheduler khi reset lab
++
++Bản này giữ toàn bộ N-S/diagnostics/report đã gửi trước đó, và bổ sung thay đổi
++cho các lần **reset mới từ đầu**. Đây là biện pháp giảm khả năng tái diễn và
++phục hồi có giới hạn, chưa phải bản vá nội bộ RabbitMQ hoặc cam kết hết lỗi.
++
++## Cấu hình trước deploy
++
++`group_vars/reset.yml` mặc định:
++
++```yaml
++reset_nova_scheduler_workers: 1
++reset_rabbitmq_recovery_enabled: true
++```
++
++Reset ghi `nova_scheduler_workers: 1` vào `/etc/kolla/globals.yml` trước Kolla
++deploy đầu tiên. Mã Kolla-Ansible 18.8.0 đã được đối chiếu: biến này đi vào
++`[scheduler] workers` của nova.conf. Sau deploy, helper đọc cấu hình thực tế
++`/etc/nova/nova.conf` trong nova_scheduler; không đúng số worker thì dừng.
++Không in transport_url hoặc credential. Phase 06 chỉ đổi các khóa Neutron/OVN
++nên giữ nguyên số worker. Các API/conductor workers khác giữ cấu hình hiện có.
++
++Thay đổi này giảm mức song song của scheduler; khi so sánh run cần dùng cùng
++cấu hình. Con số 1 nhằm giảm cạnh tranh khởi tạo queue trong lab một controller,
++không phải khuyến nghị hiệu năng cho production. Có thể thử A/B bằng
++`-e reset_nova_scheduler_workers=5`, nhưng phải ghi rõ vào kết quả.
++
++## Phục hồi chỉ trong reset lab
++
++Gate ban đầu vẫn chờ 180 giây, cần 15 giây ổn định. Nếu FAIL, helper chỉ xem xét
++phục hồi khi đáp ứng đủ:
++
++- Policy của đúng reset đã confirm, một controller, inventory không thay đổi.
++- Deploy rc=0; bằng chứng sau destroy không còn RabbitMQ volume.
++- Cấu hình scheduler đúng số worker và data mount là named volume rabbitmq.
++- Mẫu đầy đủ gần nhất không quá 10 phút, node running, không alarm, conductor
++  leader/voter có consumer, không queue quorum khác bị down.
++- Lỗi tập trung vào scheduler, có `already_started` và `cluster_not_formed`
++  mới, log liên tục. Lỗi parser, timeout/transport, queue khác hoặc chỉ thiếu
++  consumer không cho phép restart.
++- Unit systemd đúng tên `kolla-<container>-container.service`, ExecStart/ExecStop
++  thực sự điều khiển đúng Docker container. Thiếu/khác ownership thì dừng.
++
++Helper lưu state/container identity và nén nguyên log RabbitMQ/Nova scheduler
++trước thao tác. Mỗi log tối đa 128 MiB; không lưu được evidence thì không restart.
++Nó kiểm tra live một lần nữa: nếu đã phục hồi, chỉ chạy lại gate, không restart.
++Nếu lỗi thay đổi hoặc không còn chữ ký Raft mới thì dừng để đọc evidence.
++
++Lượt can thiệp được ghi nhận bằng file tạo độc quyền và fsync **trước** thao tác:
++
++1. Stop unit Nova scheduler; xác nhận unit inactive và container thật sự stopped.
++2. Restart unit RabbitMQ; poll trạng thái Docker và check_running có timeout.
++   Không gọi docker exec ngay khi container chưa running.
++3. Kiểm tra alarm rồi start unit scheduler; đọc lại cấu hình worker.
++4. Chạy đầy đủ health gate, lưu log/state sau thao tác. Chỉ PASS mới qua post-deploy.
++
++Không tự delete queue, reset database, xóa volume, ép kill process hoặc thử restart
++lần hai. Nếu bị ngắt sau khi đã dừng scheduler, report ghi rõ dịch vụ có thể vẫn
++stopped; không tự che lỗi bằng cách tiếp tục migration. Mỗi snapshot chỉ có một
++lần đánh giá/phục hồi; bằng chứng cũ không bị ghi đè khi gọi lại helper.
++
++Tắt can thiệp tự động bằng `-e reset_rabbitmq_recovery_enabled=false`: cấu hình
++worker và gate vẫn chạy. Logic này không được gọi trong migration đang có workload.
++
++## Evidence và cách kiểm chứng
++
++Trong `/root/kolla-reset-snapshots/<reset-id>/`:
++
++- `reset-rabbitmq-policy.json`, `nova-scheduler-workers.json`.
++- `rabbitmq-health.json`: lần kiểm tra ban đầu, giữ cả khi FAIL rồi phục hồi PASS.
++- `rabbitmq-recovery.json`: kết quả, từng command/timestamp/rc, lượt can thiệp.
++- `rabbitmq-recovery-attempt.json`: marker chặn lần can thiệp thứ hai.
++- `rabbitmq-health-after-recovery.json`: toàn bộ lần kiểm tra sau phục hồi.
++- `rabbitmq-recovery-before/`, `rabbitmq-recovery-after/`: log nén và container state.
++
++Các file recovery không được tạo khi gate ban đầu PASS. Nếu tự phục hồi trước
++can thiệp thì report có `attempted: false`, không có marker can thiệp.
++Console health hiển thị cả sample cuối và issues/timestamp của sample đầy đủ gần
++nhất, tránh hiểu queue null do overall deadline thành queue thật sự biến mất.
++
++```bash
++source /root/venvs/kolla-2024.1/bin/activate
++cd /root/ovs-to-ovn-migration
++ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
++  -e reset_lab_confirm=true
++```
++
++Chỉ sau `OVS_4NODE_BASELINE_READY` mới chạy migration. Để đánh giá biện pháp giảm
++lỗi, kiểm tra nhiều lần reset sạch: số worker thực tế, lần đầu gate PASS hay cần
++recovery, số lỗi Raft mới và consumer scheduler. Không dùng một lần PASS để kết
++luận hết lỗi. Không cần thực hiện lại reset chỉ để tiếp tục một reset cũ đã xong.
++
++Không thêm đường resume reset trong bản này: người dùng chọn reset mới từ đầu.
++Không dùng --start-at-task để bỏ qua các checkpoint của reset đang dở.
++
++Nguồn đối chiếu:
++
++- Nova 2024.1, `[scheduler] workers`:
++  https://docs.openstack.org/nova/2024.1/configuration/config.html#scheduler.workers
++- Kolla 2024.1, service configuration overrides:
++  https://docs.openstack.org/kolla-ansible/2024.1/admin/advanced-configuration.html
++- RabbitMQ maintainer phân tích process còn tồn tại khi redeclare quorum queue:
++  https://github.com/rabbitmq/rabbitmq-server/discussions/15069
 diff --git a/group_vars/all.yml b/group_vars/all.yml
 index 50212a9..0ed9f87 100644
 --- a/group_vars/all.yml
@@ -277,6 +461,18 @@ index 5973f38..c854499 100644
  validation_ew_matrix_enabled: true
  
  # Preserve the NAT profile while recording TCP tuples and resets.
+diff --git a/group_vars/reset.yml b/group_vars/reset.yml
+index 5c05241..7c31157 100644
+--- a/group_vars/reset.yml
++++ b/group_vars/reset.yml
+@@ -26,3 +26,7 @@ reset_image_active_timeout: 900
+ reset_rabbitmq_log_path: /var/log/kolla/rabbitmq/rabbit@controller.log
+ reset_rabbitmq_health_timeout: 180
+ reset_rabbitmq_stable_seconds: 15
++# Reduce concurrent first declarations of the scheduler quorum queue in this lab.
++# This is a mitigation to verify on fresh resets, not an upstream RabbitMQ fix.
++reset_nova_scheduler_workers: 1
++reset_rabbitmq_recovery_enabled: true
 diff --git a/playbooks/04-validation-workloads.yml b/playbooks/04-validation-workloads.yml
 index 6b69b6f..fe24199 100644
 --- a/playbooks/04-validation-workloads.yml
@@ -568,10 +764,18 @@ index 0000000..2614aa1
 +        content: "{{ ns_control_reply.stdout | trim | from_json | to_nice_json }}"
 +        mode: '0600'
 diff --git a/reset-lab-to-ovs.yml b/reset-lab-to-ovs.yml
-index 7727b43..d9fa1ea 100644
+index 7727b43..d3bcb62 100644
 --- a/reset-lab-to-ovs.yml
 +++ b/reset-lab-to-ovs.yml
-@@ -264,6 +264,15 @@
+@@ -52,6 +52,7 @@
+           - reset_kolla_inventory == ansible_inventory_sources[0]
+           - ansible_limit | default('') | length == 0
+           - not ansible_check_mode
++          - reset_nova_scheduler_workers | int >= 1
+           - groups['control'] | sort == ['controller']
+           - groups['network'] | sort == ['network1']
+           - groups['compute'] | sort == ['compute1', 'compute2']
+@@ -264,6 +265,15 @@
            - "{{ reset_run_dir }}/ns-diagnostic-captures-stop.json"
        changed_when: false
  
@@ -587,6 +791,100 @@ index 7727b43..d9fa1ea 100644
      - name: Run kolla-ansible destroy
        ansible.builtin.shell: |
          set -euo pipefail
+@@ -545,6 +555,7 @@
+ 
+           nova_compute_virt_type: "qemu"
+           nova_console: "novnc"
++          nova_scheduler_workers: {{ reset_nova_scheduler_workers | int }}
+ 
+           ###############################################################################
+           # OpenStack services
+@@ -713,6 +724,12 @@
+       register: reset_rabbitmq_log_offset
+       changed_when: false
+ 
++    - name: Record reset-only RabbitMQ recovery policy before deployment
++      ansible.builtin.copy:
++        dest: "{{ reset_run_dir }}/reset-rabbitmq-policy.json"
++        mode: '0600'
++        content: "{{ {'scope': 'four-node-lab-reset', 'confirmed': reset_lab_confirm | bool, 'inventory': reset_kolla_inventory, 'control_hosts': groups['control'], 'scheduler_workers': reset_nova_scheduler_workers | int} | to_nice_json }}"
++
+     - name: Deploy OpenStack
+       ansible.builtin.shell: |
+         set -euo pipefail
+@@ -730,6 +747,18 @@
+         mode: '0600'
+         content: "{{ {'rc': reset_deploy.rc, 'inventory': reset_kolla_inventory} | to_nice_json }}"
+ 
++    - name: Verify deployed Nova scheduler worker configuration
++      ansible.builtin.command:
++        argv:
++          - python3
++          - "{{ playbook_dir }}/scripts/reset_rabbitmq_recovery.py"
++          - verify-workers
++          - "{{ reset_run_dir }}"
++          - --workers
++          - "{{ reset_nova_scheduler_workers | string }}"
++      changed_when: false
++      when: reset_deploy.rc == 0
++
+     - name: Wait for stable live RabbitMQ queues and a quiet Raft window
+       ansible.builtin.command:
+         argv:
+@@ -769,6 +798,30 @@
+         mode: '0600'
+         content: "{{ reset_rabbitmq_raft_errors.stdout | default('') }}\n"
+ 
++    - name: Recover the evidenced scheduler Raft startup failure at most once
++      ansible.builtin.command:
++        argv:
++          - python3
++          - "{{ playbook_dir }}/scripts/reset_rabbitmq_recovery.py"
++          - recover
++          - "{{ reset_run_dir }}"
++          - --workers
++          - "{{ reset_nova_scheduler_workers | string }}"
++          - --log
++          - "{{ reset_rabbitmq_log_path }}"
++          - --timeout
++          - "{{ reset_rabbitmq_health_timeout | string }}"
++          - --stable-seconds
++          - "{{ reset_rabbitmq_stable_seconds | string }}"
++      register: reset_rabbitmq_recovery
++      changed_when: >-
++        '"attempted": true' in (reset_rabbitmq_recovery.stdout | default(''))
++      failed_when: false
++      when:
++        - reset_deploy.rc == 0
++        - reset_rabbitmq_health.rc != 0
++        - reset_rabbitmq_recovery_enabled | bool
++
+     - name: Show RabbitMQ diagnostics after deploy attempt
+       ansible.builtin.debug:
+         msg:
+@@ -776,6 +829,8 @@
+           - "RabbitMQ live readiness rc={{ reset_rabbitmq_health.rc }}"
+           - "{{ reset_rabbitmq_health.stdout | default('') }}"
+           - "{{ reset_rabbitmq_health.stderr | default('') }}"
++          - "RabbitMQ bounded recovery: {{ reset_rabbitmq_recovery.stdout | default('not attempted') }}"
++          - "{{ reset_rabbitmq_recovery.stderr | default('') }}"
+           - "Live queue/quorum samples: {{ reset_run_dir }}/rabbitmq-health.json"
+           - "Earlier deploy-time Raft errors (retained; live recovery decides readiness):"
+           - "{{ reset_rabbitmq_raft_errors.stdout_lines | default([]) }}"
+@@ -784,10 +839,11 @@
+       ansible.builtin.assert:
+         that:
+           - reset_deploy.rc == 0
+-          - reset_rabbitmq_health.rc == 0
++          - reset_rabbitmq_health.rc == 0 or (reset_rabbitmq_recovery.rc | default(1)) == 0
+         fail_msg: >-
+           Deployment failed or RabbitMQ did not reach stable live readiness.
+-          Inspect {{ reset_run_dir }}/rabbitmq-health.json and
++          Inspect {{ reset_run_dir }}/rabbitmq-health.json,
++          rabbitmq-recovery.json, rabbitmq-health-after-recovery.json and
+           rabbitmq-deploy-raft-errors.log. Earlier errors alone do not establish
+           stale storage; missing/stuck queues, absent consumers, alarms or new
+           Raft errors must recover within the bounded readiness window.
 diff --git a/resume-after-db.yml b/resume-after-db.yml
 index b547a94..df2076e 100644
 --- a/resume-after-db.yml
@@ -2082,6 +2380,310 @@ index 14da927..1a79138 100644
      return '\n'.join(lines) + '\n'
  
  
+diff --git a/scripts/reset_rabbitmq_health.py b/scripts/reset_rabbitmq_health.py
+index 45bc207..93dd5b6 100644
+--- a/scripts/reset_rabbitmq_health.py
++++ b/scripts/reset_rabbitmq_health.py
+@@ -215,6 +215,14 @@ def wait(evidence, log, *, timeout=180, stable_seconds=15, interval=5, command_t
+     return result
+ 
+ 
++def last_complete(data):
++    """A deadline-only sample does not describe the queues' actual state."""
++    names = ('running', 'alarms', 'queues', 'conductor', 'scheduler')
++    return next((s for s in reversed(data.get('samples', []))
++                 if all(n in s.get('checks', {}) for n in names) and not any(
++                     c.get('timeout_scope') == 'overall' for c in s['checks'].values())), None)
++
++
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument('evidence', type=Path)
+@@ -223,8 +231,10 @@ def main():
+     parser.add_argument('--stable-seconds', type=int, default=15)
+     args = parser.parse_args()
+     result = wait(args.evidence, args.log, timeout=args.timeout, stable_seconds=args.stable_seconds)
++    complete = last_complete(result) or {}
+     print(json.dumps(dict(status=result['status'], evidence=str(args.evidence), samples=len(result['samples']),
+-        last_issues=(result['samples'][-1]['issues'] if result['samples'] else []))))
++        last_issues=(result['samples'][-1]['issues'] if result['samples'] else []),
++        last_complete_at=complete.get('observed_at'), last_complete_issues=complete.get('issues'))))
+     return 0 if result['status'] == 'PASS' else 1
+ 
+ 
+diff --git a/scripts/reset_rabbitmq_recovery.py b/scripts/reset_rabbitmq_recovery.py
+new file mode 100644
+index 0000000..1a5f721
+--- /dev/null
++++ b/scripts/reset_rabbitmq_recovery.py
+@@ -0,0 +1,267 @@
++#!/usr/bin/env python3
++"""One evidenced recovery attempt in the confirmed, freshly deployed reset lab."""
++import argparse
++from datetime import datetime, timezone
++import gzip
++import json
++import os
++from pathlib import Path
++import re
++import subprocess
++import time
++
++import reset_rabbitmq_health as health
++
++
++WORKERS_CODE = ('import configparser,json; c=configparser.ConfigParser(interpolation=None); '
++                'c.read("/etc/nova/nova.conf"); '
++                'print(json.dumps({"workers":c.getint("scheduler","workers")}))')
++UNITS = {name: 'kolla-'+name+'-container.service' for name in ('rabbitmq', 'nova_scheduler')}
++NOVA_LOG = Path('/var/log/kolla/nova/nova-scheduler.log')
++
++
++def command(args, timeout=20):
++    started = health.utc()
++    try:
++        proc = subprocess.run(args, capture_output=True, text=True, errors='replace', timeout=timeout)
++        return dict(started_at=started, ended_at=health.utc(), rc=proc.returncode,
++                    stdout=proc.stdout[:1048576], stderr=proc.stderr[:16384])
++    except (OSError, subprocess.TimeoutExpired) as exc:
++        return dict(started_at=started, ended_at=health.utc(), rc=124,
++                    stdout='', stderr=str(exc))
++
++
++def read(root, name):
++    return json.loads((root/name).read_text())
++
++
++def verify_workers(root, expected):
++    if type(expected) is not int or expected < 1:
++        raise ValueError('Expected scheduler worker count must be a positive integer')
++    result = command(['docker', 'exec', 'nova_scheduler', 'python3', '-c', WORKERS_CODE])
++    actual = None
++    try:
++        if result['rc'] == 0:
++            actual = json.loads(result['stdout'])['workers']
++    except (ValueError, KeyError, TypeError):
++        pass
++    value = dict(status='PASS' if type(actual) is int and actual == expected else 'FAIL',
++                 expected_workers=expected, effective_workers=actual, observed_at=health.utc(), check=result)
++    health.save(root/'nova-scheduler-workers.json', value)
++    if value['status'] != 'PASS':
++        raise RuntimeError('Effective Nova scheduler workers differ; inspect nova-scheduler-workers.json')
++    return value
++
++
++def last_complete(data):
++    return health.last_complete(data)
++
++
++def eligible(data):
++    row = last_complete(data)
++    if data.get('status') != 'FAIL' or not row:
++        return False
++    if any(row['checks'][n].get('rc') != 0 for n in ('running', 'alarms', 'queues', 'conductor')):
++        return False
++    allowed = {'scheduler check failed', 'scheduler must be a running quorum queue with consumers',
++               'New quorum/Raft errors during readiness observation'}
++    if set(row.get('issues', []))-allowed:
++        return False
++    if row.get('members', {}).get('conductor') != [dict(node='rabbit@controller', state='leader', membership='voter')]:
++        return False
++    queues = row.get('queues', {})
++    if health.queue_issues(queues) not in ([], ['scheduler must be a running quorum queue with consumers']):
++        return False
++    q = queues.get('scheduler', {})
++    if row['checks']['scheduler'].get('rc') == 0 and q.get('consumers', 0) > 0:
++        return False
++    errors = row.get('log', {}).get('errors', [])
++    if row.get('log', {}).get('continuity') != 'CONTINUOUS':
++        return False
++    # Never restart for historical errors, another queue, alarms or parser/transport failures.
++    if any('failed to form a new cluster' in s and '%2F_scheduler' not in s for s in errors):
++        return False
++    if any('cluster_not_formed' in s and "queue 'scheduler'" not in s for s in errors):
++        return False
++    return any('already_started' in s for s in errors) and any(
++        'cluster_not_formed' in s and "queue 'scheduler'" in s for s in errors)
++
++
++class Recovery:
++    def __init__(self, root, workers, log, timeout=180, stable_seconds=15):
++        self.root = Path(root).resolve()
++        self.workers, self.log = workers, Path(log)
++        self.timeout, self.stable_seconds = timeout, stable_seconds
++        self.report = dict(status='PREFLIGHT', started_at=health.utc(), events=[],
++                           automatic_attempt_limit=1, scheduler_may_be_stopped=False)
++
++    def record(self, action, **values):
++        self.report['events'].append(dict(action=action, at=health.utc(), **values))
++        health.save(self.root/'rabbitmq-recovery.json', self.report)
++
++    def run_command(self, action, args, timeout=20, required=True):
++        result = command(args, timeout)
++        self.record(action, result=result)
++        if required and result['rc'] != 0:
++            raise RuntimeError(action+' failed; inspect rabbitmq-recovery.json')
++        return result
++
++    def scope(self):
++        policy, deploy = read(self.root, 'reset-rabbitmq-policy.json'), read(self.root, 'deploy-result.json')
++        storage = read(self.root, 'rabbitmq-storage-after-destroy-controller.json')
++        if (policy.get('scope') != 'four-node-lab-reset' or policy.get('confirmed') is not True or
++            policy.get('control_hosts') != ['controller'] or policy.get('scheduler_workers') != self.workers or
++            deploy.get('rc') != 0 or deploy.get('inventory') != policy.get('inventory') or
++            storage.get('rc') != 0 or storage.get('host') != 'controller' or
++            storage.get('remaining_rabbitmq_volumes') != []):
++            raise RuntimeError('Recovery requires confirmed single-controller reset, successful deploy and clean storage evidence')
++        if Path(policy['inventory']).read_bytes() != (self.root/'multinode.before').read_bytes():
++            raise RuntimeError('Inventory changed after reset')
++        initial = read(self.root, 'rabbitmq-health.json')
++        ended = datetime.fromisoformat(initial['ended_at']).timestamp()
++        if not -10 <= time.time()-ended <= 600 or not eligible(initial):
++            raise RuntimeError('No recent, isolated scheduler already_started/cluster_not_formed failure')
++        verify_workers(self.root, self.workers)
++        self.record('scope-verified', inventory=policy['inventory'], initial_health='rabbitmq-health.json',
++                    last_complete_issues=last_complete(initial)['issues'])
++
++    def unit(self, name):
++        result = self.run_command('inspect-unit-'+name, ['systemctl', 'show', UNITS[name],
++            '--property=Id,LoadState,ActiveState,ExecStart,ExecStop'])
++        fields = dict(s.split('=', 1) for s in result['stdout'].splitlines() if '=' in s)
++        if (fields.get('Id') != UNITS[name] or fields.get('LoadState') != 'loaded' or
++            '/usr/bin/docker' not in fields.get('ExecStart', '') or
++            not re.search(r'\bstart -a '+re.escape(name)+r'(?:\s|;|$)', fields.get('ExecStart', '')) or
++            not re.search(r'\bstop '+re.escape(name)+r'(?:\s|;|$)', fields.get('ExecStop', ''))):
++            raise RuntimeError('Unrecognized Kolla systemd ownership for '+name)
++
++    def state(self, name):
++        result = self.run_command('container-state-'+name, ['docker', 'inspect', '--format',
++            '{{json .State}}', name], timeout=8)
++        return json.loads(result['stdout'])
++
++    def wait_container(self, name, running, seconds=90):
++        deadline = time.monotonic()+seconds
++        while time.monotonic() < deadline:
++            state = self.state(name)
++            if state.get('Running') is running and not state.get('Restarting'):
++                if not running:
++                    return
++                result = self.run_command('rabbit-running', ['docker', 'exec', name,
++                    'rabbitmq-diagnostics', '-q', 'check_running'], timeout=8, required=False)
++                if result['rc'] == 0:
++                    return
++            time.sleep(min(2, max(0, deadline-time.monotonic())))
++        raise RuntimeError(name+' did not reach expected running='+str(running))
++
++    def capture(self, label):
++        directory = self.root/('rabbitmq-recovery-'+label)
++        directory.mkdir(mode=0o700)
++        for name in ('rabbitmq', 'nova_scheduler'):
++            result = self.run_command('capture-'+label+'-'+name, ['docker', 'inspect', '--format',
++                '{"image":{{json .Config.Image}},"image_id":{{json .Image}},"state":{{json .State}},"mounts":{{json .Mounts}}}', name])
++            health.save(directory/(name+'.json'), json.loads(result['stdout']))
++            if label == 'before' and name == 'rabbitmq':
++                mounts = [m for m in json.loads(result['stdout']).get('mounts', [])
++                          if m.get('Destination') == '/var/lib/rabbitmq']
++                if len(mounts) != 1 or mounts[0].get('Type') != 'volume' or mounts[0].get('Name') != 'rabbitmq':
++                    raise RuntimeError('Recovery requires the reset lab standard RabbitMQ named volume')
++        for path in (self.log, NOVA_LOG):
++            size = 0
++            with path.open('rb') as source, gzip.open(directory/(path.name+'.gz'), 'wb') as target:
++                while chunk := source.read(1048576):
++                    size += len(chunk)
++                    if size > 134217728:
++                        raise RuntimeError('Recovery log exceeds 128 MiB evidence limit: '+str(path))
++                    target.write(chunk)
++            self.record('log-preserved', phase=label, source=str(path), bytes=size)
++
++    def current_failure(self):
++        cursor = health.LogCursor(self.log)
++        cursor.poll()
++        row = health.snapshot(time.monotonic()+45, 8, 'rabbit@controller')
++        row['log'] = cursor.poll()
++        self.record('live-recheck', sample=row)
++        if not row['issues'] and not row['log']['errors']:
++            return False
++        if not eligible(dict(status='FAIL', samples=[row])):
++            raise RuntimeError('Live failure changed or no new scheduler Raft errors; automatic restart refused')
++        return True
++
++    def recover(self):
++        if (self.root/'rabbitmq-recovery-attempt.json').exists() or (self.root/'rabbitmq-recovery.json').exists():
++            raise RuntimeError('Recovery already evaluated/attempted for this reset; evidence will not be overwritten')
++        try:
++            self.scope()
++            for name in UNITS:
++                self.unit(name)
++            self.capture('before')
++            if not self.current_failure():
++                final = health.wait(self.root/'rabbitmq-health-after-recovery.json', self.log,
++                                    timeout=self.timeout, stable_seconds=self.stable_seconds)
++                self.report.update(status=final['status'], finished_at=health.utc(),
++                    outcome='Recovered before service intervention', attempted=False,
++                    health_after='rabbitmq-health-after-recovery.json')
++                self.record('verification-without-restart')
++                return self.report
++            # Atomic, durable intent before the first service mutation. No second attempt, even after interruption.
++            fd = os.open(self.root/'rabbitmq-recovery-attempt.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
++            with os.fdopen(fd, 'w') as stream:
++                json.dump(dict(started_at=health.utc(), scope='four-node-lab-reset', limit=1), stream)
++                stream.flush()
++                os.fsync(stream.fileno())
++            self.report.update(status='RECOVERING', attempted=True, scheduler_may_be_stopped=True)
++            self.record('attempt-consumed')
++            self.run_command('stop-scheduler-unit', ['systemctl', 'stop', UNITS['nova_scheduler']], timeout=120)
++            self.wait_container('nova_scheduler', False, seconds=20)
++            active = self.run_command('scheduler-unit-state', ['systemctl', 'show', UNITS['nova_scheduler'],
++                '--property=ActiveState', '--value'])
++            if active['stdout'].strip() != 'inactive':
++                raise RuntimeError('Scheduler systemd unit is not inactive')
++            self.run_command('restart-rabbit-unit', ['systemctl', 'restart', UNITS['rabbitmq']], timeout=120)
++            self.wait_container('rabbitmq', True)
++            self.run_command('rabbit-local-alarms', ['docker', 'exec', 'rabbitmq',
++                'rabbitmq-diagnostics', '-q', 'check_local_alarms'])
++            self.run_command('start-scheduler-unit', ['systemctl', 'start', UNITS['nova_scheduler']], timeout=120)
++            deadline = time.monotonic()+30
++            while not self.state('nova_scheduler').get('Running'):
++                if time.monotonic() >= deadline:
++                    raise RuntimeError('Scheduler did not start')
++                time.sleep(1)
++            self.report['scheduler_may_be_stopped'] = False
++            verify_workers(self.root, self.workers)
++            final = health.wait(self.root/'rabbitmq-health-after-recovery.json', self.log,
++                                timeout=self.timeout, stable_seconds=self.stable_seconds)
++            self.capture('after')
++            self.report.update(status=final['status'], finished_at=health.utc(),
++                health_after='rabbitmq-health-after-recovery.json',
++                last_issues=(last_complete(final) or {}).get('issues', []))
++            self.record('recovery-finished')
++            return self.report
++        except Exception as exc:
++            self.report.update(status='FAIL', finished_at=health.utc(), error=str(exc))
++            self.record('recovery-failed')
++            return self.report
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('action', choices=['verify-workers', 'recover'])
++    parser.add_argument('root', type=Path)
++    parser.add_argument('--workers', type=int, required=True)
++    parser.add_argument('--log', type=Path, default=Path('/var/log/kolla/rabbitmq/rabbit@controller.log'))
++    parser.add_argument('--timeout', type=int, default=180)
++    parser.add_argument('--stable-seconds', type=int, default=15)
++    args = parser.parse_args()
++    try:
++        value = (verify_workers(args.root, args.workers) if args.action == 'verify-workers' else
++            Recovery(args.root, args.workers, args.log, args.timeout, args.stable_seconds).recover())
++        print(json.dumps({k: v for k, v in value.items() if k not in ('events', 'check')}))
++        return 0 if value['status'] == 'PASS' else 1
++    except Exception as exc:
++        print(json.dumps(dict(status='FAIL', error=str(exc))))
++        return 1
++
++
++if __name__ == '__main__':
++    raise SystemExit(main())
 diff --git a/scripts/traffic_timeline.py b/scripts/traffic_timeline.py
 new file mode 100644
 index 0000000..346d14f
@@ -2628,3 +3230,294 @@ index 0000000..a78060b
 +
 +if __name__ == '__main__':
 +    unittest.main()
+diff --git a/tests/test_reset_rabbitmq_recovery.py b/tests/test_reset_rabbitmq_recovery.py
+new file mode 100644
+index 0000000..9e0eedf
+--- /dev/null
++++ b/tests/test_reset_rabbitmq_recovery.py
+@@ -0,0 +1,285 @@
++"""Exercise the production recovery with real subprocesses and modeled service CLIs."""
++import copy
++import functools
++import gzip
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++
++import yaml
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT/'scripts'))
++import reset_rabbitmq_health as health
++import reset_rabbitmq_recovery as recovery
++
++
++def failure():
++    row = dict(observed_at=health.utc(), issues=[
++        'scheduler check failed', 'scheduler must be a running quorum queue with consumers',
++        'New quorum/Raft errors during readiness observation'],
++        checks={n: dict(rc=65 if n == 'scheduler' else 0) for n in
++                ('running', 'alarms', 'queues', 'conductor', 'scheduler')},
++        queues={'conductor': dict(type='quorum', state='running', consumers=5)},
++        members={'conductor': [dict(node='rabbit@controller', state='leader', membership='voter')]},
++        log=dict(continuity='CONTINUOUS', errors=[
++            'reason: {already_started,<0.17754.0>}',
++            "ra: failed to form a new cluster '%2F_scheduler'.",
++            "Cannot declare quorum queue 'scheduler' in vhost '/': cluster_not_formed"]))
++    return dict(status='FAIL', ended_at=health.utc(), samples=[row])
++
++
++SHIM = r'''
++import json,os,sys,subprocess
++from pathlib import Path
++root=Path(os.environ['RECOVERY_TEST_ROOT'])
++path=root/'model.json'; s=json.loads(path.read_text()); a=sys.argv[1:]
++engine=Path(sys.argv[0]).name
++with (root/'calls.jsonl').open('a') as f:f.write(json.dumps([engine,*a])+'\n')
++def done(value='',rc=0):
++    temp=root/('model-'+str(os.getpid())+'.tmp')
++    temp.write_text(json.dumps(s));temp.replace(path);print(value);raise SystemExit(rc)
++def state(name):
++    if name=='rabbitmq' and s.get('boot_polls',0):
++        s['boot_polls']-=1
++        return {'Running':False,'Restarting':False,'Status':'exited'}
++    running=s['rabbit_running' if name=='rabbitmq' else 'scheduler_running']
++    return {'Running':running,'Restarting':False,'Status':'running' if running else 'exited'}
++if engine=='systemctl':
++    op=a[0];unit=next(x for x in a if x.endswith('.service'))
++    name='nova_scheduler' if 'nova_scheduler' in unit else 'rabbitmq'
++    if op=='show':
++        if '--value' in a:done('inactive' if not s['scheduler_running'] else 'active')
++        target='unrelated' if s.get('foreign_unit') else name
++        done('Id='+unit+'\nLoadState=loaded\nActiveState=active\nExecStart={ path=/usr/bin/docker ; argv[]=/usr/bin/docker start -a '+target+' ; }\nExecStop={ path=/usr/bin/docker ; argv[]=/usr/bin/docker stop '+target+' -t 60 ; }')
++    if op=='stop':s['scheduler_running']=False;done()
++    if op=='restart':s['boot_polls']=2;s['rabbit_running']=not s.get('boot_failure',False);s['restarts']+=1;done()
++    if op=='start':
++        if s.get('boot_polls') or not s['rabbit_running']:done('RabbitMQ not ready',92)
++        s['scheduler_running']=True;s['recovery_started']=True;done()
++if engine=='docker':
++    if a[0]=='inspect':
++        name=a[-1]
++        if a[2]=='{{json .State}}':done(json.dumps(state(name)))
++        mounts=[{'Type':'bind' if s.get('custom_mount') else 'volume','Name':'rabbitmq','Destination':'/var/lib/rabbitmq'}]
++        done(json.dumps({'image':'fixture','image_id':'sha256:fixture','state':state(name),'mounts':mounts}))
++    if a[0]=='exec':
++        if any('ConfigParser' in x for x in a):
++            code=a[-1].replace('/etc/nova/nova.conf',str(root/'nova.conf'))
++            done(subprocess.check_output([sys.executable,'-c',code],text=True))
++        if 'check_running' in a:done(rc=0 if s['rabbit_running'] else 1)
++        if 'check_local_alarms' in a:done()
++        if 'list_queues' in a:
++            if not s.get('recovery_started') and not s.get('healed'):
++                with (root/'rabbit.log').open('a') as f:f.write("reason: {already_started,<0.17754.0>}\nCannot declare quorum queue 'scheduler': cluster_not_formed\n")
++                done('conductor\tquorum\trunning\t5')
++            if s.get('post_failure'):
++                with (root/'rabbit.log').open('a') as f:f.write("new already_started\nqueue 'scheduler': cluster_not_formed\n")
++            done('conductor\tquorum\trunning\t5\nscheduler\tquorum\trunning\t'+('0' if s.get('post_failure') else '1'))
++        if 'quorum_status' in a:
++            if a[-1]=='scheduler' and not s.get('recovery_started') and not s.get('healed'):done('Object not found',65)
++            done('| rabbit@controller | leader | voter |')
++done('Unsupported CLI call: '+str(a),91)
++'''
++
++
++class RecoveryTests(unittest.TestCase):
++    def setUp(self):
++        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
++        self.root=Path(self.temp.name);self.log=self.root/'rabbit.log'
++        self.log.write_text('captured scheduler startup failure\n')
++        self.nova=self.root/'nova.log';self.nova.write_text('Starting 5 workers\n')
++        self.inventory=self.root/'inventory';self.inventory.write_text('[control]\ncontroller\n')
++        (self.root/'multinode.before').write_bytes(self.inventory.read_bytes())
++        health.save(self.root/'reset-rabbitmq-policy.json',dict(scope='four-node-lab-reset',confirmed=True,
++            inventory=str(self.inventory),control_hosts=['controller'],scheduler_workers=1))
++        health.save(self.root/'deploy-result.json',dict(rc=0,inventory=str(self.inventory)))
++        health.save(self.root/'rabbitmq-storage-after-destroy-controller.json',
++                    dict(host='controller',rc=0,remaining_rabbitmq_volumes=[]))
++        health.save(self.root/'rabbitmq-health.json',failure())
++        self.model=dict(workers=1,rabbit_running=True,scheduler_running=True,restarts=0)
++        self.save_model()
++        self.bin=self.root/'bin';self.bin.mkdir()
++        for name in ('docker','systemctl'):
++            p=self.bin/name;p.write_text('#!'+sys.executable+'\n'+SHIM);p.chmod(0o700)
++        env=dict(os.environ,PATH=str(self.bin)+os.pathsep+os.environ['PATH'],RECOVERY_TEST_ROOT=str(self.root))
++        self.environ=patch.dict(os.environ,env);self.environ.start();self.addCleanup(self.environ.stop)
++        self.nova_patch=patch.object(recovery,'NOVA_LOG',self.nova);self.nova_patch.start();self.addCleanup(self.nova_patch.stop)
++
++    def save_model(self):
++        health.save(self.root/'model.json',self.model)
++        (self.root/'nova.conf').write_text('[scheduler]\nworkers = '+str(self.model['workers'])+'\n')
++
++    def calls(self):
++        p=self.root/'calls.jsonl'
++        return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
++
++    def run_recovery(self):
++        original=health.wait
++        def wait(*args,**kwargs):
++            return original(*args,**dict(kwargs,timeout=2,stable_seconds=.02,interval=.01))
++        with patch.object(health,'wait',side_effect=wait):
++            return recovery.Recovery(self.root,1,self.log).recover()
++
++    def test_real_subprocess_recovery_waits_through_not_running_and_preserves_original_failure(self):
++        before=(self.root/'rabbitmq-health.json').read_bytes()
++        value=self.run_recovery()
++        self.assertEqual(value['status'],'PASS',value)
++        self.assertFalse(value['scheduler_may_be_stopped'])
++        self.assertEqual((self.root/'rabbitmq-health.json').read_bytes(),before)
++        self.assertEqual(json.loads((self.root/'rabbitmq-health-after-recovery.json').read_text())['status'],'PASS')
++        calls=self.calls();mutations=[x for x in calls if x[0]=='systemctl' and x[1] in ('stop','restart','start')]
++        self.assertEqual(mutations,[['systemctl','stop',recovery.UNITS['nova_scheduler']],
++            ['systemctl','restart',recovery.UNITS['rabbitmq']],['systemctl','start',recovery.UNITS['nova_scheduler']]])
++        stop=calls.index(mutations[0]);restart=calls.index(mutations[1])
++        self.assertTrue(any(x[:2]==['docker','inspect'] and x[-1]=='nova_scheduler' for x in calls[stop+1:restart]))
++        for label in ('before','after'):
++            d=self.root/('rabbitmq-recovery-'+label)
++            self.assertEqual(gzip.decompress((d/'nova.log.gz').read_bytes()),self.nova.read_bytes())
++
++    def test_second_attempt_cannot_restart_or_overwrite_evidence(self):
++        self.assertEqual(self.run_recovery()['status'],'PASS')
++        saved=(self.root/'rabbitmq-recovery.json').read_bytes();calls=self.calls()
++        with self.assertRaisesRegex(RuntimeError,'already evaluated'):self.run_recovery()
++        self.assertEqual(self.calls(),calls)
++        self.assertEqual((self.root/'rabbitmq-recovery.json').read_bytes(),saved)
++
++    def test_consumed_interrupted_attempt_is_not_retried(self):
++        health.save(self.root/'rabbitmq-recovery-attempt.json',dict(status='RECOVERING'))
++        with self.assertRaises(RuntimeError):self.run_recovery()
++        self.assertFalse(self.calls())
++
++    def test_wrong_workers_block_before_any_service_mutation(self):
++        self.model['workers']=5;self.save_model()
++        result=self.run_recovery()
++        self.assertEqual(result['status'],'FAIL')
++        self.assertIn('workers differ',result['error'])
++        self.assertFalse(any(c[0]=='systemctl' for c in self.calls()))
++
++    def test_foreign_systemd_unit_is_never_operated(self):
++        self.model['foreign_unit']=True;self.save_model()
++        result=self.run_recovery()
++        self.assertEqual(result['status'],'FAIL')
++        self.assertFalse(any(c[0]=='systemctl' and c[1] in ('start','stop','restart') for c in self.calls()))
++
++    def test_custom_data_mount_is_not_automatically_restarted(self):
++        self.model['custom_mount']=True;self.save_model()
++        result=self.run_recovery()
++        self.assertEqual(result['status'],'FAIL')
++        self.assertIn('named volume',result['error'])
++        self.assertFalse(any(c[0]=='systemctl' and c[1] in ('start','stop','restart') for c in self.calls()))
++
++    def test_failed_deploy_changed_inventory_or_missing_storage_proof_never_restarts(self):
++        for bad in ('deploy','inventory','storage','confirmation','scope'):
++            with self.subTest(bad=bad),tempfile.TemporaryDirectory() as tmp:
++                import shutil
++                target=Path(tmp)/'run';shutil.copytree(self.root,target)
++                if bad=='deploy':health.save(target/'deploy-result.json',dict(rc=2))
++                elif bad=='inventory':(target/'multinode.before').write_text('changed')
++                elif bad=='storage':(target/'rabbitmq-storage-after-destroy-controller.json').unlink()
++                else:
++                    policy=json.loads((target/'reset-rabbitmq-policy.json').read_text())
++                    policy['confirmed' if bad=='confirmation' else 'scope']=False
++                    health.save(target/'reset-rabbitmq-policy.json',policy)
++                result=recovery.Recovery(target,1,self.log).recover()
++                self.assertEqual(result['status'],'FAIL')
++        self.assertFalse(self.calls())
++
++    def test_persistent_failure_after_restart_is_not_passed(self):
++        self.model['post_failure']=True;self.save_model()
++        result=self.run_recovery()
++        self.assertEqual(result['status'],'FAIL')
++        self.assertEqual(json.loads((self.root/'model.json').read_text())['restarts'],1)
++        self.assertEqual(json.loads((self.root/'rabbitmq-health-after-recovery.json').read_text())['status'],'FAIL')
++
++    def test_live_self_recovery_is_revalidated_without_restart(self):
++        self.model['healed']=True;self.save_model()
++        result=self.run_recovery()
++        self.assertEqual(result['status'],'PASS',result)
++        self.assertFalse(result['attempted'])
++        self.assertEqual(json.loads((self.root/'model.json').read_text())['restarts'],0)
++
++    def test_rabbit_boot_failure_leaves_scheduler_stopped_and_never_claims_pass(self):
++        self.model['boot_failure']=True;self.save_model()
++        original=recovery.Recovery.wait_container
++        def wait(instance,name,running,seconds=90):
++            return original(instance,name,running,seconds=.05 if running else seconds)
++        with patch.object(recovery.Recovery,'wait_container',wait):
++            result=self.run_recovery()
++        self.assertEqual(result['status'],'FAIL')
++        self.assertTrue(result['scheduler_may_be_stopped'])
++        self.assertFalse(any(c[:2]==['systemctl','start'] for c in self.calls()))
++
++    def test_real_ansible_recovery_task_and_gate_continue_only_after_pass(self):
++        scripts=self.root/'scripts';scripts.mkdir()
++        (scripts/'reset_rabbitmq_recovery.py').write_text(
++            'import sys\nfrom pathlib import Path\nsys.path.insert(0,'+repr(str(ROOT/'scripts'))+')\n'
++            'import reset_rabbitmq_recovery as r\nr.NOVA_LOG=Path('+repr(str(self.nova))+')\nraise SystemExit(r.main())\n')
++        deploy=next(p for p in yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
++                    if p['name']=='Deploy clean source ML2 OVS cloud')
++        names=('Verify deployed Nova scheduler worker configuration',
++               'Recover the evidenced scheduler Raft startup failure at most once',
++               'Fail when deploy or RabbitMQ validation failed')
++        tasks=[copy.deepcopy(t) for t in deploy['tasks'] if t['name'] in names]
++        vars=dict(reset_run_dir=str(self.root),reset_nova_scheduler_workers=1,
++            reset_rabbitmq_log_path=str(self.log),reset_rabbitmq_health_timeout=15,
++            reset_rabbitmq_stable_seconds=1,reset_rabbitmq_recovery_enabled=True,
++            reset_deploy={'rc':0},reset_rabbitmq_health={'rc':1},ansible_python_interpreter=sys.executable)
++        play=self.root/'test.yml'
++        play.write_text(yaml.safe_dump([dict(hosts='localhost',gather_facts=False,vars=vars,tasks=tasks)],sort_keys=False))
++        result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i','localhost,','-c','local',str(play)],
++            capture_output=True,text=True,timeout=50)
++        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
++        self.assertEqual(json.loads((self.root/'rabbitmq-recovery.json').read_text())['status'],'PASS')
++
++    def test_real_ansible_generates_one_worker_and_target_update_retains_it(self):
++        reset=yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
++        copies=[t for p in reset for t in p.get('tasks',[]) if 'ansible.builtin.copy' in t]
++        task=copy.deepcopy(next(t for t in copies if t['ansible.builtin.copy'].get('dest')=='{{ reset_globals_path }}'))
++        target=yaml.safe_load((ROOT/'playbooks/06-target-config.yml').read_text())
++        change=copy.deepcopy(next(t for t in target[0]['tasks'] if t['name']=='Write target ML2/OVN globals'))
++        path=self.root/'globals.yml'
++        vars=dict(reset_globals_path=str(path),reset_config_path=str(self.root/'config'),
++            reset_nova_scheduler_workers=1,ns_physnet='physnet1',kolla_globals_path=str(path),
++            target_neutron_plugin_agent='ovn',neutron_type_drivers_target='flat,vlan,geneve',
++            target_tenant_network_type='geneve',ansible_python_interpreter=sys.executable)
++        play=self.root/'render.yml'
++        play.write_text(yaml.safe_dump([dict(hosts='localhost',gather_facts=False,vars=vars,tasks=[task,change])],sort_keys=False))
++        result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i','localhost,','-c','local',str(play)],
++            capture_output=True,text=True,timeout=30)
++        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
++        values=yaml.safe_load(path.read_text())
++        self.assertEqual(values['nova_scheduler_workers'],1)
++        self.assertEqual(values['neutron_plugin_agent'],'ovn')
++
++
++class EligibilityTests(unittest.TestCase):
++    def test_current_run_signature_and_deadline_only_final_sample(self):
++        data=failure();self.assertTrue(recovery.eligible(data))
++        data['samples'].append(dict(checks={n:dict(rc=124,timeout_scope='overall') for n in
++            ('running','alarms','queues','conductor','scheduler')},issues=['Overall readiness deadline reached']))
++        self.assertEqual(health.last_complete(data),data['samples'][0])
++        self.assertTrue(recovery.eligible(data))
++
++    def test_other_failures_or_historical_errors_do_not_authorize_restart(self):
++        for mode in ('alarm','transport','other-queue','healthy','consumer-only','parser','gap','pass'):
++            data=failure();row=data['samples'][0]
++            if mode=='alarm':row['checks']['alarms']['rc']=2
++            elif mode=='transport':row['checks']['queues']['rc']=124
++            elif mode=='other-queue':row['log']['errors'].append("queue 'conductor': cluster_not_formed")
++            elif mode=='healthy':
++                row['checks']['scheduler']['rc']=0
++                row['queues']['scheduler']=dict(type='quorum',state='running',consumers=1)
++            elif mode=='consumer-only':row['log']['errors']=[]
++            elif mode=='parser':row['issues'].append('Malformed quorum member row')
++            elif mode=='gap':row['log']['continuity']='UNAVAILABLE'
++            else:data['status']='PASS'
++            with self.subTest(mode=mode):self.assertFalse(recovery.eligible(data))
++
++
++if __name__=='__main__':unittest.main()
