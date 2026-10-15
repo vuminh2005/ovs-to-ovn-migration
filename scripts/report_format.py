@@ -112,8 +112,8 @@ def probe_failure_rate(stream):
 def render_text(report, root, *, modern):
     """Traffic summary only; the JSON remains the complete validation report.
 
-    Keep the historical Dataplane downtime label and its existing Port_Binding
-    convergence value. Per-flow metrics below measure traffic interruption.
+    Dataplane downtime is a heading for the per-flow traffic interruption metrics.
+    Port_Binding convergence and all event timestamps remain in JSON only.
     """
     lines = []
 
@@ -131,7 +131,7 @@ def render_text(report, root, *, modern):
         for field_name, label in (('start_timestamp', 'Start measurement'), ('end_timestamp', 'End measurement'),
             ('first_failure_timestamp', 'First failure'), ('recovery_timestamp', 'First recovery')):
             event = events[field_name]
-            value = 'NONE (no failure)' if field_name in ('first_failure_timestamp', 'recovery_timestamp') and events.get('failure_burst_count') == 0 else display(event)
+            value = 'NONE (no failure)' if field_name in ('first_failure_timestamp', 'recovery_timestamp') and events.get('failure_burst_count') == 0 else display(event, include_timestamp=False)
             field(label, value, 6)
 
     def icmp(label, flow, result=None, timeline_key=None):
@@ -176,7 +176,8 @@ def render_text(report, root, *, modern):
     flows = matrix.get('flows') or {}
     primary = report.get('dataplane_probe') or flows.get('ew_different_compute_different_subnet') or {}
     icmp('Different compute / different subnet (ICMP)', primary,
-         (report.get('dataplane_continuity') or {}).get('status'))
+         (report.get('dataplane_continuity') or {}).get('status'),
+         timeline_key='ew_different_compute_different_subnet')
     for key, name in (
         ('ew_different_compute_same_subnet', 'Different compute / same subnet (ICMP)'),
         ('ew_same_compute_different_subnet', 'Same compute / different subnet (ICMP)'),
@@ -185,12 +186,12 @@ def render_text(report, root, *, modern):
         flow = flows.get(key) or {}
         if matrix.get('status') in ('DISABLED', 'NOT TESTED'):
             flow = {'status': matrix['status']}
-        icmp(name, flow)
+        icmp(name, flow, timeline_key=key)
     tcp('Different compute / different subnet (TCP)', report.get('pair_d_tcp') or {}, (
         ('held', 'Existing TCP session'),
         ('new_old', 'Old listener / new connection every probe'),
         ('new_listener', 'New listener / new connection every probe'),
-    ))
+    ), direction='ew_tcp')
 
     heading('2. NORTH - SOUTH')
     ns = report.get('north_south') or {}

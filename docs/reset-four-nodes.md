@@ -37,9 +37,38 @@ network1/compute1/compute2 reboot lần lượt. Mặc định
 Trước Kolla destroy, reset dừng các process `snat-server`/`fip-client` trên
 controller có checkpoint N-S hợp lệ. Controller không reboot nên listener của
 run FAIL có thể còn giữ cổng 18180. Bước này kiểm tra run/config/cmdline cùng
-PID, boot và start_ticks; chỉ gửi SIGTERM tới đúng process qua pidfd. Không xóa
-log/metrics run cũ. Evidence dừng process nằm trong snapshot reset ở
-`local-probes-stop.json`; ownership không khớp sẽ dừng trước Kolla destroy.
+PID, boot và start_ticks; gửi SIGTERM tới đúng process qua pidfd. Nếu FIP client
+cũ không thoát sau 5 giây, reset kiểm tra lại cmdline và gửi SIGINT qua cùng
+pidfd để chạy phần cleanup Python, gồm dừng/reap ping con. Chờ thêm tối đa 5
+giây; còn process sống hoặc ownership không khớp sẽ dừng trước Kolla destroy.
+Không gửi SIGKILL. Không xóa log/metrics run cũ. Evidence nằm trong snapshot
+reset ở `local-probes-stop.json`: `signaled` ghi signal đã gửi, `stopped` chỉ
+ghi process đã xác nhận thoát, `remaining` ghi process vẫn sống.
+
+### Nếu reset lỗi tại bước dừng N-S probes
+
+Bản client cũ đặt cờ stop khi nhận SIGTERM nhưng vòng lặp summary chỉ kiểm tra
+lifetime, nên không thoát và có thể ghi log liên tục tới hết lifetime. Đây là
+lỗi shutdown của probe; không phải bằng chứng về nguyên nhân mất FIP ICMP.
+Client mới kiểm tra stop và xử lý TERM/INT cùng một cơ chế cleanup. Thay file
+không cập nhật code trong process cũ đang chạy, vì vậy reset có bước tương thích
+SIGINT dành riêng cho FIP client đã được xác minh.
+
+Nếu lần reset trước dừng đúng tại task này, Kolla destroy chưa chạy nhưng guest
+trên compute có thể đã bị dừng. Cập nhật bản sửa rồi chạy lại toàn bộ lệnh reset
+bên dưới; không dùng `--start-at-task` vì snapshot và facts của reset phải được
+tạo lại. Snapshot/evidence trước vẫn được giữ. Có thể kiểm tra cleanup riêng
+trước khi chạy lại, với một đường dẫn evidence mới trong snapshot đã có:
+
+```bash
+python3 scripts/reset_local_probes.py /root/ovs-to-ovn-backup \
+    /root/kolla-reset-snapshots/<UTC-run-id>/local-probes-stop-retry.json \
+    --interrupt-legacy-client
+```
+
+Lệnh này dừng probe được checkpoint; không chạy Kolla destroy. Nếu vẫn FAIL,
+đọc `remaining`, `signaled` và `error` trong JSON mới để xác định đúng run/role/
+PID. Không bỏ qua gate hoặc dùng `pkill` theo tên chung.
 
 Network1 giữ IP `10.1.0.90/24` và MAC của eth1 trên `br-underlay`;
 Netplan và service veth tạo lại `ns-uplink ↔ ns-ex` qua reboot. Tunnel trên

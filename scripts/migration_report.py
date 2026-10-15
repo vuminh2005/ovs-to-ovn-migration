@@ -99,7 +99,8 @@ report['north_south'] = (evidence('ns-results.json') or {'status':'UNAVAILABLE'}
 report['north_south']['icmp_enabled'] = bool(cfg.get('ns', {}).get('icmp_enabled'))
 report['north_south']['new_listener_enabled'] = bool(cfg.get('ns', {}).get('new_port'))
 from traffic_timeline import build as build_traffic_timeline
-report['traffic_timeline'] = build_traffic_timeline(root, report['north_south'])
+report['traffic_timeline'] = build_traffic_timeline(root, report['north_south'],
+    ew=report['ew_connectivity_matrix'], dataplane=report['dataplane_probe'], tcp=report['pair_d_tcp'])
 report['north_south_diagnostics'] = (evidence('ns-diagnostics.json') or {'status':'UNAVAILABLE'}) if cfg.get('ns', {}).get('diagnostics_enabled') and cfg.get('ns', {}).get('enabled') else {'status':'DISABLED'}
 report['extended_cleanup'] = (evidence('extended-cleanup.json') or {}).get('status', 'NOT TESTED') if cfg.get('ew_matrix_enabled') or cfg.get('ns', {}).get('enabled') else 'DISABLED'
 report['workload_capacity'] = evidence('workload-capacity.json')

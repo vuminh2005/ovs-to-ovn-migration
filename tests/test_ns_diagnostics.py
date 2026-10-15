@@ -217,6 +217,21 @@ print(json.dumps(d.agent_start(root,cfg)))
         self.assertEqual(result['status'], 'PASS')
         self.assertFalse(result['conntrack_transfer'])
 
+    def test_sender_refresh_and_missing_log_are_retained_as_diagnostic_failure(self):
+        d=self.controller()
+        d.cfg['ns'].update(icmp_enabled=True,icmp_sender_logging_enabled=True)
+        d.state['captures']={kind:dict(kind=kind,host='host',status='RUNNING')
+            for kind in ('endpoint','guest-snat','guest-fip')}
+        d.x.ns_rows=Mock()
+        outcomes={'snat':{'sender_log':{'status':'UNAVAILABLE','reason':'console gap'}},
+                  'fip':{'sender_log':{'status':'PASS'}}}
+        with patch.object(d,'transport',return_value=dict(status='STOPPED',dropped_packets=0,captured_packets=5)), \
+             patch('ns_icmp_evidence.finalize',return_value=outcomes):
+            errors=d.finish()
+        d.x.ns_rows.assert_called_once()
+        self.assertIn('snat/ICMP sender log: console gap',errors)
+        self.assertEqual(json.loads((self.root/'ns-diagnostics.json').read_text())['status'],'UNAVAILABLE')
+
     def test_pre_freeze_rejects_missing_or_replaced_capture(self):
         d = self.controller()
         with self.assertRaisesRegex(RuntimeError, 'missing before freeze'): d.ready()

@@ -50,6 +50,10 @@ def checked(cfg, root):
         raise ValueError('Invalid collector role/directory')
     if not 30 <= cfg['lifetime'] <= 86400 or not 1048576 <= cfg['max_bytes'] <= 1073741824:
         raise ValueError('Invalid collector lifetime/byte budget')
+    if (type(cfg.get('reconnect_attempts', 8)) is not int or
+            not 0 <= cfg.get('reconnect_attempts', 8) <= 20 or
+            not 1 <= cfg.get('reconnect_window_seconds', 60) <= 300):
+        raise ValueError('Invalid observer reconnect budget')
     for key in ('tunnel_interface', 'external_interface'):
         if cfg.get(key) and not re.fullmatch(r'[A-Za-z0-9_.:-]{1,32}', cfg[key]):
             raise ValueError('Unsafe capture interface')
@@ -102,7 +106,7 @@ def database_jobs(cfg):
                 continue
             available = schema['tables'][table]['columns']
             columns = ['_uuid']+[c for c in columns if c in available]
-            jobs[label+'-'+table] = dict(container='ovn_northd', args=['ovsdb-client',
+            jobs[label+'-'+table] = dict(container='ovn_northd', reconnect=True, args=['ovsdb-client',
                 '--timestamp', '--format=json', 'monitor', uri, database, table, ','.join(columns)])
     return jobs, schemas
 
@@ -117,11 +121,11 @@ def core_jobs(cfg, root):
         jobs['systemd-journal'] = dict(optional=True, args=['journalctl', '--follow', '--since', 'now',
             '--no-pager', '--output=json']+[item for unit in units for item in ('-u', unit)])
     if cfg.get('chassis'):
-        jobs['ovsdb-local'] = dict(container='openvswitch_vswitchd', args=['ovsdb-client',
+        jobs['ovsdb-local'] = dict(container='openvswitch_vswitchd', reconnect=True, args=['ovsdb-client',
             '--timestamp', '--format=json', 'monitor', 'unix:/run/openvswitch/db.sock', 'Open_vSwitch', 'ALL'])
         # Flow monitor is a service connection; it never becomes the primary controller.
-        # OF1.0 Nicira watch works beside the OF1.5 OVN controller without changing Bridge.protocols.
-        jobs['openflow-watch'] = dict(container='openvswitch_vswitchd', args=['ovs-ofctl',
+        # Bridge/controller reconfiguration can close this service connection.
+        jobs['openflow-watch'] = dict(container='openvswitch_vswitchd', reconnect=True, args=['ovs-ofctl',
             '--timestamp', '-O', 'OpenFlow10', 'monitor', 'br-int', 'watch:!initial'])
         jobs['tunnel-pcap'] = dict(args=['tcpdump', '-n', '-U', '-s', '0', '-i', cfg['tunnel_interface'],
             '-w', str(root/'tunnel.pcap'), 'udp port 4789 or udp port 6081'])
@@ -141,6 +145,9 @@ class Observer:
         self.lock = threading.Lock()
         self.stop = threading.Event()
         self.children = {}
+        self.segments = {}
+        self.gaps = {}
+        self.reconnect_counts = {}
         self.offsets = {}
         self.errors = []
         self.events = self.root/'events.jsonl'
@@ -153,28 +160,84 @@ class Observer:
             f.write(json.dumps(dict(run=self.cfg['run'], host=self.cfg['host'],
                 boot=self.boot, ts=time.time(), mono=time.monotonic(), event=name, **value))+'\n')
 
-    def start_job(self, name, spec):
+    def start_job(self, name, spec, gap=None):
         token = uuid.uuid4().hex
         args = list(spec['args'])
+        if gap and name == 'openflow-watch':
+            args[-1] = 'watch:'  # Retain the new connection's initial flow snapshot.
         if spec.get('container'):
             args = ['docker', 'exec', '-e', 'MIGRATION_DIAG_TOKEN='+token, spec['container'],
                 'sh', '-c', 'echo DIAG_PID=$$; exec "$@"', 'sh']+args
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, errors='replace', bufsize=1, start_new_session=True)
-        row = dict(spec=spec, token=token, process=proc, identity=identity(proc.pid), inner_pid=None)
+        row = dict(spec=spec, token=token, process=proc, identity=identity(proc.pid), inner_pid=None,
+            started_at=time.time(), started_mono=time.monotonic(), connected_at=None,
+            last_output_at=None, gap=gap, segment=len(self.segments.get(name, [])))
         self.children[name] = row
-        self.record('observer-start', observer=name, command=spec['args'])
+        self.segments.setdefault(name, []).append(row)
+        self.record('observer-start', observer=name, segment=row['segment'], command=args[-len(spec['args']):])
         def output():
             with (self.root/(name+'.jsonl')).open('a') as f:
                 for line in proc.stdout:
                     if line.startswith('DIAG_PID=') and line.strip()[9:].isdigit():
                         row['inner_pid'] = int(line.strip()[9:])
                     else:
-                        f.write(json.dumps(dict(ts=time.time(), mono=time.monotonic(), text=line.rstrip()))+'\n')
+                        now, mono = time.time(), time.monotonic()
+                        row['last_output_at'] = now
+                        f.write(json.dumps(dict(ts=now, mono=mono, segment=row['segment'], text=line.rstrip()))+'\n')
                         f.flush()
+                        ready = ('FLOW_MONITOR reply' in line if name == 'openflow-watch'
+                                 else line.lstrip().startswith(('{', '[')))
+                        if spec.get('reconnect') and ready and row['connected_at'] is None:
+                            row['connected_at'] = now
+                            if gap and gap.get('end_timestamp') is None:
+                                gap.update(end_timestamp=now, duration_seconds=mono-gap['detected_mono'])
+                                self.record('observer-reconnected', observer=name, segment=row['segment'], gap=dict(gap))
         thread = threading.Thread(target=output, daemon=True)
         row['thread'] = thread
         thread.start()
+
+    def reconnect_jobs(self, executor):
+        """Restart only observer connections; retain every gap as incomplete coverage."""
+        for name, row in list(self.children.items()):
+            if row['process'].poll() is None:
+                if row.get('gap') and row.get('connected_at') is None and time.monotonic()-row['started_mono'] >= 10:
+                    self.stop_job(name, row, verify=True)
+                    self.record('observer-reconnect-ack-timeout', observer=name, segment=row['segment'])
+                    continue
+                if row.get('gap') and row.get('connected_at') and not row.get('snapshot_queued'):
+                    row['snapshot_queued'] = True
+                    executor.submit(self.snapshot, 'observer-reconnected-'+name)
+                continue
+            gap = row.get('gap')
+            if not row.get('gap_reported'):
+                row['gap_reported'] = True
+                if not gap or gap.get('end_timestamp') is not None:
+                    gap = dict(detected_at=time.time(), detected_mono=time.monotonic(),
+                        last_output_at=row.get('last_output_at'), end_timestamp=None, duration_seconds=None,
+                        rc=row['process'].returncode, segment=row['segment'])
+                    self.gaps.setdefault(name, []).append(gap)
+                    row['gap'] = gap
+                if not row['spec'].get('optional') and name not in self.errors:
+                    self.errors.append(name)
+                self.record('observer-gap', observer=name, gap=dict(gap))
+            if not row['spec'].get('reconnect') or row.get('reconnect_exhausted'):
+                continue
+            count = self.reconnect_counts.get(name, 0)
+            if (count >= self.cfg.get('reconnect_attempts', 8) or
+                    time.monotonic()-gap['detected_mono'] >= self.cfg.get('reconnect_window_seconds', 60)):
+                row['reconnect_exhausted'] = True
+                self.record('observer-reconnect-exhausted', observer=name, attempts=count, gap=dict(gap))
+                continue
+            if time.monotonic() < row.setdefault('retry_at', time.monotonic()+min(8, 2**count)):
+                continue
+            if not self.stop_job(name, row, verify=True):
+                row['retry_at'] = time.monotonic()+min(8, 2**count)
+                self.reconnect_counts[name] = count+1
+                self.record('observer-reconnect-cleanup-unproven', observer=name, attempts=count+1)
+                continue
+            self.reconnect_counts[name] = count+1
+            self.start_job(name, row['spec'], gap=gap)
 
     def tail_logs(self):
         patterns = tuple('/var/log/kolla/'+service+'/'+pattern for service in
@@ -238,14 +301,37 @@ class Observer:
                 result['stdout'] = '\n'.join(line for line in result['stdout'].splitlines() if endpoint and endpoint in line)
             self.record('sample', source=name, result=result)
 
-    def stop_job(self, name, row):
+    def stop_job(self, name, row, verify=False):
         proc, spec = row['process'], row['spec']
-        if spec.get('container') and row.get('inner_pid'):
-            # Guard against PID reuse: signal only the process bearing this launch's secret token.
-            code = 'p="$1"; t="$2"; test -r /proc/"$p"/environ || exit 0; tr "\\000" "\\n" < /proc/"$p"/environ | grep -Fx "MIGRATION_DIAG_TOKEN=$t" >/dev/null && kill -TERM "$p"'
+        retired = True
+        if spec.get('container') and (row.get('inner_pid') or verify):
+            # A lost docker exec may leave an orphan. Match only this launch's
+            # unique environment token, even when its PID acknowledgement was lost.
+            code = '''t="$2"
+matches() { test -r "/proc/$1/environ" && tr '\\000' '\\n' 2>/dev/null < "/proc/$1/environ" | grep -Fx "MIGRATION_DIAG_TOKEN=$t" >/dev/null; }
+owned=""
+if test -n "$1"; then
+ p="$1"; test -d "/proc/$p" || exit 0
+ current_env=$(tr '\\000' '\\n' 2>/dev/null < "/proc/$p/environ") || exit 1
+ printf '%s\\n' "$current_env" | grep -Fx "MIGRATION_DIAG_TOKEN=$t" >/dev/null || exit 0
+ owned="$p"
+else
+ for d in /proc/[0-9]*; do p="${d##*/}"; if matches "$p"; then owned="$owned $p"; fi; done
+fi
+for p in $owned; do if matches "$p"; then kill -TERM "$p" 2>/dev/null || true; fi; done
+for n in 1 2 3 4 5 6 7 8 9 10; do
+ left=0; for p in $owned; do if matches "$p"; then left=1; fi; done
+ test "$left" = 0 && exit 0
+ sleep 0.1
+done
+for p in $owned; do if matches "$p"; then kill -KILL "$p" 2>/dev/null || true; fi; done
+sleep 0.1
+for p in $owned; do if matches "$p"; then exit 1; fi; done
+exit 0'''
             result = command(['docker', 'exec', spec['container'], 'sh', '-c', code,
-                              'sh', str(row['inner_pid']), row['token']])
+                              'sh', str(row.get('inner_pid') or ''), row['token']])
             self.record('observer-inner-stop', observer=name, result=result)
+            retired = result.get('rc') == 0
         if proc.poll() is None:  # Unreaped Popen child cannot be replaced by an unrelated PID.
             proc.terminate()
             try:
@@ -264,15 +350,20 @@ class Observer:
             if parsed['dropped_packets'] != 0:
                 self.errors.append(name+': capture drop count unavailable/nonzero')
         self.record('observer-stop', observer=name, rc=proc.poll())
+        return retired and not row['thread'].is_alive()
 
     def status(self, state='RUNNING'):
         jobs = {name: dict(identity=row['identity'], rc=row['process'].poll(),
             inner_pid=row.get('inner_pid'), container=row['spec'].get('container'),
-            optional=row['spec'].get('optional', False), capture=row.get('capture'))
+            optional=row['spec'].get('optional', False), capture=row.get('capture'),
+            reconnect_attempts=self.reconnect_counts.get(name, 0), gaps=list(self.gaps.get(name, [])),
+            segments=[dict(segment=s['segment'], identity=s['identity'], started_at=s['started_at'],
+                connected_at=s.get('connected_at'), rc=s['process'].poll()) for s in self.segments.get(name, [])])
             for name, row in self.children.items()}
         return dict(status=state, run=self.cfg['run'], config=self.cfg,
             identity=identity(os.getpid()), heartbeat_ts=time.time(), jobs=jobs, errors=list(self.errors),
-            stopped=state != 'RUNNING', finished_ts=time.time() if state != 'RUNNING' else None)
+            stopped=state != 'RUNNING', finished_ts=time.time() if state != 'RUNNING' else None,
+            coverage='GAPPED' if self.gaps else 'NO_OBSERVED_GAPS')
 
     def run(self):
         signal.signal(signal.SIGTERM, lambda *_: self.stop.set())
@@ -303,12 +394,8 @@ class Observer:
                     if not getattr(self, 'sample_future', None) or self.sample_future.done():
                         self.sample_future = executor.submit(self.sample)
                         self.last_sample = time.monotonic()
-                for name, row in self.children.items():
-                    if row['process'].poll() is not None and not row.get('gap_reported'):
-                        row['gap_reported'] = True
-                        if not row['spec'].get('optional'):
-                            self.errors.append(name)
-                        self.record('observer-gap', observer=name, rc=row['process'].returncode)
+                if not self.stop.is_set() and not (self.root/'stop.request').exists():
+                    self.reconnect_jobs(executor)
                 size = sum(p.stat().st_size for p in self.root.iterdir() if p.is_file())
                 if size >= self.cfg['max_bytes']:
                     self.errors.append('byte-budget-exhausted')
@@ -324,7 +411,8 @@ class Observer:
             self.record('collector-error', error=str(exc))
         finally:
             for name, row in self.children.items():
-                self.stop_job(name, row)
+                if not self.stop_job(name, row, verify=True):
+                    self.errors.append(name+': observer cleanup not proven')
             executor.shutdown(wait=True, cancel_futures=True)
             self.tail_logs()
             save(self.root/'state.json', self.status('UNAVAILABLE' if self.errors else 'STOPPED'))

@@ -144,15 +144,16 @@ class PresentationTests(unittest.TestCase):
         self.assertRegex(held, r'Failure burst count\s+: UNAVAILABLE')
         self.assertRegex(held, r'Longest probe failure\s+: 1.500 s')
 
-    def test_dataplane_label_keeps_existing_value_and_missing_differs_from_zero(self):
-        for value, expected in [(None,'UNAVAILABLE'),(0,'0.000 s'),
-                                (float('nan'),'UNAVAILABLE'),(True,'UNAVAILABLE'),
-                                (114.17412345,'114.174 s')]:
+    def test_dataplane_is_a_heading_and_never_prints_port_binding_timer(self):
+        for value in (None, 0, float('nan'), True, 114.17412345):
             with self.subTest(value=value):
                 text = self.text(ovn_portbinding_convergence_seconds=value)
-                self.assertRegex(text, r'Dataplane downtime\s+: ' + expected)
+                self.assertIn('\nDataplane downtime:\n', text)
+                self.assertNotRegex(text, r'Dataplane downtime[ \t]*:[ \t]*\S')
+                self.assertNotIn('114.174', text)
         text = self.text(dataplane_convergence_seconds=2.5)
-        self.assertRegex(text, r'Dataplane downtime\s+: 2.500 s')
+        self.assertIn('\nDataplane downtime:\n', text)
+        self.assertNotIn('2.500 s', text)
 
     def test_terminal_summary_contains_only_result_run_and_paths(self):
         report = self.report()

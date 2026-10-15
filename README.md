@@ -47,6 +47,12 @@ checkpoints, cleanup and the current nested-lab commands.
 
 ## Four-node reset update
 
+N-S probe shutdown 15/10/2026: client now exits its summary loop on TERM/INT.
+Reset can interrupt a verified older FIP client after a TERM timeout so its
+existing cleanup stops the original ping. Stop evidence distinguishes sent
+signals, confirmed exits and remaining processes; a remaining process still
+blocks destroy. [Details and retry](docs/reset-four-nodes.md).
+
 Reset RabbitMQ 15/10/2026: mặc định `nova_scheduler_workers: 1`, kiểm tra cấu
 hình trong container và phục hồi tối đa một lần cho đúng lỗi Raft scheduler
 trong reset lab. [Điều kiện, evidence và kiểm chứng](docs/reset-rabbitmq-mitigation.md).
@@ -214,8 +220,8 @@ It contains `migration-report.json` with all timing, validation and evidence fie
 - resource identity preservation for networks, subnets, routers, servers and compute ports
 - result of a temporary post-migration Geneve network smoke test
 
-`migration-report.txt` contains only the three timers (`Total run duration`,
-`Control-plane downtime`, `Dataplane downtime`) and the East–West/North–South
+`migration-report.txt` contains only the two timers (`Total run duration`,
+`Control-plane downtime`), a `Dataplane downtime:` heading and the East–West/North–South
 traffic summary. East–West lists all four ICMP placement/subnet combinations,
 then the three TCP streams. North–South lists outbound SNAT and inbound FIP,
 each with held-session and new-connection streams.
@@ -227,11 +233,15 @@ one consecutive sequence of failed probes; an unrecovered burst is included in
 the count and displayed as `UNRECOVERED` for its duration. Historical TCP evidence
 without a burst counter displays `UNAVAILABLE`, never an inferred zero.
 
-The requested `Dataplane downtime` label retains the existing
-`ovn_portbinding_convergence_seconds` value (legacy alias:
-`dataplane_convergence_seconds`). It measures the Port_Binding convergence window,
-not an aggregate of the per-flow traffic outages shown below. All metric boundaries
-and validation/cleanup gates remain unchanged.
+`Dataplane downtime:` introduces the actual per-flow traffic outages; it has no
+Port_Binding timer value and no aggregate across flows. Port_Binding convergence
+remains in JSON as `ovn_portbinding_convergence_seconds` (legacy alias:
+`dataplane_convergence_seconds`). Each EW and N-S flow shows start/end measurement
+and first failure/recovery as `phase | task`, without timestamps in TXT. JSON
+retains the timestamps and task overlap evidence. EW TCP clocks map the client
+ARM-scoped monotonic summary to its snapshot wall clock for correlation only;
+outage durations stay monotonic. Missing task evidence remains unavailable.
+All metric boundaries and validation/cleanup gates remain unchanged.
 
 DHCP, MTU, provisioning, remediation, identities, cleanup, diagnostics, phase timing
 and all other evidence remain complete in JSON. Text rounds seconds to three
@@ -841,6 +851,10 @@ remediation; Pair-B packets never enter that metric.
 ## N-S ICMP, listener bổ sung và diagnostics
 
 Bản hiện tại bổ sung ICMP + TCP held/new-old/new-listener cho cả SNAT/FIP,
-collector OVS/OVN/Kolla xuyên cutover và timestamp/task/total downtime trong
-`migration-report.txt`. Xem [thiết kế, cách đo và các file bằng chứng](docs/ns-observability.md).
+collector OVS/OVN/Kolla xuyên cutover và task/phase/total downtime trong
+`migration-report.txt`; timestamp đầy đủ ở JSON. Observer OpenFlow/OVSDB có
+reconnect giới hạn, lưu segment và gap; PCAP/traffic giữ nguyên tiến trình.
+Sender ICMP lưu stdout/stderr gốc cùng PID/boot/event index để đối chiếu sequence
+gap và lỗi gửi cục bộ. Khoảng trống vẫn là bằng chứng chưa đầy đủ, không tự đổi PASS.
+Xem [thiết kế, cách đo và các file bằng chứng](docs/ns-observability.md).
 Workflow và các tiêu chí bảo toàn phiên held vẫn giữ nguyên.

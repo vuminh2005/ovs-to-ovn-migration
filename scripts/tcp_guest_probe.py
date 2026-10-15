@@ -46,7 +46,7 @@ class LineReader:
 class Stats:
     def __init__(self):
         self.value = dict(attempts=0, successes=0, failures=0, consecutive_successes=0,
-                          first_failure_mono=None, last_success_mono=None,
+                          first_failure_mono=None, first_recovery_mono=None, last_success_mono=None,
                           longest_recovered_failure_seconds=0.0, open_failure_since=None,
                           failure_burst_count=0)
 
@@ -57,6 +57,8 @@ class Stats:
         v['consecutive_successes'] = v['consecutive_successes'] + 1 if ok else 0
         if ok:
             if v['open_failure_since'] is not None:
+                if v['first_recovery_mono'] is None:
+                    v['first_recovery_mono'] = completed
                 v['longest_recovered_failure_seconds'] = max(
                     v['longest_recovered_failure_seconds'], completed-v['open_failure_since'])
                 v['open_failure_since'] = None

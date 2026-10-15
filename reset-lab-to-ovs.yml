@@ -252,6 +252,7 @@
           - "{{ playbook_dir }}/scripts/reset_local_probes.py"
           - "{{ reset_backup_root_runtime }}"
           - "{{ reset_run_dir }}/local-probes-stop.json"
+          - --interrupt-legacy-client
       register: reset_local_probes
       changed_when: reset_local_probes.rc == 0 and (reset_local_probes.stdout | from_json).stopped | length > 0
 

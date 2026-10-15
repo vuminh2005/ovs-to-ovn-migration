@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from dataplane_capture import echo_rows, pcap_metrics, recovered_endpoint, save
+from ns_icmp_logging import sender_evidence
 
 
 def finalize(root):
@@ -29,8 +30,6 @@ def finalize(root):
                 raise ValueError('Capture completeness/drop count not proven')
             raw = root/'ns-diagnostics'/kind/'tcp.pcap'
             rows, problems = echo_rows(raw, source, peer)
-            if problems:
-                raise ValueError('; '.join(sorted(set(problems))))
             start_ts = baseline['clients'][direction]['ts']
             before = [r for r in rows if r['ts'] <= start_ts and r['reply_timestamp'] is not None]
             if not before:
@@ -49,6 +48,30 @@ def finalize(root):
             bursts = value.get('failure_bursts', [])
             value['total_downtime_seconds'] = (sum(b['duration_seconds'] for b in bursts)
                 if value['status'] == 'PASS' else None)
+            sender = sender_evidence(root/'ns'/(direction+'-icmp-sender.jsonl'), cfg.get('run'), direction,
+                baseline['clients'][direction], start['timestamp'], end['reply_timestamp'] if end else None)
+            observations = sender.pop('sequence_observations', [])
+            discontinuities = []
+            for prior, current in zip(rows, rows[1:]):
+                if current['ts'] < start['timestamp'] or (end and current['ts'] > end['timestamp']):
+                    continue
+                delta = (current['icmp_sequence']-prior['icmp_sequence']) % 65536
+                if current['identifier'] == prior['identifier'] and delta == 1:
+                    continue
+                same_identifier = current['identifier'] == prior['identifier']
+                gap = dict(previous_request=prior, next_request=current,
+                    kind='sequence_gap_or_reset' if same_identifier else 'identifier_change',
+                    missing_request_count=delta-1 if same_identifier and 1 < delta < 32768 else None,
+                    sender_observations=[r for r in observations if same_identifier and 1 < delta < 32768 and
+                        prior['ts']-2 <= r['observed_ts'] <= current['ts']+2 and
+                        0 < (r['icmp_sequence']-prior['icmp_sequence']) % 65536 < delta])
+                discontinuities.append(gap)
+            value.update(sender_log=sender, request_discontinuities=discontinuities)
+            if value['status'] != 'PASS' and bursts:
+                value['observed_window'] = dict(certified=False,
+                    scope='Captured requests/replies only; missing sender requests remain unaccounted',
+                    first_failure_timestamp=value['first_failure_timestamp'], recovery_timestamp=value['recovery_timestamp'],
+                    failure_bursts=bursts)
         except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
             value.update(status='UNAVAILABLE', reason=str(exc))
         outcomes[direction] = value

@@ -1,3 +1,104 @@
+N-S probe shutdown and reset compatibility — 2026-10-15
+Based on the latest delivered current-playbook.zip. Prior RabbitMQ, observer,
+ICMP evidence and traffic-report changes are retained.
+
+Root cause reproduced with the production Client loop: TERM sets stop, but the
+old summary loop tests lifetime only and never reaches finally. This loop was
+already present in the originally supplied current-playbook.zip. It can busy-log
+until lifetime expiry after TERM, so increasing reset's 5-second wait is not a fix.
+
+Client now checks stop in the main loop and handles TERM/INT through the same
+cleanup path. Reset sends TERM first, then optionally INT only to an owned,
+still-live fip-client after rechecking its command. The production reset task
+enables this compatibility path for already-running old clients; editing files
+does not replace their in-memory code. INT runs the old finally block, including
+stopping/reaping its ping child. No SIGKILL or broad name-based process matching.
+Identity/boot/start_ticks, pidfd, run/config and command ownership remain required;
+all initial candidates are validated before any signal. Remaining processes or
+ownership errors still block Kolla destroy. JSON separates signaled, confirmed
+stopped and remaining identities, with per-signal times and observation bounds.
+
+499 full-suite tests PASS, 387 subtests PASS, no skips (140 SDK warnings).
+After adding a client-ignoring-both-signals case: 26 focused tests PASS,
+3 subtests PASS. 9 Ansible syntax entrypoints PASS. Python AST 75 files and
+YAML parse 35 files PASS; source diff whitespace checks PASS.
+
+Real production probe subprocess tests reproduce the old TERM failure, check
+new TERM shutdown with an unreachable target and with held/old/new TCP listeners,
+and verify ping-child cleanup and control-port release. The ping executable is
+a local subprocess fixture. Ownership/pidfd boundaries are modeled because this
+executor's child PID namespace differs from its /proc view. Foreign/stale/changed
+commands, ignored signals, truthful failure evidence and repeated cleanup are
+covered. No live lab reset, process, Docker/container or cloud API was operated.
+See docs/reset-four-nodes.md for retry after this pre-destroy failure.
+
+Prior validation history:
+
+Observer reconnect and N-S ICMP sender evidence — 2026-10-15
+Based on the latest delivered current-playbook.zip; prior RabbitMQ and traffic
+report formatting changes retained.
+
+Full suite: 491 tests PASS, 387 subtests PASS, no skips (140 SDK warnings).
+After final cleanup/correlation refinements and an added silent-handshake case:
+53 focused tests PASS, 5 subtests PASS. 9 Ansible syntax checks PASS.
+Python AST (75 files), YAML parse and source diff checks PASS (generated patch
+excluded from whitespace checking because unified-diff context uses blank spaces).
+
+OpenFlow/OVSDB monitor subprocesses reconnect with bounded exponential backoff,
+separate stream segments, verified token-scoped old-child retirement, protocol
+acknowledgement and post-reconnect snapshots. Byte/lifetime limits remain.
+PCAP and workload processes never restart. Gaps remain in events/state/report;
+existing completeness gates are not relaxed, so reconnect is not an automatic PASS.
+
+ICMP retains the original source-bound ping and cadence. Raw stdout/stderr includes
+sender log/PID/boot identity, event indices, native timestamps, observer wall and
+monotonic times, sequence, replies/outstanding/local errors. FIP writes locally;
+SNAT persists in guest and mirrors through separately prefixed Nova-console lines.
+Serial output is synchronized. Mirrors are deduplicated, bounded and checked for
+identity, ordering, missing events and PCAP-anchor coverage. Capture finish makes
+a final console refresh. No guest SSH, extra listeners or namespace dependency.
+
+Tests cover real reconnect subprocesses, EOF, error-only replies, silent handshake,
+retry exhaustion, no PCAP restart, owned orphan cleanup with lost PID ack, raw ping
+logs, source/log failures, byte budget, overlapping/truncated/conflicting console
+windows, identity and anchor mismatches, and strict incomplete-diagnostics results.
+The orphan fixture adapts its signal PIDs to this executor's host-/proc mount;
+production Docker cleanup uses container-local /proc and exact launch tokens.
+
+The attached 20261015-163940 endpoint PCAP was replayed read-only in a temporary
+fixture. It preserves UNAVAILABLE, identifies missing sequence 8326..8335 and
+retains the observed 93.120483 s burst as uncertified; no absent packets are filled.
+Sender output is secondary evidence, not proof of wire transmission or a substitute
+for authoritative PCAP. No live reset, migration, service restart or cloud API call
+was performed. Use a fresh reset/migration so workload cloud-init includes logging.
+
+Prior validation history:
+
+Traffic report task/phase presentation — 2026-10-15
+Based on the latest delivered current-playbook.zip, retaining N-S diagnostics
+and the RabbitMQ reset worker/recovery changes.
+
+45 focused tests PASS; 21 subtests PASS. Python AST and source diff checks PASS
+(excluding the generated CHANGES.patch, whose diff context contains blank spaces).
+Coverage: actual migration_report.py TXT/JSON generation, all 15 EW/N-S flows,
+PCAP start/end anchors, client ARM/monotonic clock mapping, first recovery vs
+longest burst, legacy single-burst reconstruction, missing clocks, no-failure
+semantics, TCP socket continuity, and unchanged nested metric/validation evidence.
+
+TXT uses Dataplane downtime only as a heading; no Port_Binding duration is printed.
+Start/end measurement and first failure/recovery show phase/task without timestamps
+for four EW ICMP, three EW TCP and eight N-S flows. JSON retains timer values,
+source clocks, events and attribution. TCP adds the first recovery monotonic anchor;
+no probe cadence, socket behavior, measurement boundary or validation gate changed.
+
+The attached run 20261015-163940 reports FIP ICMP UNAVAILABLE (identifier/sequence
+discontinuity) and openflow-watch rc=1 on compute1, compute2 and network1. Its
+raw endpoint PCAP and watcher logs were not supplied; this revision does not claim
+to resolve those collection failures. All previous diagnostics gates are retained.
+No live reset, migration, restart or cloud API operation was performed.
+
+Prior validation history:
+
 RabbitMQ scheduler startup mitigation and bounded lab recovery — 2026-10-15
 Based on the delivered current-playbook.zip, retaining its N-S/diagnostics/report.
 Prior delivered ZIP SHA-256: 44e497d6234615c19bba563cec23d44da53dfda523cd465f8216f54d99e338b0

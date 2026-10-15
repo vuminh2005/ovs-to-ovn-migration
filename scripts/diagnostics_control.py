@@ -133,12 +133,14 @@ def summarize(root):
         rows.append(dict(host=entry['host'], role=entry['role'], archive=str(state_path.parent.relative_to(root)),
             status='PASS' if state.get('status') == 'STOPPED' and not state.get('errors') else 'UNAVAILABLE',
             errors=state.get('errors', ['No archived final state']), jobs=state.get('jobs', {}),
+            coverage=state.get('coverage', 'UNAVAILABLE'),
             preparation_segments=entry.get('segments', [])))
     roles = {row['role'] for row in rows}
     result = dict(status='PASS' if rows and roles == {'core', 'central'} and all(
         r['status'] == 'PASS' for r in rows) else 'UNAVAILABLE', collectors=rows,
         collected_at=time.time(), read_only_network_state=True,
-        limits=dict(max_bytes_per_collector=cfg['max_bytes'], lifetime_seconds=cfg['lifetime']),
+        limits=dict(max_bytes_per_collector=cfg['max_bytes'], lifetime_seconds=cfg['lifetime'],
+            reconnect_attempts=cfg.get('reconnect_attempts', 8), reconnect_window_seconds=cfg.get('reconnect_window_seconds', 60)),
         timestamp_scope='Observer receive time plus native source log/PCAP timestamps; inspect clock-offset snapshots',
         coverage_scope='Current observation segment begins before cutover; preparation gaps and earlier segments are retained explicitly',
         interpretation='Temporal correlation is evidence, not automatic proof of causality')

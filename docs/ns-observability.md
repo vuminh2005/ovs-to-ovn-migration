@@ -56,14 +56,43 @@ drop, supervisor gap hoặc kết thúc chưa phục hồi tạo UNAVAILABLE, kh
 Các file cũ mang tên `tcp.pcap` được giữ để tương thích, nhưng filter mới bao gồm
 TCP hai listener, ICMP và ARP. JSON `ns-icmp-results.json` lưu kết quả độc lập.
 
+Client ICMP giữ nguyên một tiến trình `ping -D -O`, source/payload/cadence cũ.
+Mỗi dòng stdout/stderr được ghi với run, label, boot, PID, log ID, event index,
+timestamp nguồn khi có, thời gian quan sát wall/monotonic và sequence. Reply,
+outstanding và lỗi `sendmsg`/unreachable được phân loại; toàn bộ dòng gốc vẫn giữ.
+Giới hạn 64 MiB mỗi log, không quay vòng hoặc ghi đè. Lỗi ghi log không khởi động
+lại ping hoặc thay đổi socket TCP; health summary ghi rõ `log_error`.
+
+FIP ghi trực tiếp ở `ns/fip-icmp-sender.jsonl` trên controller. Guest SNAT ghi
+`/var/lib/ovn-migration-icmp/<run>/snat-icmp-sender.jsonl`, đồng thời mirror qua
+Nova console bằng prefix riêng `OVN_NS_ICMP_JSON `. Collector ghép các lần đọc
+console vào `ns/snat-icmp-sender.jsonl`, deduplicate và kiểm tra event index,
+boot/PID/log identity, monotonic clock và coverage giữa hai PCAP anchor.
+Phase 12 đọc console lần cuối sau khi dừng capture. Không cần SSH vào guest,
+không mở thêm listener hoặc phụ thuộc qrouter namespace sau cutover.
+
+Sender stdout là bằng chứng thứ cấp về sequence/lỗi, không phải timestamp phát
+packet ở wire. Sequence thiếu trong PCAP được mô tả trong `request_discontinuities`
+và đối chiếu sender events cùng khoảng thời gian (tolerance 2 giây, cần kiểm tra
+clock offset). `observed_window` giữ burst thấy trong PCAP với `certified: false`
+khi coverage chưa đủ. Không tự điền request thiếu hoặc đổi metric thành PASS.
+Log sender thiếu/đứt đoạn là diagnostics UNAVAILABLE khi logging được bật trong
+cấu hình run mới; PCAP vẫn tự quyết định tính hợp lệ của metric traffic.
+
 `migration-report.txt` hiển thị ICMP và ba TCP stream cho cả SNAT/FIP: loss/probe
-failure rate, failure burst count, longest outage, total downtime, timestamp bắt
-đầu/kết thúc đo và first failure/recovery kèm task/phase. Timestamp text là UTC+7.
-JSON giữ toàn bộ burst, session identity, nguyên nhân lỗi và clock anchors.
+failure rate, failure burst count, longest outage, total downtime và bốn mốc bắt
+đầu/kết thúc đo, first failure/recovery. Cả EW ICMP/TCP và N-S đều hiển thị các
+mốc đó dưới dạng `phase | task`; TXT không in timestamp.
+JSON giữ timestamp, toàn bộ burst, session identity, nguyên nhân lỗi và clock anchors.
 Task attribution chỉ là thời gian trùng nhau, không phải kết luận nhân quả.
 
-Nhãn lịch sử `Dataplane downtime` ở đầu TXT vẫn là timer Port_Binding cũ.
-Downtime traffic thực tế nằm trong từng luồng; không cộng downtime giữa các luồng.
+`Dataplane downtime:` ở đầu TXT chỉ là tiêu đề cho downtime thực tế từng luồng;
+không hiện giá trị timer Port_Binding và không cộng downtime giữa các luồng.
+Timer Port_Binding vẫn lưu đầy đủ trong JSON. EW ICMP dùng timestamp PCAP;
+EW TCP dùng ARM đến summary cuối, quy đổi monotonic bằng wall clock trong chính
+summary của client. `first_recovery_mono` lưu đúng lần phục hồi burst đầu tiên;
+với summary cũ chỉ suy ra recovery từ duration khi có đúng một burst đã phục hồi.
+Nếu có nhiều burst mà thiếu mốc recovery đầu tiên thì ghi UNAVAILABLE.
 
 ## Collector trên host
 
@@ -72,6 +101,8 @@ Downtime traffic thực tế nằm trong từng luồng; không cộng downtime 
 - `migration_diagnostics_directory`: `/var/lib/ovn-migration-diagnostics`.
 - `migration_diagnostics_lifetime_seconds`: 18000.
 - `migration_diagnostics_max_bytes`: 268435456 cho mỗi collector.
+- `migration_diagnostics_reconnect_attempts`: 8 lần tối đa cho mỗi observer.
+- `migration_diagnostics_reconnect_window_seconds`: 60 giây để thử nối lại mỗi gap.
 - `migration_diagnostics_external_interface`: `ns-ex` của lab hiện tại.
 
 Core collector chạy từ phase 04 trên control/network/compute/OVN CLI host.
@@ -100,6 +131,8 @@ Thu thập:
 Collector chạy ngoài container, có PID/starttime/boot identity và run-owned
 directory. Container-side monitor có token riêng cho từng lần launch; cleanup
 kiểm tra token trước khi signal đúng PID. Không dùng pkill hoặc flush mạng.
+Nếu mất PID acknowledgement, cleanup tìm đúng token của lần launch trong container
+và phải chứng minh tiến trình cũ đã dừng trước khi tạo observer thay thế.
 Byte/lifetime limit kết thúc với UNAVAILABLE và giữ dữ liệu, không quay vòng ghi
 đè bằng chứng đầu run. Snapshot/command lỗi được giữ nguyên với timestamp/rc.
 
@@ -117,8 +150,22 @@ reset-stop để thu hồi. Không biến evidence thiếu thành PASS hoặc x�
 
 Retry/resume trước phase 08 có thể tạo observation segment mới. Mọi segment cũ
 và preparation gap được giữ, không nối giả thành một capture liên tục. Không tự
-restart collector để che gap xảy ra trong/sau cutover. Reset dừng/archive các
+restart supervisor để che gap xảy ra trong/sau cutover. Reset dừng/archive các
 collector thuộc checkpoint trước Kolla destroy, giữ các report cũ.
+
+Riêng các connection observer OpenFlow/OVSDB có reconnect giới hạn trong chính
+supervisor đang chạy: backoff 1, 2, 4 rồi tối đa 8 giây, giới hạn tổng số lần thử.
+Mỗi lần có segment/PID/token riêng; log cũ được append, không ghi đè. Reconnect
+chỉ được xác nhận khi có monitor reply/initial JSON, không chỉ vì process sống.
+Sau reconnect lấy initial flow state và snapshot; lỗi hoặc handshake im lặng
+không được coi là phục hồi. PCAP và tiến trình traffic không được restart.
+
+`observer-gap`, `observer-reconnected`, `observer-reconnect-exhausted` và các
+segment được giữ trong events/state và report JSON. Gap có thời gian phát hiện,
+output cuối và thời gian xác nhận kết nối lại; duration là từ phát hiện đến ACK,
+không phải phép đo downtime traffic. Coverage là `GAPPED` nếu từng bị ngắt.
+Gate vẫn strict: reconnect không xóa lỗi cũ; một run vẫn có thể là
+`MIGRATED_VALIDATION_INCOMPLETE` dù observer đã thu được dữ liệu trở lại.
 
 Trong thư mục run:
 
@@ -127,6 +174,7 @@ Trong thư mục run:
 - `diagnostics/checkpoints/`: danh tính/cấu hình của collector được sở hữu.
 - `ns-arm.json`: timestamp mở listener, ACK và session/ARM continuity.
 - `ns-results.json`, `ns-icmp-results.json`, `migration-report.{json,txt}`.
+- `ns/{snat,fip}-icmp-sender.jsonl`: log sender gốc hoặc mirror có kiểm tra index.
 
 Lịch sử này dùng để kiểm chứng ba câu hỏi: flow/controller change nào trùng
 packet lỗi đầu tiên; EW phục hồi qua pipeline/tunnel nào; gateway binding/ARP/NAT

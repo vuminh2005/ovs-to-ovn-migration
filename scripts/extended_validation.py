@@ -248,6 +248,9 @@ class Extended:
 
     def console_rows(self, vm, prefix):
         output = self.v.console_output(vm['server'], time.monotonic()+self.cfg['timeout'])
+        if prefix == 'OVN_NS_JSON ':
+            from ns_icmp_logging import mirror_console
+            mirror_console(self.root, output, self.cfg['run'])
         rows = []
         for line in output.splitlines():
             if prefix in line:
@@ -328,6 +331,8 @@ class Extended:
             if fields.get('label'):
                 cfg.update(icmp_enabled=ns.get('icmp_enabled', True),
                     icmp_interval=self.cfg.get('interval', .2))
+                cfg['icmp_output'] = (str(self.root/'ns/fip-icmp-sender.jsonl') if fields['label'] == 'fip'
+                    else '/var/lib/ovn-migration-icmp/'+self.cfg['run']+'/snat-icmp-sender.jsonl')
             if fields.get('label') == 'fip':
                 cfg['control_bind'] = '127.0.0.1'
         return cfg
@@ -621,6 +626,8 @@ class Extended:
                     ping = row.get('icmp') or {}
                     if not ping.get('alive') or ping.get('replies', 0) < 5:
                         errors.append(direction+'/ICMP ping health unavailable')
+                    if self.cfg['ns'].get('icmp_sender_logging_enabled') and (not ping.get('log_id') or ping.get('log_error')):
+                        errors.append(direction+'/ICMP sender logging unavailable: '+str(ping.get('log_error')))
                     # Guest monotonic is a different clock; compare within its own summary.
                     if row.get('mono', 0)-(ping.get('last_reply_mono') or 0) > 3:
                         errors.append(direction+'/ICMP not recovered')

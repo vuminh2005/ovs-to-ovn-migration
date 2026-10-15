@@ -12,6 +12,7 @@ import time
 import uuid
 
 PREFIX = 'OVN_NS_JSON '
+CONSOLE_LOCK = threading.Lock()
 
 
 def boot_id():
@@ -29,8 +30,9 @@ def emit(cfg, value):
             f.flush()
         path.chmod(0o600)
     if cfg.get('console', True):
-        with open('/dev/ttyS0', 'w') as f:
-            f.write(line + '\n')
+        with CONSOLE_LOCK:
+            with open('/dev/ttyS0', 'w') as f:
+                f.write(line + '\n')
 
 
 class Wire:
@@ -145,8 +147,13 @@ class Client:
             self.stats['new_listener'] = Stats()
         self.ping = None
         if cfg.get('icmp_enabled'):
-            from ns_icmp import Ping
-            self.ping = Ping(cfg)
+            from ns_icmp import Ping, PREFIX as ICMP_PREFIX
+            def publish(value):
+                if cfg.get('console', True):
+                    with CONSOLE_LOCK:
+                        with open('/dev/ttyS0', 'w') as console:
+                            console.write(ICMP_PREFIX+json.dumps(value, sort_keys=True)+'\n')
+            self.ping = Ping(cfg, publish=publish)
         self.probe_id = str(uuid.uuid4())
 
     def connect(self, stats, port=None):
@@ -293,11 +300,12 @@ class Client:
             threads.append(threading.Thread(target=self.ping.run, daemon=True))
         if threading.current_thread() is threading.main_thread():
             signal.signal(signal.SIGTERM, lambda *_: self.stop.set())
+            signal.signal(signal.SIGINT, lambda *_: self.stop.set())
         for thread in threads:
             thread.start()
         started = time.monotonic()
         try:
-            while time.monotonic()-started < self.cfg['lifetime']:
+            while not self.stop.is_set() and time.monotonic()-started < self.cfg['lifetime']:
                 emit(self.cfg, dict(kind='client', label=self.cfg['label'], probe_id=self.probe_id,
                                    started_mono=started, armed=self.armed, armed_mono=self.armed_mono,
                                    armed_ts=self.armed_ts, listener_ack=self.listener_ack,

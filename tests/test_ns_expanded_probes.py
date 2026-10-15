@@ -144,9 +144,41 @@ class ExpandedPcapTests(unittest.TestCase):
         self.assertEqual(outcomes['snat']['status'], 'UNAVAILABLE')
         self.assertNotEqual(json.loads((self.root/'ns-results.json').read_text())['status'], 'PASS')
 
+    def test_sender_log_explains_sequence_gap_without_certifying_missing_packets(self):
+        cfg=json.loads((self.root/'validation-config.json').read_text());cfg['run']='run-gap'
+        (self.root/'validation-config.json').write_text(json.dumps(cfg))
+        baseline=json.loads((self.root/'ns-baseline.json').read_text())
+        baseline['clients']['fip'].update(boot='boot',icmp=dict(log_id='log',pid=42))
+        (self.root/'ns-baseline.json').write_text(json.dumps(baseline))
+        packets=[]
+        for i in range(1,16):
+            if i==4:continue
+            ts=10+i*.2
+            packets.append((ts,frame('10.1.0.187','10.1.0.5',i)))
+            if i not in (3,8):packets.append((ts+.01,frame('10.1.0.187','10.1.0.5',i,True)))
+        data=b'\xd4\xc3\xb2\xa1'+struct.pack('<HHIIII',2,4,0,0,65535,1)
+        for ts,packet in sorted(packets):
+            sec=int(ts);data+=struct.pack('<IIII',sec,round((ts-sec)*1e6),len(packet),len(packet))+packet
+        (self.root/'ns-diagnostics/endpoint/tcp.pcap').write_bytes(data)
+        folder=self.root/'ns';folder.mkdir()
+        log=[]
+        for i in range(1,18):
+            ts=10+i*.2-.02
+            log.append(dict(run='run-gap',label='fip',boot='boot',log_id='log',ping_pid=42,event_index=i,
+                observed_ts=ts,observed_mono=ts,icmp_sequence=i,native_ts=ts,
+                kind='error' if i==4 else 'reply',text='send failure' if i==4 else 'reply'))
+        (folder/'fip-icmp-sender.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in log))
+        value=finalize(self.root)['fip']
+        self.assertEqual(value['status'],'UNAVAILABLE')
+        self.assertEqual(value['sender_log']['status'],'PASS')
+        self.assertEqual(value['request_discontinuities'][0]['missing_request_count'],1)
+        self.assertEqual(value['request_discontinuities'][0]['sender_observations'][0]['kind'],'error')
+        self.assertFalse(value['observed_window']['certified'])
+        self.assertIsNone(value['actual_dataplane_outage_seconds'])
+
 
 class ExpandedReportTests(unittest.TestCase):
-    def test_eight_ns_flows_and_per_flow_timestamps_are_in_txt(self):
+    def test_eight_ns_flows_have_task_events_without_printing_timestamps(self):
         stream = dict(status='PASS', attempts=20, failures=2, failure_burst_count=1,
             longest_recovered_failure_seconds=2.0, total_downtime_seconds=2.0,
             start_timestamp=100, end_timestamp=200, first_failure_timestamp=120, recovery_timestamp=122)
@@ -166,7 +198,9 @@ class ExpandedReportTests(unittest.TestCase):
         self.assertEqual(ns_text.count('Total packet downtime'), 2)
         self.assertEqual(ns_text.count('Start measurement'), 8)
         self.assertEqual(ns_text.count('First recovery'), 8)
-        self.assertIn('+07:00', ns_text)
+        self.assertNotIn('+07:00', ns_text)
+        self.assertNotIn('1970-', ns_text)
+        self.assertEqual(timeline['snat/held']['start_timestamp']['timestamp'],100)
 
     def test_migration_report_script_writes_expanded_ns_to_txt_and_keeps_json(self):
         from test_validation import ready_evidence
@@ -192,7 +226,7 @@ class ExpandedReportTests(unittest.TestCase):
             self.assertEqual(text.count('Start measurement'),8)
             self.assertIn('Inbound (FIP, ICMP)',text)
             self.assertEqual(report['north_south']['directions']['snat']['streams']['new_listener'],stream)
-            self.assertEqual(len(report['traffic_timeline']),8)
+            self.assertEqual(len(report['traffic_timeline']),15)
 
     def test_nested_kolla_task_inherits_enclosing_phase(self):
         rows = [dict(started_at=dict(epoch=100), ended_at=dict(epoch=200), play='Phase 08 - Deploy',

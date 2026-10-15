@@ -399,9 +399,18 @@ class Diagnostics:
         if self.cfg['ns'].get('icmp_enabled'):
             from ns_icmp_evidence import finalize
             try:
-                finalize(self.root)
+                # Final Nova-console refresh happens after capture stop, so a sender
+                # mirror can cover the last captured replies as well as the baseline.
+                if hasattr(self.x, 'ns_rows'):
+                    self.x.ns_rows()
+                outcomes = finalize(self.root)
+                if self.cfg['ns'].get('icmp_sender_logging_enabled'):
+                    for direction, outcome in outcomes.items():
+                        if outcome.get('sender_log', {}).get('status') != 'PASS':
+                            errors.append(direction+'/ICMP sender log: '+str(outcome.get('sender_log', {}).get('reason', 'unavailable')))
             except Exception as exc:
                 errors.append('N-S ICMP evidence: '+str(exc))
+            if errors:
                 result = json.loads((self.root/'ns-diagnostics.json').read_text())
                 result.update(status='UNAVAILABLE', errors=errors)
                 save(self.root/'ns-diagnostics.json', result)

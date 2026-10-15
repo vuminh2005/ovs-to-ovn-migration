@@ -60,6 +60,16 @@ class ResetScopeTests(unittest.TestCase):
         self.assertEqual(reboot['hosts'], 'network:compute')
         self.assertEqual(reboot['serial'], 1)
 
+    def test_reset_enables_scoped_legacy_probe_cleanup_before_destroy(self):
+        plays = yaml.safe_load((ROOT / 'reset-lab-to-ovs.yml').read_text())
+        destroy = next(p for p in plays if p['name'] == 'Destroy the current Kolla deployment from the deployment host')
+        tasks = destroy['tasks']
+        stop_index = next(i for i, t in enumerate(tasks) if 'Stop only checkpointed controller N-S probes' in t['name'])
+        destroy_index = next(i for i, t in enumerate(tasks) if t['name'] == 'Run kolla-ansible destroy')
+        self.assertLess(stop_index, destroy_index)
+        self.assertIn('--interrupt-legacy-client', tasks[stop_index]['ansible.builtin.command']['argv'])
+        self.assertNotIn('ignore_errors', tasks[stop_index])
+
     def test_mtu_and_native_firewall_override_paths(self):
         plays = yaml.safe_load((ROOT / 'reset-lab-to-ovs.yml').read_text())
         copies = [t['ansible.builtin.copy'] for p in plays for t in p.get('tasks', []) if 'ansible.builtin.copy' in t]

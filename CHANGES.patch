@@ -1,11 +1,17 @@
 diff --git a/README.md b/README.md
-index 44807a1..2cb144b 100644
+index 44807a1..69aa27c 100644
 --- a/README.md
 +++ b/README.md
-@@ -47,6 +47,10 @@ checkpoints, cleanup and the current nested-lab commands.
+@@ -47,6 +47,16 @@ checkpoints, cleanup and the current nested-lab commands.
  
  ## Four-node reset update
  
++N-S probe shutdown 15/10/2026: client now exits its summary loop on TERM/INT.
++Reset can interrupt a verified older FIP client after a TERM timeout so its
++existing cleanup stops the original ping. Stop evidence distinguishes sent
++signals, confirmed exits and remaining processes; a remaining process still
++blocks destroy. [Details and retry](docs/reset-four-nodes.md).
++
 +Reset RabbitMQ 15/10/2026: mặc định `nova_scheduler_workers: 1`, kiểm tra cấu
 +hình trong container và phục hồi tối đa một lần cho đúng lỗi Raft scheduler
 +trong reset lab. [Điều kiện, evidence và kiểm chứng](docs/reset-rabbitmq-mitigation.md).
@@ -13,7 +19,39 @@ index 44807a1..2cb144b 100644
  `reset-lab-to-ovs.yml` now resets the lab with `controller`, `network1`,
  `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
  with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
-@@ -832,3 +836,11 @@ remediation retains SUCCESS with its explicit fields. Any unresolved validation
+@@ -210,8 +220,8 @@ It contains `migration-report.json` with all timing, validation and evidence fie
+ - resource identity preservation for networks, subnets, routers, servers and compute ports
+ - result of a temporary post-migration Geneve network smoke test
+ 
+-`migration-report.txt` contains only the three timers (`Total run duration`,
+-`Control-plane downtime`, `Dataplane downtime`) and the East–West/North–South
++`migration-report.txt` contains only the two timers (`Total run duration`,
++`Control-plane downtime`), a `Dataplane downtime:` heading and the East–West/North–South
+ traffic summary. East–West lists all four ICMP placement/subnet combinations,
+ then the three TCP streams. North–South lists outbound SNAT and inbound FIP,
+ each with held-session and new-connection streams.
+@@ -223,11 +233,15 @@ one consecutive sequence of failed probes; an unrecovered burst is included in
+ the count and displayed as `UNRECOVERED` for its duration. Historical TCP evidence
+ without a burst counter displays `UNAVAILABLE`, never an inferred zero.
+ 
+-The requested `Dataplane downtime` label retains the existing
+-`ovn_portbinding_convergence_seconds` value (legacy alias:
+-`dataplane_convergence_seconds`). It measures the Port_Binding convergence window,
+-not an aggregate of the per-flow traffic outages shown below. All metric boundaries
+-and validation/cleanup gates remain unchanged.
++`Dataplane downtime:` introduces the actual per-flow traffic outages; it has no
++Port_Binding timer value and no aggregate across flows. Port_Binding convergence
++remains in JSON as `ovn_portbinding_convergence_seconds` (legacy alias:
++`dataplane_convergence_seconds`). Each EW and N-S flow shows start/end measurement
++and first failure/recovery as `phase | task`, without timestamps in TXT. JSON
++retains the timestamps and task overlap evidence. EW TCP clocks map the client
++ARM-scoped monotonic summary to its snapshot wall clock for correlation only;
++outage durations stay monotonic. Missing task evidence remains unavailable.
++All metric boundaries and validation/cleanup gates remain unchanged.
+ 
+ DHCP, MTU, provisioning, remediation, identities, cleanup, diagnostics, phase timing
+ and all other evidence remain complete in JSON. Text rounds seconds to three
+@@ -832,3 +846,15 @@ remediation retains SUCCESS with its explicit fields. Any unresolved validation
  failure reports MIGRATED_VALIDATION_INCOMPLETE, preserves evidence/resources and
  never rolls back. Pair-A capture counts every actual Pair-A loss during either
  remediation; Pair-B packets never enter that metric.
@@ -22,14 +60,119 @@ index 44807a1..2cb144b 100644
 +## N-S ICMP, listener bổ sung và diagnostics
 +
 +Bản hiện tại bổ sung ICMP + TCP held/new-old/new-listener cho cả SNAT/FIP,
-+collector OVS/OVN/Kolla xuyên cutover và timestamp/task/total downtime trong
-+`migration-report.txt`. Xem [thiết kế, cách đo và các file bằng chứng](docs/ns-observability.md).
++collector OVS/OVN/Kolla xuyên cutover và task/phase/total downtime trong
++`migration-report.txt`; timestamp đầy đủ ở JSON. Observer OpenFlow/OVSDB có
++reconnect giới hạn, lưu segment và gap; PCAP/traffic giữ nguyên tiến trình.
++Sender ICMP lưu stdout/stderr gốc cùng PID/boot/event index để đối chiếu sequence
++gap và lỗi gửi cục bộ. Khoảng trống vẫn là bằng chứng chưa đầy đủ, không tự đổi PASS.
++Xem [thiết kế, cách đo và các file bằng chứng](docs/ns-observability.md).
 +Workflow và các tiêu chí bảo toàn phiên held vẫn giữ nguyên.
 diff --git a/VALIDATION.txt b/VALIDATION.txt
-index 19cb34f..0aefc82 100644
+index 19cb34f..8321fc7 100644
 --- a/VALIDATION.txt
 +++ b/VALIDATION.txt
-@@ -1,3 +1,73 @@
+@@ -1,3 +1,174 @@
++N-S probe shutdown and reset compatibility — 2026-10-15
++Based on the latest delivered current-playbook.zip. Prior RabbitMQ, observer,
++ICMP evidence and traffic-report changes are retained.
++
++Root cause reproduced with the production Client loop: TERM sets stop, but the
++old summary loop tests lifetime only and never reaches finally. This loop was
++already present in the originally supplied current-playbook.zip. It can busy-log
++until lifetime expiry after TERM, so increasing reset's 5-second wait is not a fix.
++
++Client now checks stop in the main loop and handles TERM/INT through the same
++cleanup path. Reset sends TERM first, then optionally INT only to an owned,
++still-live fip-client after rechecking its command. The production reset task
++enables this compatibility path for already-running old clients; editing files
++does not replace their in-memory code. INT runs the old finally block, including
++stopping/reaping its ping child. No SIGKILL or broad name-based process matching.
++Identity/boot/start_ticks, pidfd, run/config and command ownership remain required;
++all initial candidates are validated before any signal. Remaining processes or
++ownership errors still block Kolla destroy. JSON separates signaled, confirmed
++stopped and remaining identities, with per-signal times and observation bounds.
++
++499 full-suite tests PASS, 387 subtests PASS, no skips (140 SDK warnings).
++After adding a client-ignoring-both-signals case: 26 focused tests PASS,
++3 subtests PASS. 9 Ansible syntax entrypoints PASS. Python AST 75 files and
++YAML parse 35 files PASS; source diff whitespace checks PASS.
++
++Real production probe subprocess tests reproduce the old TERM failure, check
++new TERM shutdown with an unreachable target and with held/old/new TCP listeners,
++and verify ping-child cleanup and control-port release. The ping executable is
++a local subprocess fixture. Ownership/pidfd boundaries are modeled because this
++executor's child PID namespace differs from its /proc view. Foreign/stale/changed
++commands, ignored signals, truthful failure evidence and repeated cleanup are
++covered. No live lab reset, process, Docker/container or cloud API was operated.
++See docs/reset-four-nodes.md for retry after this pre-destroy failure.
++
++Prior validation history:
++
++Observer reconnect and N-S ICMP sender evidence — 2026-10-15
++Based on the latest delivered current-playbook.zip; prior RabbitMQ and traffic
++report formatting changes retained.
++
++Full suite: 491 tests PASS, 387 subtests PASS, no skips (140 SDK warnings).
++After final cleanup/correlation refinements and an added silent-handshake case:
++53 focused tests PASS, 5 subtests PASS. 9 Ansible syntax checks PASS.
++Python AST (75 files), YAML parse and source diff checks PASS (generated patch
++excluded from whitespace checking because unified-diff context uses blank spaces).
++
++OpenFlow/OVSDB monitor subprocesses reconnect with bounded exponential backoff,
++separate stream segments, verified token-scoped old-child retirement, protocol
++acknowledgement and post-reconnect snapshots. Byte/lifetime limits remain.
++PCAP and workload processes never restart. Gaps remain in events/state/report;
++existing completeness gates are not relaxed, so reconnect is not an automatic PASS.
++
++ICMP retains the original source-bound ping and cadence. Raw stdout/stderr includes
++sender log/PID/boot identity, event indices, native timestamps, observer wall and
++monotonic times, sequence, replies/outstanding/local errors. FIP writes locally;
++SNAT persists in guest and mirrors through separately prefixed Nova-console lines.
++Serial output is synchronized. Mirrors are deduplicated, bounded and checked for
++identity, ordering, missing events and PCAP-anchor coverage. Capture finish makes
++a final console refresh. No guest SSH, extra listeners or namespace dependency.
++
++Tests cover real reconnect subprocesses, EOF, error-only replies, silent handshake,
++retry exhaustion, no PCAP restart, owned orphan cleanup with lost PID ack, raw ping
++logs, source/log failures, byte budget, overlapping/truncated/conflicting console
++windows, identity and anchor mismatches, and strict incomplete-diagnostics results.
++The orphan fixture adapts its signal PIDs to this executor's host-/proc mount;
++production Docker cleanup uses container-local /proc and exact launch tokens.
++
++The attached 20261015-163940 endpoint PCAP was replayed read-only in a temporary
++fixture. It preserves UNAVAILABLE, identifies missing sequence 8326..8335 and
++retains the observed 93.120483 s burst as uncertified; no absent packets are filled.
++Sender output is secondary evidence, not proof of wire transmission or a substitute
++for authoritative PCAP. No live reset, migration, service restart or cloud API call
++was performed. Use a fresh reset/migration so workload cloud-init includes logging.
++
++Prior validation history:
++
++Traffic report task/phase presentation — 2026-10-15
++Based on the latest delivered current-playbook.zip, retaining N-S diagnostics
++and the RabbitMQ reset worker/recovery changes.
++
++45 focused tests PASS; 21 subtests PASS. Python AST and source diff checks PASS
++(excluding the generated CHANGES.patch, whose diff context contains blank spaces).
++Coverage: actual migration_report.py TXT/JSON generation, all 15 EW/N-S flows,
++PCAP start/end anchors, client ARM/monotonic clock mapping, first recovery vs
++longest burst, legacy single-burst reconstruction, missing clocks, no-failure
++semantics, TCP socket continuity, and unchanged nested metric/validation evidence.
++
++TXT uses Dataplane downtime only as a heading; no Port_Binding duration is printed.
++Start/end measurement and first failure/recovery show phase/task without timestamps
++for four EW ICMP, three EW TCP and eight N-S flows. JSON retains timer values,
++source clocks, events and attribution. TCP adds the first recovery monotonic anchor;
++no probe cadence, socket behavior, measurement boundary or validation gate changed.
++
++The attached run 20261015-163940 reports FIP ICMP UNAVAILABLE (identifier/sequence
++discontinuity) and openflow-watch rc=1 on compute1, compute2 and network1. Its
++raw endpoint PCAP and watcher logs were not supplied; this revision does not claim
++to resolve those collection failures. All previous diagnostics gates are retained.
++No live reset, migration, restart or cloud API operation was performed.
++
++Prior validation history:
++
 +RabbitMQ scheduler startup mitigation and bounded lab recovery — 2026-10-15
 +Based on the delivered current-playbook.zip, retaining its N-S/diagnostics/report.
 +Prior delivered ZIP SHA-256: 44e497d6234615c19bba563cec23d44da53dfda523cd465f8216f54d99e338b0
@@ -150,10 +293,10 @@ index a48a908..61f3afc 100644
 +        self._collect_failed_run_diagnostics(stats)
 diff --git a/docs/ns-observability.md b/docs/ns-observability.md
 new file mode 100644
-index 0000000..9e02b09
+index 0000000..96c53f8
 --- /dev/null
 +++ b/docs/ns-observability.md
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,192 @@
 +# N-S ICMP, listener bổ sung và diagnostics xuyên migration
 +
 +Bản cập nhật dựa trên `current-playbook.zip` do người dùng cung cấp. Không đổi
@@ -212,14 +355,43 @@ index 0000000..9e02b09
 +Các file cũ mang tên `tcp.pcap` được giữ để tương thích, nhưng filter mới bao gồm
 +TCP hai listener, ICMP và ARP. JSON `ns-icmp-results.json` lưu kết quả độc lập.
 +
++Client ICMP giữ nguyên một tiến trình `ping -D -O`, source/payload/cadence cũ.
++Mỗi dòng stdout/stderr được ghi với run, label, boot, PID, log ID, event index,
++timestamp nguồn khi có, thời gian quan sát wall/monotonic và sequence. Reply,
++outstanding và lỗi `sendmsg`/unreachable được phân loại; toàn bộ dòng gốc vẫn giữ.
++Giới hạn 64 MiB mỗi log, không quay vòng hoặc ghi đè. Lỗi ghi log không khởi động
++lại ping hoặc thay đổi socket TCP; health summary ghi rõ `log_error`.
++
++FIP ghi trực tiếp ở `ns/fip-icmp-sender.jsonl` trên controller. Guest SNAT ghi
++`/var/lib/ovn-migration-icmp/<run>/snat-icmp-sender.jsonl`, đồng thời mirror qua
++Nova console bằng prefix riêng `OVN_NS_ICMP_JSON `. Collector ghép các lần đọc
++console vào `ns/snat-icmp-sender.jsonl`, deduplicate và kiểm tra event index,
++boot/PID/log identity, monotonic clock và coverage giữa hai PCAP anchor.
++Phase 12 đọc console lần cuối sau khi dừng capture. Không cần SSH vào guest,
++không mở thêm listener hoặc phụ thuộc qrouter namespace sau cutover.
++
++Sender stdout là bằng chứng thứ cấp về sequence/lỗi, không phải timestamp phát
++packet ở wire. Sequence thiếu trong PCAP được mô tả trong `request_discontinuities`
++và đối chiếu sender events cùng khoảng thời gian (tolerance 2 giây, cần kiểm tra
++clock offset). `observed_window` giữ burst thấy trong PCAP với `certified: false`
++khi coverage chưa đủ. Không tự điền request thiếu hoặc đổi metric thành PASS.
++Log sender thiếu/đứt đoạn là diagnostics UNAVAILABLE khi logging được bật trong
++cấu hình run mới; PCAP vẫn tự quyết định tính hợp lệ của metric traffic.
++
 +`migration-report.txt` hiển thị ICMP và ba TCP stream cho cả SNAT/FIP: loss/probe
-+failure rate, failure burst count, longest outage, total downtime, timestamp bắt
-+đầu/kết thúc đo và first failure/recovery kèm task/phase. Timestamp text là UTC+7.
-+JSON giữ toàn bộ burst, session identity, nguyên nhân lỗi và clock anchors.
++failure rate, failure burst count, longest outage, total downtime và bốn mốc bắt
++đầu/kết thúc đo, first failure/recovery. Cả EW ICMP/TCP và N-S đều hiển thị các
++mốc đó dưới dạng `phase | task`; TXT không in timestamp.
++JSON giữ timestamp, toàn bộ burst, session identity, nguyên nhân lỗi và clock anchors.
 +Task attribution chỉ là thời gian trùng nhau, không phải kết luận nhân quả.
 +
-+Nhãn lịch sử `Dataplane downtime` ở đầu TXT vẫn là timer Port_Binding cũ.
-+Downtime traffic thực tế nằm trong từng luồng; không cộng downtime giữa các luồng.
++`Dataplane downtime:` ở đầu TXT chỉ là tiêu đề cho downtime thực tế từng luồng;
++không hiện giá trị timer Port_Binding và không cộng downtime giữa các luồng.
++Timer Port_Binding vẫn lưu đầy đủ trong JSON. EW ICMP dùng timestamp PCAP;
++EW TCP dùng ARM đến summary cuối, quy đổi monotonic bằng wall clock trong chính
++summary của client. `first_recovery_mono` lưu đúng lần phục hồi burst đầu tiên;
++với summary cũ chỉ suy ra recovery từ duration khi có đúng một burst đã phục hồi.
++Nếu có nhiều burst mà thiếu mốc recovery đầu tiên thì ghi UNAVAILABLE.
 +
 +## Collector trên host
 +
@@ -228,6 +400,8 @@ index 0000000..9e02b09
 +- `migration_diagnostics_directory`: `/var/lib/ovn-migration-diagnostics`.
 +- `migration_diagnostics_lifetime_seconds`: 18000.
 +- `migration_diagnostics_max_bytes`: 268435456 cho mỗi collector.
++- `migration_diagnostics_reconnect_attempts`: 8 lần tối đa cho mỗi observer.
++- `migration_diagnostics_reconnect_window_seconds`: 60 giây để thử nối lại mỗi gap.
 +- `migration_diagnostics_external_interface`: `ns-ex` của lab hiện tại.
 +
 +Core collector chạy từ phase 04 trên control/network/compute/OVN CLI host.
@@ -256,6 +430,8 @@ index 0000000..9e02b09
 +Collector chạy ngoài container, có PID/starttime/boot identity và run-owned
 +directory. Container-side monitor có token riêng cho từng lần launch; cleanup
 +kiểm tra token trước khi signal đúng PID. Không dùng pkill hoặc flush mạng.
++Nếu mất PID acknowledgement, cleanup tìm đúng token của lần launch trong container
++và phải chứng minh tiến trình cũ đã dừng trước khi tạo observer thay thế.
 +Byte/lifetime limit kết thúc với UNAVAILABLE và giữ dữ liệu, không quay vòng ghi
 +đè bằng chứng đầu run. Snapshot/command lỗi được giữ nguyên với timestamp/rc.
 +
@@ -273,8 +449,22 @@ index 0000000..9e02b09
 +
 +Retry/resume trước phase 08 có thể tạo observation segment mới. Mọi segment cũ
 +và preparation gap được giữ, không nối giả thành một capture liên tục. Không tự
-+restart collector để che gap xảy ra trong/sau cutover. Reset dừng/archive các
++restart supervisor để che gap xảy ra trong/sau cutover. Reset dừng/archive các
 +collector thuộc checkpoint trước Kolla destroy, giữ các report cũ.
++
++Riêng các connection observer OpenFlow/OVSDB có reconnect giới hạn trong chính
++supervisor đang chạy: backoff 1, 2, 4 rồi tối đa 8 giây, giới hạn tổng số lần thử.
++Mỗi lần có segment/PID/token riêng; log cũ được append, không ghi đè. Reconnect
++chỉ được xác nhận khi có monitor reply/initial JSON, không chỉ vì process sống.
++Sau reconnect lấy initial flow state và snapshot; lỗi hoặc handshake im lặng
++không được coi là phục hồi. PCAP và tiến trình traffic không được restart.
++
++`observer-gap`, `observer-reconnected`, `observer-reconnect-exhausted` và các
++segment được giữ trong events/state và report JSON. Gap có thời gian phát hiện,
++output cuối và thời gian xác nhận kết nối lại; duration là từ phát hiện đến ACK,
++không phải phép đo downtime traffic. Coverage là `GAPPED` nếu từng bị ngắt.
++Gate vẫn strict: reconnect không xóa lỗi cũ; một run vẫn có thể là
++`MIGRATED_VALIDATION_INCOMPLETE` dù observer đã thu được dữ liệu trở lại.
 +
 +Trong thư mục run:
 +
@@ -283,6 +473,7 @@ index 0000000..9e02b09
 +- `diagnostics/checkpoints/`: danh tính/cấu hình của collector được sở hữu.
 +- `ns-arm.json`: timestamp mở listener, ACK và session/ARM continuity.
 +- `ns-results.json`, `ns-icmp-results.json`, `migration-report.{json,txt}`.
++- `ns/{snat,fip}-icmp-sender.jsonl`: log sender gốc hoặc mirror có kiểm tra index.
 +
 +Lịch sử này dùng để kiểm chứng ba câu hỏi: flow/controller change nào trùng
 +packet lỗi đầu tiên; EW phục hồi qua pipeline/tunnel nào; gateway binding/ARP/NAT
@@ -299,7 +490,7 @@ index 0000000..9e02b09
 +tra phát triển dùng pytest, openstacksdk, SQLAlchemy và ansible-core. Bản này đã
 +được kiểm tra cục bộ; chưa thực thi migration trên lab của người dùng.
 diff --git a/docs/reset-four-nodes.md b/docs/reset-four-nodes.md
-index 0ea1e88..db6d52f 100644
+index 0ea1e88..24be54e 100644
 --- a/docs/reset-four-nodes.md
 +++ b/docs/reset-four-nodes.md
 @@ -1,5 +1,9 @@
@@ -312,7 +503,49 @@ index 0ea1e88..db6d52f 100644
  Bản reset này được sửa từ commit `a77af56`, dành cho lab hiện tại:
  
  | Group Kolla | Host | eth0 |
-@@ -152,7 +156,9 @@ Gate mới dùng `scripts/reset_rabbitmq_health.py`, chỉ đọc trạng thái:
+@@ -33,9 +37,38 @@ network1/compute1/compute2 reboot lần lượt. Mặc định
+ Trước Kolla destroy, reset dừng các process `snat-server`/`fip-client` trên
+ controller có checkpoint N-S hợp lệ. Controller không reboot nên listener của
+ run FAIL có thể còn giữ cổng 18180. Bước này kiểm tra run/config/cmdline cùng
+-PID, boot và start_ticks; chỉ gửi SIGTERM tới đúng process qua pidfd. Không xóa
+-log/metrics run cũ. Evidence dừng process nằm trong snapshot reset ở
+-`local-probes-stop.json`; ownership không khớp sẽ dừng trước Kolla destroy.
++PID, boot và start_ticks; gửi SIGTERM tới đúng process qua pidfd. Nếu FIP client
++cũ không thoát sau 5 giây, reset kiểm tra lại cmdline và gửi SIGINT qua cùng
++pidfd để chạy phần cleanup Python, gồm dừng/reap ping con. Chờ thêm tối đa 5
++giây; còn process sống hoặc ownership không khớp sẽ dừng trước Kolla destroy.
++Không gửi SIGKILL. Không xóa log/metrics run cũ. Evidence nằm trong snapshot
++reset ở `local-probes-stop.json`: `signaled` ghi signal đã gửi, `stopped` chỉ
++ghi process đã xác nhận thoát, `remaining` ghi process vẫn sống.
++
++### Nếu reset lỗi tại bước dừng N-S probes
++
++Bản client cũ đặt cờ stop khi nhận SIGTERM nhưng vòng lặp summary chỉ kiểm tra
++lifetime, nên không thoát và có thể ghi log liên tục tới hết lifetime. Đây là
++lỗi shutdown của probe; không phải bằng chứng về nguyên nhân mất FIP ICMP.
++Client mới kiểm tra stop và xử lý TERM/INT cùng một cơ chế cleanup. Thay file
++không cập nhật code trong process cũ đang chạy, vì vậy reset có bước tương thích
++SIGINT dành riêng cho FIP client đã được xác minh.
++
++Nếu lần reset trước dừng đúng tại task này, Kolla destroy chưa chạy nhưng guest
++trên compute có thể đã bị dừng. Cập nhật bản sửa rồi chạy lại toàn bộ lệnh reset
++bên dưới; không dùng `--start-at-task` vì snapshot và facts của reset phải được
++tạo lại. Snapshot/evidence trước vẫn được giữ. Có thể kiểm tra cleanup riêng
++trước khi chạy lại, với một đường dẫn evidence mới trong snapshot đã có:
++
++```bash
++python3 scripts/reset_local_probes.py /root/ovs-to-ovn-backup \
++    /root/kolla-reset-snapshots/<UTC-run-id>/local-probes-stop-retry.json \
++    --interrupt-legacy-client
++```
++
++Lệnh này dừng probe được checkpoint; không chạy Kolla destroy. Nếu vẫn FAIL,
++đọc `remaining`, `signaled` và `error` trong JSON mới để xác định đúng run/role/
++PID. Không bỏ qua gate hoặc dùng `pkill` theo tên chung.
+ 
+ Network1 giữ IP `10.1.0.90/24` và MAC của eth1 trên `br-underlay`;
+ Netplan và service veth tạo lại `ns-uplink ↔ ns-ex` qua reboot. Tunnel trên
+@@ -152,7 +185,9 @@ Gate mới dùng `scripts/reset_rabbitmq_health.py`, chỉ đọc trạng thái:
  - Các kiểm tra phải ổn định ít nhất 15 giây, không có lỗi Raft mới trong log.
    Lỗi mới hoặc log bị rotate/truncate làm tính lại khoảng ổn định.
  - Hết 180 giây chưa đạt, lỗi đọc/parse CLI, thiếu log, hoặc deploy rc khác 0 vẫn
@@ -433,10 +666,10 @@ index 0000000..c419d4a
 +- RabbitMQ maintainer phân tích process còn tồn tại khi redeclare quorum queue:
 +  https://github.com/rabbitmq/rabbitmq-server/discussions/15069
 diff --git a/group_vars/all.yml b/group_vars/all.yml
-index 50212a9..0ed9f87 100644
+index 50212a9..0fb139c 100644
 --- a/group_vars/all.yml
 +++ b/group_vars/all.yml
-@@ -120,3 +120,10 @@ target_geneve_mtu: 1392
+@@ -120,3 +120,12 @@ target_geneve_mtu: 1392
  
  # NS lab defaults are in group_vars/ns-lab.yml.
  validation_ns_enabled: "{{ ns_enabled }}"
@@ -446,6 +679,8 @@ index 50212a9..0ed9f87 100644
 +migration_diagnostics_directory: /var/lib/ovn-migration-diagnostics
 +migration_diagnostics_lifetime_seconds: 18000
 +migration_diagnostics_max_bytes: 268435456
++migration_diagnostics_reconnect_attempts: 8
++migration_diagnostics_reconnect_window_seconds: 60
 +migration_diagnostics_external_interface: ns-ex
 diff --git a/group_vars/ns-lab.yml b/group_vars/ns-lab.yml
 index 5973f38..c854499 100644
@@ -474,7 +709,7 @@ index 5c05241..7c31157 100644
 +reset_nova_scheduler_workers: 1
 +reset_rabbitmq_recovery_enabled: true
 diff --git a/playbooks/04-validation-workloads.yml b/playbooks/04-validation-workloads.yml
-index 6b69b6f..fe24199 100644
+index 6b69b6f..75081c4 100644
 --- a/playbooks/04-validation-workloads.yml
 +++ b/playbooks/04-validation-workloads.yml
 @@ -47,11 +47,22 @@
@@ -482,7 +717,7 @@ index 6b69b6f..fe24199 100644
          dest: "{{ migration_run_dir }}/validation-config.json"
          mode: '0600'
 -        content: "{{ {'run': migration_run_id, 'ew_matrix_enabled': validation_ew_matrix_enabled | bool, 'ns': {'enabled': validation_ns_enabled | bool, 'diagnostics_enabled': ns_diagnostics_enabled | bool, 'preserve_snat_source_port': ns_preserve_snat_source_port | bool, 'capture_interface': ns_capture_interface, 'network_hosts': groups['network'], 'endpoint_ip': ns_endpoint_ip, 'external_cidr': ns_external_cidr, 'external_gateway': ns_external_gateway, 'snat_ip': ns_router_ip, 'fip_ip': ns_floating_ip, 'physnet': ns_physnet, 'mtu': ns_underlay_mtu | int, 'tenant_cidr': ns_tenant_cidr, 'outbound_ip': ns_outbound_ip, 'inbound_ip': ns_inbound_ip, 'port': ns_tcp_port | int}, 'placement_enabled': true, 'placement': validation_placement_runtime, 'pair_d_enabled': validation_pair_d_enabled | bool, 'pair_d_network_host': groups['network'][0], 'tcp_old_port': validation_tcp_old_port | int, 'tcp_new_port': validation_tcp_new_port | int, 'tcp_control_port': validation_tcp_control_port | int, 'tcp_interval': validation_tcp_interval_seconds | float, 'tcp_timeout': validation_tcp_timeout_seconds | float, 'image': validation_prerequisites_runtime.image.id, 'flavor': validation_prerequisites_runtime.flavor.id, 'prefix': validation_name_prefix, 'cidrs': {'pre': validation_pre_cidrs, 'post': validation_post_cidrs}, 'interval': dataplane_probe_interval_seconds | float, 'lifetime': validation_probe_lifetime_seconds | int, 'timeout': validation_timeout_seconds | int, 'console_interval': validation_console_poll_seconds | float, 'console_tail_lines': validation_console_tail_lines | int, 'dhcp_t1': validation_dhcp_t1_seconds | int, 'dhcp_t2': validation_dhcp_t2_seconds | int, 'dhcp_renewal_tolerance': validation_dhcp_renewal_tolerance_seconds | float, 'dhcp_timeout': validation_dhcp_convergence_timeout | int, 'target_mtu': target_geneve_mtu | int, 'source_mtu': (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int), 'allow_pre_cutover_guest_reboot': validation_allow_pre_cutover_guest_reboot | bool, 'allow_post_cutover_guest_reboot': validation_allow_post_cutover_guest_reboot | bool, 'post_cutover_timeout': validation_post_cutover_dhcp_timeout_seconds | int, 'post_cutover_dhcp_enabled': true, 'capture_enabled': true, 'capture_directory': validation_capture_directory, 'inventory': kolla_inventory_runtime, 'ovn_cli_host': ovn_cli_host_runtime} | to_nice_json }}"
-+        content: "{{ {'run': migration_run_id, 'ew_matrix_enabled': validation_ew_matrix_enabled | bool, 'ns': {'enabled': validation_ns_enabled | bool, 'diagnostics_enabled': ns_diagnostics_enabled | bool, 'preserve_snat_source_port': ns_preserve_snat_source_port | bool, 'capture_interface': ns_capture_interface, 'network_hosts': groups['network'], 'endpoint_ip': ns_endpoint_ip, 'external_cidr': ns_external_cidr, 'external_gateway': ns_external_gateway, 'snat_ip': ns_router_ip, 'fip_ip': ns_floating_ip, 'physnet': ns_physnet, 'mtu': ns_underlay_mtu | int, 'tenant_cidr': ns_tenant_cidr, 'outbound_ip': ns_outbound_ip, 'inbound_ip': ns_inbound_ip, 'port': ns_tcp_port | int, 'new_port': ns_tcp_new_port | int, 'control_port': ns_tcp_control_port | int, 'icmp_enabled': ns_icmp_enabled | bool}, 'placement_enabled': true, 'placement': validation_placement_runtime, 'pair_d_enabled': validation_pair_d_enabled | bool, 'pair_d_network_host': groups['network'][0], 'tcp_old_port': validation_tcp_old_port | int, 'tcp_new_port': validation_tcp_new_port | int, 'tcp_control_port': validation_tcp_control_port | int, 'tcp_interval': validation_tcp_interval_seconds | float, 'tcp_timeout': validation_tcp_timeout_seconds | float, 'image': validation_prerequisites_runtime.image.id, 'flavor': validation_prerequisites_runtime.flavor.id, 'prefix': validation_name_prefix, 'cidrs': {'pre': validation_pre_cidrs, 'post': validation_post_cidrs}, 'interval': dataplane_probe_interval_seconds | float, 'lifetime': validation_probe_lifetime_seconds | int, 'timeout': validation_timeout_seconds | int, 'console_interval': validation_console_poll_seconds | float, 'console_tail_lines': validation_console_tail_lines | int, 'dhcp_t1': validation_dhcp_t1_seconds | int, 'dhcp_t2': validation_dhcp_t2_seconds | int, 'dhcp_renewal_tolerance': validation_dhcp_renewal_tolerance_seconds | float, 'dhcp_timeout': validation_dhcp_convergence_timeout | int, 'target_mtu': target_geneve_mtu | int, 'source_mtu': (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int), 'allow_pre_cutover_guest_reboot': validation_allow_pre_cutover_guest_reboot | bool, 'allow_post_cutover_guest_reboot': validation_allow_post_cutover_guest_reboot | bool, 'post_cutover_timeout': validation_post_cutover_dhcp_timeout_seconds | int, 'post_cutover_dhcp_enabled': true, 'capture_enabled': true, 'capture_directory': validation_capture_directory, 'inventory': kolla_inventory_runtime, 'ovn_cli_host': ovn_cli_host_runtime} | to_nice_json }}"
++        content: "{{ {'run': migration_run_id, 'ew_matrix_enabled': validation_ew_matrix_enabled | bool, 'ns': {'enabled': validation_ns_enabled | bool, 'diagnostics_enabled': ns_diagnostics_enabled | bool, 'preserve_snat_source_port': ns_preserve_snat_source_port | bool, 'capture_interface': ns_capture_interface, 'network_hosts': groups['network'], 'endpoint_ip': ns_endpoint_ip, 'external_cidr': ns_external_cidr, 'external_gateway': ns_external_gateway, 'snat_ip': ns_router_ip, 'fip_ip': ns_floating_ip, 'physnet': ns_physnet, 'mtu': ns_underlay_mtu | int, 'tenant_cidr': ns_tenant_cidr, 'outbound_ip': ns_outbound_ip, 'inbound_ip': ns_inbound_ip, 'port': ns_tcp_port | int, 'new_port': ns_tcp_new_port | int, 'control_port': ns_tcp_control_port | int, 'icmp_enabled': ns_icmp_enabled | bool, 'icmp_sender_logging_enabled': true}, 'placement_enabled': true, 'placement': validation_placement_runtime, 'pair_d_enabled': validation_pair_d_enabled | bool, 'pair_d_network_host': groups['network'][0], 'tcp_old_port': validation_tcp_old_port | int, 'tcp_new_port': validation_tcp_new_port | int, 'tcp_control_port': validation_tcp_control_port | int, 'tcp_interval': validation_tcp_interval_seconds | float, 'tcp_timeout': validation_tcp_timeout_seconds | float, 'image': validation_prerequisites_runtime.image.id, 'flavor': validation_prerequisites_runtime.flavor.id, 'prefix': validation_name_prefix, 'cidrs': {'pre': validation_pre_cidrs, 'post': validation_post_cidrs}, 'interval': dataplane_probe_interval_seconds | float, 'lifetime': validation_probe_lifetime_seconds | int, 'timeout': validation_timeout_seconds | int, 'console_interval': validation_console_poll_seconds | float, 'console_tail_lines': validation_console_tail_lines | int, 'dhcp_t1': validation_dhcp_t1_seconds | int, 'dhcp_t2': validation_dhcp_t2_seconds | int, 'dhcp_renewal_tolerance': validation_dhcp_renewal_tolerance_seconds | float, 'dhcp_timeout': validation_dhcp_convergence_timeout | int, 'target_mtu': target_geneve_mtu | int, 'source_mtu': (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int), 'allow_pre_cutover_guest_reboot': validation_allow_pre_cutover_guest_reboot | bool, 'allow_post_cutover_guest_reboot': validation_allow_post_cutover_guest_reboot | bool, 'post_cutover_timeout': validation_post_cutover_dhcp_timeout_seconds | int, 'post_cutover_dhcp_enabled': true, 'capture_enabled': true, 'capture_directory': validation_capture_directory, 'inventory': kolla_inventory_runtime, 'ovn_cli_host': ovn_cli_host_runtime} | to_nice_json }}"
        when:
          - validation_workloads_enabled | bool
          - not (validation_retry_preparation_runtime | default(false) | bool)
@@ -491,7 +726,7 @@ index 6b69b6f..fe24199 100644
 +      ansible.builtin.copy:
 +        dest: "{{ migration_run_dir }}/diagnostics-config.json"
 +        mode: '0600'
-+        content: "{{ {'enabled': migration_diagnostics_enabled | bool, 'directory': migration_diagnostics_directory, 'lifetime': migration_diagnostics_lifetime_seconds | int, 'max_bytes': migration_diagnostics_max_bytes | int, 'tunnel_interface': hostvars['localhost'].get('source_kolla_globals', {}).get('tunnel_interface', 'eth1'), 'external_interface': migration_diagnostics_external_interface, 'ns_enabled': validation_ns_enabled | bool, 'endpoint_ip': ns_endpoint_ip, 'old_port': ns_tcp_port | int, 'new_port': ns_tcp_new_port | int} | to_nice_json }}"
++        content: "{{ {'enabled': migration_diagnostics_enabled | bool, 'directory': migration_diagnostics_directory, 'lifetime': migration_diagnostics_lifetime_seconds | int, 'max_bytes': migration_diagnostics_max_bytes | int, 'reconnect_attempts': migration_diagnostics_reconnect_attempts | int, 'reconnect_window_seconds': migration_diagnostics_reconnect_window_seconds | int, 'tunnel_interface': hostvars['localhost'].get('source_kolla_globals', {}).get('tunnel_interface', 'eth1'), 'external_interface': migration_diagnostics_external_interface, 'ns_enabled': validation_ns_enabled | bool, 'endpoint_ip': ns_endpoint_ip, 'old_port': ns_tcp_port | int, 'new_port': ns_tcp_new_port | int} | to_nice_json }}"
 +    - name: Start bounded host observers before workload creation
 +      ansible.builtin.command:
 +        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", start, "{{ migration_run_dir }}", --role, core]
@@ -764,7 +999,7 @@ index 0000000..2614aa1
 +        content: "{{ ns_control_reply.stdout | trim | from_json | to_nice_json }}"
 +        mode: '0600'
 diff --git a/reset-lab-to-ovs.yml b/reset-lab-to-ovs.yml
-index 7727b43..d3bcb62 100644
+index 7727b43..0245bb7 100644
 --- a/reset-lab-to-ovs.yml
 +++ b/reset-lab-to-ovs.yml
 @@ -52,6 +52,7 @@
@@ -775,7 +1010,15 @@ index 7727b43..d3bcb62 100644
            - groups['control'] | sort == ['controller']
            - groups['network'] | sort == ['network1']
            - groups['compute'] | sort == ['compute1', 'compute2']
-@@ -264,6 +265,15 @@
+@@ -251,6 +252,7 @@
+           - "{{ playbook_dir }}/scripts/reset_local_probes.py"
+           - "{{ reset_backup_root_runtime }}"
+           - "{{ reset_run_dir }}/local-probes-stop.json"
++          - --interrupt-legacy-client
+       register: reset_local_probes
+       changed_when: reset_local_probes.rc == 0 and (reset_local_probes.stdout | from_json).stopped | length > 0
+ 
+@@ -264,6 +266,15 @@
            - "{{ reset_run_dir }}/ns-diagnostic-captures-stop.json"
        changed_when: false
  
@@ -791,7 +1034,7 @@ index 7727b43..d3bcb62 100644
      - name: Run kolla-ansible destroy
        ansible.builtin.shell: |
          set -euo pipefail
-@@ -545,6 +555,7 @@
+@@ -545,6 +556,7 @@
  
            nova_compute_virt_type: "qemu"
            nova_console: "novnc"
@@ -799,7 +1042,7 @@ index 7727b43..d3bcb62 100644
  
            ###############################################################################
            # OpenStack services
-@@ -713,6 +724,12 @@
+@@ -713,6 +725,12 @@
        register: reset_rabbitmq_log_offset
        changed_when: false
  
@@ -812,7 +1055,7 @@ index 7727b43..d3bcb62 100644
      - name: Deploy OpenStack
        ansible.builtin.shell: |
          set -euo pipefail
-@@ -730,6 +747,18 @@
+@@ -730,6 +748,18 @@
          mode: '0600'
          content: "{{ {'rc': reset_deploy.rc, 'inventory': reset_kolla_inventory} | to_nice_json }}"
  
@@ -831,7 +1074,7 @@ index 7727b43..d3bcb62 100644
      - name: Wait for stable live RabbitMQ queues and a quiet Raft window
        ansible.builtin.command:
          argv:
-@@ -769,6 +798,30 @@
+@@ -769,6 +799,30 @@
          mode: '0600'
          content: "{{ reset_rabbitmq_raft_errors.stdout | default('') }}\n"
  
@@ -862,7 +1105,7 @@ index 7727b43..d3bcb62 100644
      - name: Show RabbitMQ diagnostics after deploy attempt
        ansible.builtin.debug:
          msg:
-@@ -776,6 +829,8 @@
+@@ -776,6 +830,8 @@
            - "RabbitMQ live readiness rc={{ reset_rabbitmq_health.rc }}"
            - "{{ reset_rabbitmq_health.stdout | default('') }}"
            - "{{ reset_rabbitmq_health.stderr | default('') }}"
@@ -871,7 +1114,7 @@ index 7727b43..d3bcb62 100644
            - "Live queue/quorum samples: {{ reset_run_dir }}/rabbitmq-health.json"
            - "Earlier deploy-time Raft errors (retained; live recovery decides readiness):"
            - "{{ reset_rabbitmq_raft_errors.stdout_lines | default([]) }}"
-@@ -784,10 +839,11 @@
+@@ -784,10 +840,11 @@
        ansible.builtin.assert:
          that:
            - reset_deploy.rc == 0
@@ -904,10 +1147,10 @@ index b547a94..df2076e 100644
  - import_playbook: playbooks/10-restore-neutron.yml
 diff --git a/scripts/diagnostics_control.py b/scripts/diagnostics_control.py
 new file mode 100644
-index 0000000..69b3af1
+index 0000000..e9d792e
 --- /dev/null
 +++ b/scripts/diagnostics_control.py
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,182 @@
 +#!/usr/bin/env python3
 +"""Coordinate run-owned host observers and archive even failed collection attempts."""
 +import argparse
@@ -1043,12 +1286,14 @@ index 0000000..69b3af1
 +        rows.append(dict(host=entry['host'], role=entry['role'], archive=str(state_path.parent.relative_to(root)),
 +            status='PASS' if state.get('status') == 'STOPPED' and not state.get('errors') else 'UNAVAILABLE',
 +            errors=state.get('errors', ['No archived final state']), jobs=state.get('jobs', {}),
++            coverage=state.get('coverage', 'UNAVAILABLE'),
 +            preparation_segments=entry.get('segments', [])))
 +    roles = {row['role'] for row in rows}
 +    result = dict(status='PASS' if rows and roles == {'core', 'central'} and all(
 +        r['status'] == 'PASS' for r in rows) else 'UNAVAILABLE', collectors=rows,
 +        collected_at=time.time(), read_only_network_state=True,
-+        limits=dict(max_bytes_per_collector=cfg['max_bytes'], lifetime_seconds=cfg['lifetime']),
++        limits=dict(max_bytes_per_collector=cfg['max_bytes'], lifetime_seconds=cfg['lifetime'],
++            reconnect_attempts=cfg.get('reconnect_attempts', 8), reconnect_window_seconds=cfg.get('reconnect_window_seconds', 60)),
 +        timestamp_scope='Observer receive time plus native source log/PCAP timestamps; inspect clock-offset snapshots',
 +        coverage_scope='Current observation segment begins before cutover; preparation gaps and earlier segments are retained explicitly',
 +        interpretation='Temporal correlation is evidence, not automatic proof of causality')
@@ -1089,7 +1334,7 @@ index 0000000..69b3af1
 +if __name__ == '__main__':
 +    main()
 diff --git a/scripts/extended_validation.py b/scripts/extended_validation.py
-index 17887f6..aed1f95 100644
+index 17887f6..ee09edf 100644
 --- a/scripts/extended_validation.py
 +++ b/scripts/extended_validation.py
 @@ -3,6 +3,8 @@
@@ -1101,7 +1346,17 @@ index 17887f6..aed1f95 100644
  from pathlib import Path
  import subprocess
  import time
-@@ -316,9 +318,19 @@ class Extended:
+@@ -246,6 +248,9 @@ class Extended:
+ 
+     def console_rows(self, vm, prefix):
+         output = self.v.console_output(vm['server'], time.monotonic()+self.cfg['timeout'])
++        if prefix == 'OVN_NS_JSON ':
++            from ns_icmp_logging import mirror_console
++            mirror_console(self.root, output, self.cfg['run'])
+         rows = []
+         for line in output.splitlines():
+             if prefix in line:
+@@ -316,9 +321,21 @@ class Extended:
              raise RuntimeError('EW matrix evidence incomplete')
  
      def ns_config(self, **fields):
@@ -1118,13 +1373,15 @@ index 17887f6..aed1f95 100644
 +            if fields.get('label'):
 +                cfg.update(icmp_enabled=ns.get('icmp_enabled', True),
 +                    icmp_interval=self.cfg.get('interval', .2))
++                cfg['icmp_output'] = (str(self.root/'ns/fip-icmp-sender.jsonl') if fields['label'] == 'fip'
++                    else '/var/lib/ovn-migration-icmp/'+self.cfg['run']+'/snat-icmp-sender.jsonl')
 +            if fields.get('label') == 'fip':
 +                cfg['control_bind'] = '127.0.0.1'
 +        return cfg
  
      def local_process(self, role, action, cfg):
          journal = self.state.setdefault('processes', {})
-@@ -346,13 +358,25 @@ class Extended:
+@@ -346,13 +363,25 @@ class Extended:
              dict(path='/etc/ns-probe.json', content=json.dumps(cfg), permissions='0600'),
              dict(path='/etc/systemd/system/ns-probe.service', content=unit)],
              runcmd=[['systemctl', 'enable', '--now', 'ns-probe']])
@@ -1150,7 +1407,7 @@ index 17887f6..aed1f95 100644
          prefix = self.cfg['prefix']+'-'+self.cfg['run']+'-ns'
          ext = self.resource(s, 'external_network', 'network', prefix+'-external',
              is_router_external=True, provider_network_type='flat', provider_physical_network=cfg['physnet'], mtu=cfg['mtu'])
-@@ -366,8 +390,12 @@ class Extended:
+@@ -366,8 +395,12 @@ class Extended:
                              ip_version=4, is_dhcp_enabled=True)
          sg = self.resource(s, 'security_group', 'security_group', prefix+'-security')
          rules = list(self.cloud.network.security_group_rules(security_group_id=sg.id))
@@ -1165,7 +1422,7 @@ index 17887f6..aed1f95 100644
              if not any(r.direction == 'ingress' and r.protocol == protocol and r.ether_type == 'IPv4' and
                         r.remote_ip_prefix == remote and (port is None or r.port_range_min == r.port_range_max == port) for r in rules):
                  attrs = dict(security_group_id=sg.id, direction='ingress', ether_type='IPv4', protocol=protocol, remote_ip_prefix=remote)
-@@ -433,6 +461,67 @@ class Extended:
+@@ -433,6 +466,67 @@ class Extended:
              gateway_ports=[dict(id=p.id, mac=p.mac_address, fixed_ips=p.fixed_ips) for p in ports],
              required_ips=[cfg['snat_ip'], cfg['fip_ip']], scope='Reachability gate validates the mentor-managed outer policy'))
  
@@ -1233,7 +1490,7 @@ index 17887f6..aed1f95 100644
      def ns_snapshot(self):
          s = self.state['ns']
          cfg = self.cfg['ns']
-@@ -495,7 +584,15 @@ class Extended:
+@@ -495,7 +589,15 @@ class Extended:
                      continue
                  if prior and any(row.get(k) != prior.get(k) for k in ('boot', 'probe_id')):
                      raise RuntimeError(direction+' client rebooted/restarted')
@@ -1249,7 +1506,7 @@ index 17887f6..aed1f95 100644
                      if stats['held_broken'] and not post:
                          raise RuntimeError(direction+' held socket closed; reconnect prohibited')
                      if stats['consecutive_successes'] < 5 or stats['open_failure_since'] is not None:
-@@ -515,11 +612,25 @@ class Extended:
+@@ -515,11 +617,27 @@ class Extended:
                      if stream == 'held' and stats['first_session'] != stats['last_session'] and not post:
                          raise RuntimeError('Held session identity changed')
                      if prior:
@@ -1264,6 +1521,8 @@ index 17887f6..aed1f95 100644
 +                    ping = row.get('icmp') or {}
 +                    if not ping.get('alive') or ping.get('replies', 0) < 5:
 +                        errors.append(direction+'/ICMP ping health unavailable')
++                    if self.cfg['ns'].get('icmp_sender_logging_enabled') and (not ping.get('log_id') or ping.get('log_error')):
++                        errors.append(direction+'/ICMP sender logging unavailable: '+str(ping.get('log_error')))
 +                    # Guest monotonic is a different clock; compare within its own summary.
 +                    if row.get('mono', 0)-(ping.get('last_reply_mono') or 0) > 3:
 +                        errors.append(direction+'/ICMP not recovered')
@@ -1277,7 +1536,7 @@ index 17887f6..aed1f95 100644
              before = baseline.get('resources')
              if before and any(snapshot.get(k) != before.get(k) for k in snapshot if k != 'tenant_type'):
                  raise RuntimeError('N-S resource preservation failed')
-@@ -548,7 +659,7 @@ class Extended:
+@@ -548,7 +666,7 @@ class Extended:
              continuity = all(row.get(k) == old_row.get(k) for k in ('boot', 'probe_id'))
              streams = {}
              for name, stats in row.get('streams', {}).items():
@@ -1286,7 +1545,7 @@ index 17887f6..aed1f95 100644
                  attempts = stats['attempts']-old['attempts'] if continuity else None
                  failed = stats['failures']-old['failures'] if continuity else None
                  bursts = [b for b in stats['recovered_failure_bursts'] if b['start_mono'] >= old_row['mono']] if continuity else []
-@@ -558,21 +669,28 @@ class Extended:
+@@ -558,21 +676,28 @@ class Extended:
                  if direction == 'snat' and name == 'held' and self.cfg['ns'].get('preserve_snat_source_port'):
                      held = held and snat_source_port_status(old) == 'PASS' and port_status == 'PASS'
                  ready = continuity and held and attempts and attempts > 0 and stats['consecutive_successes'] >= 5 and stats['open_failure_since'] is None
@@ -1322,10 +1581,10 @@ index 17887f6..aed1f95 100644
              scope='Fresh pre-migration baseline summary to final recovered summary, client monotonic application probes; no held reconnect', baseline=baseline,
 diff --git a/scripts/migration_diagnostics.py b/scripts/migration_diagnostics.py
 new file mode 100644
-index 0000000..5caaf7e
+index 0000000..119891e
 --- /dev/null
 +++ b/scripts/migration_diagnostics.py
-@@ -0,0 +1,394 @@
+@@ -0,0 +1,482 @@
 +#!/usr/bin/env python3
 +"""Bounded host-side observers. No flow, NAT, binding or network configuration writes."""
 +import argparse
@@ -1378,6 +1637,10 @@ index 0000000..5caaf7e
 +        raise ValueError('Invalid collector role/directory')
 +    if not 30 <= cfg['lifetime'] <= 86400 or not 1048576 <= cfg['max_bytes'] <= 1073741824:
 +        raise ValueError('Invalid collector lifetime/byte budget')
++    if (type(cfg.get('reconnect_attempts', 8)) is not int or
++            not 0 <= cfg.get('reconnect_attempts', 8) <= 20 or
++            not 1 <= cfg.get('reconnect_window_seconds', 60) <= 300):
++        raise ValueError('Invalid observer reconnect budget')
 +    for key in ('tunnel_interface', 'external_interface'):
 +        if cfg.get(key) and not re.fullmatch(r'[A-Za-z0-9_.:-]{1,32}', cfg[key]):
 +            raise ValueError('Unsafe capture interface')
@@ -1430,7 +1693,7 @@ index 0000000..5caaf7e
 +                continue
 +            available = schema['tables'][table]['columns']
 +            columns = ['_uuid']+[c for c in columns if c in available]
-+            jobs[label+'-'+table] = dict(container='ovn_northd', args=['ovsdb-client',
++            jobs[label+'-'+table] = dict(container='ovn_northd', reconnect=True, args=['ovsdb-client',
 +                '--timestamp', '--format=json', 'monitor', uri, database, table, ','.join(columns)])
 +    return jobs, schemas
 +
@@ -1445,11 +1708,11 @@ index 0000000..5caaf7e
 +        jobs['systemd-journal'] = dict(optional=True, args=['journalctl', '--follow', '--since', 'now',
 +            '--no-pager', '--output=json']+[item for unit in units for item in ('-u', unit)])
 +    if cfg.get('chassis'):
-+        jobs['ovsdb-local'] = dict(container='openvswitch_vswitchd', args=['ovsdb-client',
++        jobs['ovsdb-local'] = dict(container='openvswitch_vswitchd', reconnect=True, args=['ovsdb-client',
 +            '--timestamp', '--format=json', 'monitor', 'unix:/run/openvswitch/db.sock', 'Open_vSwitch', 'ALL'])
 +        # Flow monitor is a service connection; it never becomes the primary controller.
-+        # OF1.0 Nicira watch works beside the OF1.5 OVN controller without changing Bridge.protocols.
-+        jobs['openflow-watch'] = dict(container='openvswitch_vswitchd', args=['ovs-ofctl',
++        # Bridge/controller reconfiguration can close this service connection.
++        jobs['openflow-watch'] = dict(container='openvswitch_vswitchd', reconnect=True, args=['ovs-ofctl',
 +            '--timestamp', '-O', 'OpenFlow10', 'monitor', 'br-int', 'watch:!initial'])
 +        jobs['tunnel-pcap'] = dict(args=['tcpdump', '-n', '-U', '-s', '0', '-i', cfg['tunnel_interface'],
 +            '-w', str(root/'tunnel.pcap'), 'udp port 4789 or udp port 6081'])
@@ -1469,6 +1732,9 @@ index 0000000..5caaf7e
 +        self.lock = threading.Lock()
 +        self.stop = threading.Event()
 +        self.children = {}
++        self.segments = {}
++        self.gaps = {}
++        self.reconnect_counts = {}
 +        self.offsets = {}
 +        self.errors = []
 +        self.events = self.root/'events.jsonl'
@@ -1481,28 +1747,84 @@ index 0000000..5caaf7e
 +            f.write(json.dumps(dict(run=self.cfg['run'], host=self.cfg['host'],
 +                boot=self.boot, ts=time.time(), mono=time.monotonic(), event=name, **value))+'\n')
 +
-+    def start_job(self, name, spec):
++    def start_job(self, name, spec, gap=None):
 +        token = uuid.uuid4().hex
 +        args = list(spec['args'])
++        if gap and name == 'openflow-watch':
++            args[-1] = 'watch:'  # Retain the new connection's initial flow snapshot.
 +        if spec.get('container'):
 +            args = ['docker', 'exec', '-e', 'MIGRATION_DIAG_TOKEN='+token, spec['container'],
 +                'sh', '-c', 'echo DIAG_PID=$$; exec "$@"', 'sh']+args
 +        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
 +            text=True, errors='replace', bufsize=1, start_new_session=True)
-+        row = dict(spec=spec, token=token, process=proc, identity=identity(proc.pid), inner_pid=None)
++        row = dict(spec=spec, token=token, process=proc, identity=identity(proc.pid), inner_pid=None,
++            started_at=time.time(), started_mono=time.monotonic(), connected_at=None,
++            last_output_at=None, gap=gap, segment=len(self.segments.get(name, [])))
 +        self.children[name] = row
-+        self.record('observer-start', observer=name, command=spec['args'])
++        self.segments.setdefault(name, []).append(row)
++        self.record('observer-start', observer=name, segment=row['segment'], command=args[-len(spec['args']):])
 +        def output():
 +            with (self.root/(name+'.jsonl')).open('a') as f:
 +                for line in proc.stdout:
 +                    if line.startswith('DIAG_PID=') and line.strip()[9:].isdigit():
 +                        row['inner_pid'] = int(line.strip()[9:])
 +                    else:
-+                        f.write(json.dumps(dict(ts=time.time(), mono=time.monotonic(), text=line.rstrip()))+'\n')
++                        now, mono = time.time(), time.monotonic()
++                        row['last_output_at'] = now
++                        f.write(json.dumps(dict(ts=now, mono=mono, segment=row['segment'], text=line.rstrip()))+'\n')
 +                        f.flush()
++                        ready = ('FLOW_MONITOR reply' in line if name == 'openflow-watch'
++                                 else line.lstrip().startswith(('{', '[')))
++                        if spec.get('reconnect') and ready and row['connected_at'] is None:
++                            row['connected_at'] = now
++                            if gap and gap.get('end_timestamp') is None:
++                                gap.update(end_timestamp=now, duration_seconds=mono-gap['detected_mono'])
++                                self.record('observer-reconnected', observer=name, segment=row['segment'], gap=dict(gap))
 +        thread = threading.Thread(target=output, daemon=True)
 +        row['thread'] = thread
 +        thread.start()
++
++    def reconnect_jobs(self, executor):
++        """Restart only observer connections; retain every gap as incomplete coverage."""
++        for name, row in list(self.children.items()):
++            if row['process'].poll() is None:
++                if row.get('gap') and row.get('connected_at') is None and time.monotonic()-row['started_mono'] >= 10:
++                    self.stop_job(name, row, verify=True)
++                    self.record('observer-reconnect-ack-timeout', observer=name, segment=row['segment'])
++                    continue
++                if row.get('gap') and row.get('connected_at') and not row.get('snapshot_queued'):
++                    row['snapshot_queued'] = True
++                    executor.submit(self.snapshot, 'observer-reconnected-'+name)
++                continue
++            gap = row.get('gap')
++            if not row.get('gap_reported'):
++                row['gap_reported'] = True
++                if not gap or gap.get('end_timestamp') is not None:
++                    gap = dict(detected_at=time.time(), detected_mono=time.monotonic(),
++                        last_output_at=row.get('last_output_at'), end_timestamp=None, duration_seconds=None,
++                        rc=row['process'].returncode, segment=row['segment'])
++                    self.gaps.setdefault(name, []).append(gap)
++                    row['gap'] = gap
++                if not row['spec'].get('optional') and name not in self.errors:
++                    self.errors.append(name)
++                self.record('observer-gap', observer=name, gap=dict(gap))
++            if not row['spec'].get('reconnect') or row.get('reconnect_exhausted'):
++                continue
++            count = self.reconnect_counts.get(name, 0)
++            if (count >= self.cfg.get('reconnect_attempts', 8) or
++                    time.monotonic()-gap['detected_mono'] >= self.cfg.get('reconnect_window_seconds', 60)):
++                row['reconnect_exhausted'] = True
++                self.record('observer-reconnect-exhausted', observer=name, attempts=count, gap=dict(gap))
++                continue
++            if time.monotonic() < row.setdefault('retry_at', time.monotonic()+min(8, 2**count)):
++                continue
++            if not self.stop_job(name, row, verify=True):
++                row['retry_at'] = time.monotonic()+min(8, 2**count)
++                self.reconnect_counts[name] = count+1
++                self.record('observer-reconnect-cleanup-unproven', observer=name, attempts=count+1)
++                continue
++            self.reconnect_counts[name] = count+1
++            self.start_job(name, row['spec'], gap=gap)
 +
 +    def tail_logs(self):
 +        patterns = tuple('/var/log/kolla/'+service+'/'+pattern for service in
@@ -1566,14 +1888,37 @@ index 0000000..5caaf7e
 +                result['stdout'] = '\n'.join(line for line in result['stdout'].splitlines() if endpoint and endpoint in line)
 +            self.record('sample', source=name, result=result)
 +
-+    def stop_job(self, name, row):
++    def stop_job(self, name, row, verify=False):
 +        proc, spec = row['process'], row['spec']
-+        if spec.get('container') and row.get('inner_pid'):
-+            # Guard against PID reuse: signal only the process bearing this launch's secret token.
-+            code = 'p="$1"; t="$2"; test -r /proc/"$p"/environ || exit 0; tr "\\000" "\\n" < /proc/"$p"/environ | grep -Fx "MIGRATION_DIAG_TOKEN=$t" >/dev/null && kill -TERM "$p"'
++        retired = True
++        if spec.get('container') and (row.get('inner_pid') or verify):
++            # A lost docker exec may leave an orphan. Match only this launch's
++            # unique environment token, even when its PID acknowledgement was lost.
++            code = '''t="$2"
++matches() { test -r "/proc/$1/environ" && tr '\\000' '\\n' 2>/dev/null < "/proc/$1/environ" | grep -Fx "MIGRATION_DIAG_TOKEN=$t" >/dev/null; }
++owned=""
++if test -n "$1"; then
++ p="$1"; test -d "/proc/$p" || exit 0
++ current_env=$(tr '\\000' '\\n' 2>/dev/null < "/proc/$p/environ") || exit 1
++ printf '%s\\n' "$current_env" | grep -Fx "MIGRATION_DIAG_TOKEN=$t" >/dev/null || exit 0
++ owned="$p"
++else
++ for d in /proc/[0-9]*; do p="${d##*/}"; if matches "$p"; then owned="$owned $p"; fi; done
++fi
++for p in $owned; do if matches "$p"; then kill -TERM "$p" 2>/dev/null || true; fi; done
++for n in 1 2 3 4 5 6 7 8 9 10; do
++ left=0; for p in $owned; do if matches "$p"; then left=1; fi; done
++ test "$left" = 0 && exit 0
++ sleep 0.1
++done
++for p in $owned; do if matches "$p"; then kill -KILL "$p" 2>/dev/null || true; fi; done
++sleep 0.1
++for p in $owned; do if matches "$p"; then exit 1; fi; done
++exit 0'''
 +            result = command(['docker', 'exec', spec['container'], 'sh', '-c', code,
-+                              'sh', str(row['inner_pid']), row['token']])
++                              'sh', str(row.get('inner_pid') or ''), row['token']])
 +            self.record('observer-inner-stop', observer=name, result=result)
++            retired = result.get('rc') == 0
 +        if proc.poll() is None:  # Unreaped Popen child cannot be replaced by an unrelated PID.
 +            proc.terminate()
 +            try:
@@ -1592,15 +1937,20 @@ index 0000000..5caaf7e
 +            if parsed['dropped_packets'] != 0:
 +                self.errors.append(name+': capture drop count unavailable/nonzero')
 +        self.record('observer-stop', observer=name, rc=proc.poll())
++        return retired and not row['thread'].is_alive()
 +
 +    def status(self, state='RUNNING'):
 +        jobs = {name: dict(identity=row['identity'], rc=row['process'].poll(),
 +            inner_pid=row.get('inner_pid'), container=row['spec'].get('container'),
-+            optional=row['spec'].get('optional', False), capture=row.get('capture'))
++            optional=row['spec'].get('optional', False), capture=row.get('capture'),
++            reconnect_attempts=self.reconnect_counts.get(name, 0), gaps=list(self.gaps.get(name, [])),
++            segments=[dict(segment=s['segment'], identity=s['identity'], started_at=s['started_at'],
++                connected_at=s.get('connected_at'), rc=s['process'].poll()) for s in self.segments.get(name, [])])
 +            for name, row in self.children.items()}
 +        return dict(status=state, run=self.cfg['run'], config=self.cfg,
 +            identity=identity(os.getpid()), heartbeat_ts=time.time(), jobs=jobs, errors=list(self.errors),
-+            stopped=state != 'RUNNING', finished_ts=time.time() if state != 'RUNNING' else None)
++            stopped=state != 'RUNNING', finished_ts=time.time() if state != 'RUNNING' else None,
++            coverage='GAPPED' if self.gaps else 'NO_OBSERVED_GAPS')
 +
 +    def run(self):
 +        signal.signal(signal.SIGTERM, lambda *_: self.stop.set())
@@ -1631,12 +1981,8 @@ index 0000000..5caaf7e
 +                    if not getattr(self, 'sample_future', None) or self.sample_future.done():
 +                        self.sample_future = executor.submit(self.sample)
 +                        self.last_sample = time.monotonic()
-+                for name, row in self.children.items():
-+                    if row['process'].poll() is not None and not row.get('gap_reported'):
-+                        row['gap_reported'] = True
-+                        if not row['spec'].get('optional'):
-+                            self.errors.append(name)
-+                        self.record('observer-gap', observer=name, rc=row['process'].returncode)
++                if not self.stop.is_set() and not (self.root/'stop.request').exists():
++                    self.reconnect_jobs(executor)
 +                size = sum(p.stat().st_size for p in self.root.iterdir() if p.is_file())
 +                if size >= self.cfg['max_bytes']:
 +                    self.errors.append('byte-budget-exhausted')
@@ -1652,7 +1998,8 @@ index 0000000..5caaf7e
 +            self.record('collector-error', error=str(exc))
 +        finally:
 +            for name, row in self.children.items():
-+                self.stop_job(name, row)
++                if not self.stop_job(name, row, verify=True):
++                    self.errors.append(name+': observer cleanup not proven')
 +            executor.shutdown(wait=True, cancel_futures=True)
 +            self.tail_logs()
 +            save(self.root/'state.json', self.status('UNAVAILABLE' if self.errors else 'STOPPED'))
@@ -1721,7 +2068,7 @@ index 0000000..5caaf7e
 +if __name__ == '__main__':
 +    main()
 diff --git a/scripts/migration_report.py b/scripts/migration_report.py
-index a49b0c3..b97589d 100644
+index a49b0c3..a42bc81 100644
 --- a/scripts/migration_report.py
 +++ b/scripts/migration_report.py
 @@ -43,6 +43,8 @@ def evidence(name):
@@ -1733,14 +2080,15 @@ index a49b0c3..b97589d 100644
  report['image_preflight']=[dict(json.loads(path.read_text()),
      evidence_directory=str(path.parent),
      image_identities={entry.name:json.loads(entry.read_text()) for entry in sorted(path.parent.glob('*.json')) if entry.name!='result.json'})
-@@ -94,6 +96,10 @@ matrix = evidence('ew-matrix-results.json') or {'status': 'UNAVAILABLE', 'flows'
+@@ -94,6 +96,11 @@ matrix = evidence('ew-matrix-results.json') or {'status': 'UNAVAILABLE', 'flows'
  report['ew_connectivity_matrix'] = {'status': matrix['status'] if cfg.get('ew_matrix_enabled') else 'PARTIAL',
      'flows': dict({'ew_different_compute_different_subnet': report['dataplane_probe']}, **matrix.get('flows', {}))}
  report['north_south'] = (evidence('ns-results.json') or {'status':'UNAVAILABLE'}) if cfg.get('ns', {}).get('enabled') else {'status':'DISABLED'}
 +report['north_south']['icmp_enabled'] = bool(cfg.get('ns', {}).get('icmp_enabled'))
 +report['north_south']['new_listener_enabled'] = bool(cfg.get('ns', {}).get('new_port'))
 +from traffic_timeline import build as build_traffic_timeline
-+report['traffic_timeline'] = build_traffic_timeline(root, report['north_south'])
++report['traffic_timeline'] = build_traffic_timeline(root, report['north_south'],
++    ew=report['ew_connectivity_matrix'], dataplane=report['dataplane_probe'], tcp=report['pair_d_tcp'])
  report['north_south_diagnostics'] = (evidence('ns-diagnostics.json') or {'status':'UNAVAILABLE'}) if cfg.get('ns', {}).get('diagnostics_enabled') and cfg.get('ns', {}).get('enabled') else {'status':'DISABLED'}
  report['extended_cleanup'] = (evidence('extended-cleanup.json') or {}).get('status', 'NOT TESTED') if cfg.get('ew_matrix_enabled') or cfg.get('ns', {}).get('enabled') else 'DISABLED'
  report['workload_capacity'] = evidence('workload-capacity.json')
@@ -1794,7 +2142,7 @@ index 0000000..a567b62
 +if __name__ == '__main__':
 +    main()
 diff --git a/scripts/ns_diagnostics.py b/scripts/ns_diagnostics.py
-index 20c0af0..020e7af 100644
+index 20c0af0..5f476df 100644
 --- a/scripts/ns_diagnostics.py
 +++ b/scripts/ns_diagnostics.py
 @@ -45,8 +45,16 @@ def checked_config(cfg):
@@ -1847,7 +2195,7 @@ index 20c0af0..020e7af 100644
              host = 'localhost'
              if kind == 'endpoint':
                  cfg['interface'] = ns['capture_interface']
-@@ -380,7 +395,16 @@ class Diagnostics:
+@@ -380,7 +395,25 @@ class Diagnostics:
              errors.append('Missing required diagnostic capture')
          save(self.root/'ns-diagnostics.json', dict(status='PASS' if not errors else 'UNAVAILABLE', errors=errors,
               captures=self.state['captures'], conntrack_transfer=False,
@@ -1856,9 +2204,18 @@ index 20c0af0..020e7af 100644
 +        if self.cfg['ns'].get('icmp_enabled'):
 +            from ns_icmp_evidence import finalize
 +            try:
-+                finalize(self.root)
++                # Final Nova-console refresh happens after capture stop, so a sender
++                # mirror can cover the last captured replies as well as the baseline.
++                if hasattr(self.x, 'ns_rows'):
++                    self.x.ns_rows()
++                outcomes = finalize(self.root)
++                if self.cfg['ns'].get('icmp_sender_logging_enabled'):
++                    for direction, outcome in outcomes.items():
++                        if outcome.get('sender_log', {}).get('status') != 'PASS':
++                            errors.append(direction+'/ICMP sender log: '+str(outcome.get('sender_log', {}).get('reason', 'unavailable')))
 +            except Exception as exc:
 +                errors.append('N-S ICMP evidence: '+str(exc))
++            if errors:
 +                result = json.loads((self.root/'ns-diagnostics.json').read_text())
 +                result.update(status='UNAVAILABLE', errors=errors)
 +                save(self.root/'ns-diagnostics.json', result)
@@ -1867,45 +2224,105 @@ index 20c0af0..020e7af 100644
  
 diff --git a/scripts/ns_icmp.py b/scripts/ns_icmp.py
 new file mode 100644
-index 0000000..42fe4e5
+index 0000000..d775dd7
 --- /dev/null
 +++ b/scripts/ns_icmp.py
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,124 @@
 +#!/usr/bin/env python3
 +"""One persistent, source-bound ping; raw PCAP remains authoritative for loss."""
++import json
++import os
++from pathlib import Path
 +import re
 +import subprocess
 +import threading
 +import time
++import uuid
++
++PREFIX = 'OVN_NS_ICMP_JSON '
 +
 +
 +class Ping:
-+    def __init__(self, cfg):
++    def __init__(self, cfg, publish=None):
 +        self.cfg = cfg
++        self.publish = publish
++        self.writer = None
++        self.boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
++        self.log_id = str(uuid.uuid4())
 +        self.stop = threading.Event()
 +        self.lock = threading.Lock()
 +        self.process = None
 +        self.value = dict(alive=False, replies=0, last_reply_mono=None,
-+                          started_ts=None, started_mono=None, error=None)
++                          started_ts=None, started_mono=None, error=None, log_id=self.log_id,
++                          last_event_index=0, log_error=None, log_bytes=0,
++                          outstanding_events=0, error_events=0)
++
++    def event(self, kind, **fields):
++        with self.lock:
++            self.value['last_event_index'] += 1
++            row = dict(schema_version=1, run=self.cfg['run'], label=self.cfg['label'], boot=self.boot,
++                log_id=self.log_id, ping_pid=self.value.get('pid'), event_index=self.value['last_event_index'],
++                observed_ts=time.time(), observed_mono=time.monotonic(), kind=kind, **fields)
++        data = json.dumps(row, sort_keys=True)+'\n'
++        try:
++            if self.writer:
++                if self.value['log_bytes']+len(data.encode()) > self.cfg.get('icmp_log_max_bytes', 67108864):
++                    raise ValueError('ICMP sender log byte budget exhausted; original ping continues')
++                self.writer.write(data)
++                self.writer.flush()
++                self.value['log_bytes'] += len(data.encode())
++        except (OSError, ValueError) as exc:
++            self.value['log_error'] = str(exc)
++        if self.publish:
++            try:
++                self.publish(row)
++            except Exception as exc:
++                self.value['log_error'] = 'ICMP console mirror: '+str(exc)
++
++    def output(self, line):
++        native = re.match(r'^\[(\d+\.\d+)\]\s*', line)
++        seq = re.search(r'icmp_seq[= ](\d+)', line)
++        kind = ('reply' if re.search(r'bytes from .*icmp_seq=\d+', line) else
++                'outstanding' if 'no answer yet for icmp_seq=' in line else
++                'error' if re.search(r'unreachable|sendmsg|not permitted|ping:', line, re.I) else 'output')
++        with self.lock:
++            if kind == 'reply':
++                self.value['replies'] += 1
++                self.value['last_reply_mono'] = time.monotonic()
++            elif kind == 'outstanding':
++                self.value['outstanding_events'] += 1
++            elif kind == 'error':
++                self.value['error_events'] += 1
++                self.value['last_error'] = line[:8192]
++        self.event(kind, native_ts=float(native[1]) if native else None,
++            icmp_sequence=int(seq[1]) if seq else None, text=line[:8192].rstrip())
 +
 +    def run(self):
 +        try:
++            try:
++                path = Path(self.cfg['icmp_output'])
++                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
++                self.writer = path.open('x')
++                path.chmod(0o600)
++                self.value['log_path'] = str(path)
++            except (OSError, KeyError) as exc:
++                self.value['log_error'] = str(exc)
 +            # -D is source wall time; payload/cadence match the EW packet test.
 +            self.process = subprocess.Popen(
 +                ['ping', '-n', '-D', '-O', '-I', self.cfg['source'], '-s', '56',
 +                 '-i', str(self.cfg.get('icmp_interval', .2)), self.cfg['target']],
-+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
++                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
++                env=dict(os.environ, LC_ALL='C'))
 +            with self.lock:
 +                self.value.update(alive=True, pid=self.process.pid,
 +                                  started_ts=time.time(), started_mono=time.monotonic())
++            self.event('start', source=self.cfg['source'], target=self.cfg['target'],
++                       interval_seconds=self.cfg.get('icmp_interval', .2))
 +            for line in self.process.stdout:
 +                if self.stop.is_set():
 +                    break
-+                if re.search(r'bytes from .*icmp_seq=\d+', line):
-+                    with self.lock:
-+                        self.value['replies'] += 1
-+                        self.value['last_reply_mono'] = time.monotonic()
-+                elif 'Operation not permitted' in line or 'Network is unreachable' in line:
++                self.output(line)
++                if 'Operation not permitted' in line or 'Network is unreachable' in line:
 +                    with self.lock:
 +                        self.value['error'] = line.strip()
 +            if not self.stop.is_set():
@@ -1916,6 +2333,9 @@ index 0000000..42fe4e5
 +                self.value['error'] = str(exc)
 +        finally:
 +            self.close()
++            self.event('end', returncode=self.process.poll() if self.process else None)
++            if self.writer:
++                self.writer.close()
 +
 +    def close(self):
 +        self.stop.set()
@@ -1934,16 +2354,17 @@ index 0000000..42fe4e5
 +            return dict(self.value)
 diff --git a/scripts/ns_icmp_evidence.py b/scripts/ns_icmp_evidence.py
 new file mode 100644
-index 0000000..981d2d5
+index 0000000..4c93c0b
 --- /dev/null
 +++ b/scripts/ns_icmp_evidence.py
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,85 @@
 +#!/usr/bin/env python3
 +"""N-S ICMP metrics from sender-side PCAP, avoiding translated ICMP identifiers."""
 +import json
 +from pathlib import Path
 +
 +from dataplane_capture import echo_rows, pcap_metrics, recovered_endpoint, save
++from ns_icmp_logging import sender_evidence
 +
 +
 +def finalize(root):
@@ -1969,8 +2390,6 @@ index 0000000..981d2d5
 +                raise ValueError('Capture completeness/drop count not proven')
 +            raw = root/'ns-diagnostics'/kind/'tcp.pcap'
 +            rows, problems = echo_rows(raw, source, peer)
-+            if problems:
-+                raise ValueError('; '.join(sorted(set(problems))))
 +            start_ts = baseline['clients'][direction]['ts']
 +            before = [r for r in rows if r['ts'] <= start_ts and r['reply_timestamp'] is not None]
 +            if not before:
@@ -1989,6 +2408,30 @@ index 0000000..981d2d5
 +            bursts = value.get('failure_bursts', [])
 +            value['total_downtime_seconds'] = (sum(b['duration_seconds'] for b in bursts)
 +                if value['status'] == 'PASS' else None)
++            sender = sender_evidence(root/'ns'/(direction+'-icmp-sender.jsonl'), cfg.get('run'), direction,
++                baseline['clients'][direction], start['timestamp'], end['reply_timestamp'] if end else None)
++            observations = sender.pop('sequence_observations', [])
++            discontinuities = []
++            for prior, current in zip(rows, rows[1:]):
++                if current['ts'] < start['timestamp'] or (end and current['ts'] > end['timestamp']):
++                    continue
++                delta = (current['icmp_sequence']-prior['icmp_sequence']) % 65536
++                if current['identifier'] == prior['identifier'] and delta == 1:
++                    continue
++                same_identifier = current['identifier'] == prior['identifier']
++                gap = dict(previous_request=prior, next_request=current,
++                    kind='sequence_gap_or_reset' if same_identifier else 'identifier_change',
++                    missing_request_count=delta-1 if same_identifier and 1 < delta < 32768 else None,
++                    sender_observations=[r for r in observations if same_identifier and 1 < delta < 32768 and
++                        prior['ts']-2 <= r['observed_ts'] <= current['ts']+2 and
++                        0 < (r['icmp_sequence']-prior['icmp_sequence']) % 65536 < delta])
++                discontinuities.append(gap)
++            value.update(sender_log=sender, request_discontinuities=discontinuities)
++            if value['status'] != 'PASS' and bursts:
++                value['observed_window'] = dict(certified=False,
++                    scope='Captured requests/replies only; missing sender requests remain unaccounted',
++                    first_failure_timestamp=value['first_failure_timestamp'], recovery_timestamp=value['recovery_timestamp'],
++                    failure_bursts=bursts)
 +        except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
 +            value.update(status='UNAVAILABLE', reason=str(exc))
 +        outcomes[direction] = value
@@ -2000,11 +2443,108 @@ index 0000000..981d2d5
 +    save(root/'ns-icmp-results.json', outcomes)
 +    save(path, result)
 +    return outcomes
+diff --git a/scripts/ns_icmp_logging.py b/scripts/ns_icmp_logging.py
+new file mode 100644
+index 0000000..49f14b5
+--- /dev/null
++++ b/scripts/ns_icmp_logging.py
+@@ -0,0 +1,91 @@
++"""Durable sender output and an explicitly checked Nova-console mirror.
++
++Ping output is secondary evidence of sequence/errors, not proof of wire sends.
++"""
++import fcntl
++import json
++import math
++from pathlib import Path
++
++PREFIX = 'OVN_NS_ICMP_JSON '
++
++
++def mirror_console(root, output, run):
++    rows = []
++    for line in output.splitlines():
++        if PREFIX not in line:
++            continue
++        try:
++            row = json.JSONDecoder().raw_decode(line.split(PREFIX, 1)[1])[0]
++            if row.get('run') == run and row.get('label') == 'snat':
++                rows.append(row)
++        except (TypeError, ValueError):
++            continue  # Missing event indices make the final mirror incomplete.
++    if not rows:
++        return
++    directory = Path(root)/'ns'
++    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
++    path = directory/'snat-icmp-sender.jsonl'
++    with path.open('a+') as stream:
++        fcntl.flock(stream, fcntl.LOCK_EX)
++        stream.seek(0)
++        seen = {line.strip() for line in stream if line.strip()}
++        stream.seek(0, 2)
++        for row in rows:
++            data = json.dumps(row, sort_keys=True)
++            if data not in seen:
++                if stream.tell()+len((data+'\n').encode()) > 67108864:
++                    raise ValueError('ICMP sender console mirror byte budget exhausted')
++                stream.write(data+'\n')
++                seen.add(data)
++        stream.flush()
++        path.chmod(0o600)
++
++
++def sender_evidence(path, run, direction, baseline, start, end):
++    result = dict(status='UNAVAILABLE', path=str(path),
++        scope='Source ping stdout/stderr; replies, outstanding probes and local errors; not wire-send timestamps')
++    try:
++        expected = baseline.get('icmp', {}).get('log_id')
++        if not expected:
++            raise ValueError('No baseline sender log identity')
++        rows = {}
++        for line in Path(path).read_text().splitlines():
++            row = json.loads(line)
++            if row.get('run') != run or row.get('label') != direction or row.get('log_id') != expected:
++                raise ValueError('Sender run/label/log identity changed')
++            key = row['event_index']
++            if type(key) is not int or key < 1:
++                raise ValueError('Invalid sender event index')
++            if key in rows and rows[key] != row:
++                raise ValueError('Conflicting sender event index')
++            rows[key] = row
++        ordered = [rows[k] for k in sorted(rows)]
++        if not ordered or not start or not end:
++            raise ValueError('Missing sender log or PCAP time anchors')
++        if any(type(r.get(k)) not in (int, float) or not math.isfinite(r[k])
++               for r in ordered for k in ('observed_ts', 'observed_mono')):
++            raise ValueError('Invalid sender observation clocks')
++        if any(b['observed_mono'] <= a['observed_mono'] for a,b in zip(ordered, ordered[1:])):
++            raise ValueError('Sender monotonic clock moved backwards or duplicated')
++        if any(row.get('boot') != baseline.get('boot') or
++               row.get('ping_pid') != baseline.get('icmp', {}).get('pid') for row in ordered):
++            raise ValueError('Original sender boot/PID not preserved')
++        before = [r for r in ordered if r['observed_ts'] <= start]
++        after = [r for r in ordered if r['observed_ts'] >= end]
++        if not before or not after:
++            raise ValueError('Sender mirror does not cover PCAP measurement window')
++        selected = [r for r in ordered if before[-1]['event_index'] <= r['event_index'] <= after[0]['event_index']]
++        missing = sum(b['event_index']-a['event_index']-1 for a,b in zip(selected, selected[1:]))
++        result.update(event_count=len(selected), missing_event_count=missing,
++            start_event_index=selected[0]['event_index'], end_event_index=selected[-1]['event_index'],
++            errors=[r for r in selected if r['kind'] == 'error'][-20:],
++            outstanding_events=sum(r['kind']=='outstanding' for r in selected),
++            sequence_observations=[dict(icmp_sequence=r.get('icmp_sequence'), native_ts=r.get('native_ts'),
++                observed_ts=r['observed_ts'], kind=r['kind']) for r in selected if r.get('icmp_sequence') is not None])
++        if missing:
++            raise ValueError('Sender console mirror has missing event indices')
++        result['status'] = 'PASS'
++    except (OSError, ValueError, KeyError, TypeError) as exc:
++        result['reason'] = str(exc)
++    return result
 diff --git a/scripts/ns_probe.py b/scripts/ns_probe.py
-index 2d7b464..de47db6 100644
+index 2d7b464..040486a 100644
 --- a/scripts/ns_probe.py
 +++ b/scripts/ns_probe.py
-@@ -5,6 +5,8 @@ import json
+@@ -5,11 +5,14 @@ import json
  import os
  from pathlib import Path
  import socket
@@ -2013,7 +2553,25 @@ index 2d7b464..de47db6 100644
  import threading
  import time
  import uuid
-@@ -61,7 +63,8 @@ class Stats:
+ 
+ PREFIX = 'OVN_NS_JSON '
++CONSOLE_LOCK = threading.Lock()
+ 
+ 
+ def boot_id():
+@@ -27,8 +30,9 @@ def emit(cfg, value):
+             f.flush()
+         path.chmod(0o600)
+     if cfg.get('console', True):
+-        with open('/dev/ttyS0', 'w') as f:
+-            f.write(line + '\n')
++        with CONSOLE_LOCK:
++            with open('/dev/ttyS0', 'w') as f:
++                f.write(line + '\n')
+ 
+ 
+ class Wire:
+@@ -61,7 +65,8 @@ class Stats:
                            terminal_event=None,
                            first_local_endpoint=None, last_local_endpoint=None,
                            first_peer_endpoint=None, last_peer_endpoint=None,
@@ -2023,7 +2581,7 @@ index 2d7b464..de47db6 100644
          self.lock = threading.Lock()
  
      def break_held(self, exc, operation, sequence, wire):
-@@ -90,15 +93,22 @@ class Stats:
+@@ -90,15 +95,22 @@ class Stats:
                  v['consecutive_successes'] = 0
                  if v['open_failure_since'] is None:
                      v['open_failure_since'] = start
@@ -2047,7 +2605,7 @@ index 2d7b464..de47db6 100644
                  session = {k: response[k] for k in ('server', 'server_boot', 'listener', 'connection')}
                  if v['first_session'] is None:
                      v['first_session'] = session
-@@ -125,16 +135,28 @@ class Client:
+@@ -125,16 +137,33 @@ class Client:
          self.cfg = cfg
          self.stats = {name: Stats() for name in ('held', 'new')}
          self.stop = threading.Event()
@@ -2061,8 +2619,13 @@ index 2d7b464..de47db6 100644
 +            self.stats['new_listener'] = Stats()
 +        self.ping = None
 +        if cfg.get('icmp_enabled'):
-+            from ns_icmp import Ping
-+            self.ping = Ping(cfg)
++            from ns_icmp import Ping, PREFIX as ICMP_PREFIX
++            def publish(value):
++                if cfg.get('console', True):
++                    with CONSOLE_LOCK:
++                        with open('/dev/ttyS0', 'w') as console:
++                            console.write(ICMP_PREFIX+json.dumps(value, sort_keys=True)+'\n')
++            self.ping = Ping(cfg, publish=publish)
          self.probe_id = str(uuid.uuid4())
  
 -    def connect(self, stats):
@@ -2078,7 +2641,7 @@ index 2d7b464..de47db6 100644
              return Wire(sock)
          except BaseException:
              sock.close()
-@@ -147,6 +169,9 @@ class Client:
+@@ -147,6 +176,9 @@ class Client:
          sequence = 0
          try:
              while not self.stop.is_set():
@@ -2088,7 +2651,7 @@ index 2d7b464..de47db6 100644
                  sequence += 1
                  started = time.monotonic()
                  response = None
-@@ -158,7 +183,7 @@ class Client:
+@@ -158,7 +190,7 @@ class Client:
                          raise EOFError('held socket already closed; reconnect prohibited')
                      if wire is None:
                          operation = 'connect'
@@ -2097,7 +2660,7 @@ index 2d7b464..de47db6 100644
                          if name == 'held':
                              established = True
                      request = dict(run=self.cfg['run'], probe=self.probe_id, seq=sequence)
-@@ -194,7 +219,7 @@ class Client:
+@@ -194,7 +226,7 @@ class Client:
                          wire.sock.close()
                          wire = None
                  stats.record(started, response, error, local_endpoint)
@@ -2106,7 +2669,7 @@ index 2d7b464..de47db6 100644
                      wire.sock.close()
                      wire = None
                  self.stop.wait(max(0, self.cfg['interval']-(time.monotonic()-started)))
-@@ -202,60 +227,169 @@ class Client:
+@@ -202,60 +234,170 @@ class Client:
              if wire:
                  wire.sock.close()
  
@@ -2176,11 +2739,13 @@ index 2d7b464..de47db6 100644
 +            threads.append(threading.Thread(target=self.ping.run, daemon=True))
 +        if threading.current_thread() is threading.main_thread():
 +            signal.signal(signal.SIGTERM, lambda *_: self.stop.set())
++            signal.signal(signal.SIGINT, lambda *_: self.stop.set())
          for thread in threads:
              thread.start()
          started = time.monotonic()
          try:
-             while time.monotonic()-started < self.cfg['lifetime']:
+-            while time.monotonic()-started < self.cfg['lifetime']:
++            while not self.stop.is_set() and time.monotonic()-started < self.cfg['lifetime']:
                  emit(self.cfg, dict(kind='client', label=self.cfg['label'], probe_id=self.probe_id,
 -                                   started_mono=started, streams={k: s.snapshot() for k, s in self.stats.items()}))
 +                                   started_mono=started, armed=self.armed, armed_mono=self.armed_mono,
@@ -2314,9 +2879,20 @@ index 2d7b464..de47db6 100644
  
  def main():
 diff --git a/scripts/report_format.py b/scripts/report_format.py
-index 14da927..1a79138 100644
+index 14da927..5e88f73 100644
 --- a/scripts/report_format.py
 +++ b/scripts/report_format.py
+@@ -112,8 +112,8 @@ def probe_failure_rate(stream):
+ def render_text(report, root, *, modern):
+     """Traffic summary only; the JSON remains the complete validation report.
+ 
+-    Keep the historical Dataplane downtime label and its existing Port_Binding
+-    convergence value. Per-flow metrics below measure traffic interruption.
++    Dataplane downtime is a heading for the per-flow traffic interruption metrics.
++    Port_Binding convergence and all event timestamps remain in JSON only.
+     """
+     lines = []
+ 
 @@ -123,7 +123,18 @@ def render_text(report, root, *, modern):
      def heading(label, indent=0):
          lines.extend(['', ' ' * indent + label])
@@ -2330,7 +2906,7 @@ index 14da927..1a79138 100644
 +        for field_name, label in (('start_timestamp', 'Start measurement'), ('end_timestamp', 'End measurement'),
 +            ('first_failure_timestamp', 'First failure'), ('recovery_timestamp', 'First recovery')):
 +            event = events[field_name]
-+            value = 'NONE (no failure)' if field_name in ('first_failure_timestamp', 'recovery_timestamp') and events.get('failure_burst_count') == 0 else display(event)
++            value = 'NONE (no failure)' if field_name in ('first_failure_timestamp', 'recovery_timestamp') and events.get('failure_burst_count') == 0 else display(event, include_timestamp=False)
 +            field(label, value, 6)
 +
 +    def icmp(label, flow, result=None, timeline_key=None):
@@ -2351,7 +2927,7 @@ index 14da927..1a79138 100644
          heading(label, 2)
          status = value.get('status')
          if status in ('DISABLED', 'NOT TESTED'):
-@@ -147,6 +162,10 @@ def render_text(report, root, *, modern):
+@@ -147,18 +162,22 @@ def render_text(report, root, *, modern):
              field('Longest probe failure', 'UNRECOVERED'
                    if stream.get('open_failure_since') is not None
                    else seconds(stream.get('longest_recovered_failure_seconds')), 6)
@@ -2362,6 +2938,36 @@ index 14da927..1a79138 100644
  
      field('Total run duration', total_time(report.get('total_duration_seconds')))
      field('Control-plane downtime', seconds(report.get('control_plane_downtime_seconds')))
+-    field('Dataplane downtime', seconds(report.get('ovn_portbinding_convergence_seconds',
+-                                                report.get('dataplane_convergence_seconds'))))
++    heading('Dataplane downtime:')
+ 
+     heading('1. EAST - WEST')
+     matrix = report.get('ew_connectivity_matrix') or {}
+     flows = matrix.get('flows') or {}
+     primary = report.get('dataplane_probe') or flows.get('ew_different_compute_different_subnet') or {}
+     icmp('Different compute / different subnet (ICMP)', primary,
+-         (report.get('dataplane_continuity') or {}).get('status'))
++         (report.get('dataplane_continuity') or {}).get('status'),
++         timeline_key='ew_different_compute_different_subnet')
+     for key, name in (
+         ('ew_different_compute_same_subnet', 'Different compute / same subnet (ICMP)'),
+         ('ew_same_compute_different_subnet', 'Same compute / different subnet (ICMP)'),
+@@ -167,12 +186,12 @@ def render_text(report, root, *, modern):
+         flow = flows.get(key) or {}
+         if matrix.get('status') in ('DISABLED', 'NOT TESTED'):
+             flow = {'status': matrix['status']}
+-        icmp(name, flow)
++        icmp(name, flow, timeline_key=key)
+     tcp('Different compute / different subnet (TCP)', report.get('pair_d_tcp') or {}, (
+         ('held', 'Existing TCP session'),
+         ('new_old', 'Old listener / new connection every probe'),
+         ('new_listener', 'New listener / new connection every probe'),
+-    ))
++    ), direction='ew_tcp')
+ 
+     heading('2. NORTH - SOUTH')
+     ns = report.get('north_south') or {}
 @@ -180,8 +199,15 @@ def render_text(report, root, *, modern):
          value = (ns.get('directions') or {}).get(direction) or {}
          if ns.get('status') in ('DISABLED', 'NOT TESTED'):
@@ -2380,6 +2986,139 @@ index 14da927..1a79138 100644
      return '\n'.join(lines) + '\n'
  
  
+diff --git a/scripts/reset_local_probes.py b/scripts/reset_local_probes.py
+index 996d06f..57fbe6d 100644
+--- a/scripts/reset_local_probes.py
++++ b/scripts/reset_local_probes.py
+@@ -2,6 +2,7 @@
+ """Stop checkpointed controller N-S probes before a confirmed destructive reset."""
+ import argparse
+ import json
++import math
+ import os
+ from os import close, pidfd_open
+ from pathlib import Path
+@@ -12,13 +13,44 @@ import time
+ from dataplane_capture import alive, save
+ 
+ 
+-def stop_probes(backup_root, evidence_path, timeout=5):
++def command_owned(pid, role, config_path):
++    args = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
++    args = [os.fsdecode(arg) for arg in args if arg]
++    action = 'serve' if role == 'snat-server' else 'client'
++    if (len(args) < 4 or Path(args[-3]).name != 'ns_probe.py' or
++        args[-2] != action or Path(args[-1]).resolve() != config_path):
++        raise RuntimeError('Live N-S command ownership mismatch for '+str(pid))
++
++
++def stop_probes(backup_root, evidence_path, timeout=5, *, interrupt_legacy_client=False):
+     backup_root = Path(backup_root).resolve()
+     evidence_path = Path(evidence_path)
+-    result = dict(status='IN_PROGRESS', stopped=[], skipped=[])
++    result = dict(status='IN_PROGRESS', started_at=time.time(), timeout_seconds=timeout,
++                  interrupt_legacy_client=interrupt_legacy_client,
++                  signaled=[], stopped=[], remaining=[], skipped=[])
+     owned = []
+     handles = []
++    def wait_for_exit():
++        deadline = time.monotonic()+timeout
++        while any(alive(item['identity']) for _, item, _ in owned):
++            if time.monotonic() >= deadline:
++                return
++            time.sleep(.05)
++
++    def send(handle, item, sig):
++        if not alive(item['identity']):
++            return
++        try:
++            pidfd_send_signal(handle, sig)
++        except ProcessLookupError:
++            return
++        if not item['signals']:
++            result['signaled'].append(item)
++        item['signals'].append(dict(signal=sig.name, sent_at=time.time()))
++
+     try:
++        if not math.isfinite(timeout) or timeout <= 0:
++            raise ValueError('Probe stop timeout must be finite and positive')
+         # Validate every live candidate before signaling any of them. pidfds
+         # keep signals bound to the original process even if a PID is reused.
+         for checkpoint in sorted(backup_root.glob('*/extended-resources.json')):
+@@ -50,31 +82,38 @@ def stop_probes(backup_root, evidence_path, timeout=5):
+                 if not alive(saved):
+                     result['skipped'].append(dict(run=root.name, role=role, reason='process identity changed'))
+                     continue
+-                args = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+-                args = [os.fsdecode(arg) for arg in args if arg]
+-                action = 'serve' if role == 'snat-server' else 'client'
+-                if (len(args) < 4 or Path(args[-3]).name != 'ns_probe.py' or
+-                    args[-2] != action or Path(args[-1]).resolve() != config_path):
+-                    raise RuntimeError('Live N-S command ownership mismatch for '+str(pid))
+-                owned.append((handle, saved, root.name, role))
+-        for handle, saved, run, role in owned:
+-            if not alive(saved):
+-                continue
+-            try:
+-                pidfd_send_signal(handle, signal.SIGTERM)
+-            except ProcessLookupError:
+-                continue
+-            result['stopped'].append(dict(run=run, role=role, identity=saved))
+-        deadline = time.monotonic()+timeout
+-        while any(alive(saved) for _, saved, _, _ in owned):
+-            if time.monotonic() >= deadline:
+-                raise RuntimeError('Checkpointed N-S probe did not stop; Kolla destroy must not proceed')
+-            time.sleep(.05)
++                command_owned(pid, role, config_path)
++                owned.append((handle, dict(run=root.name, role=role, identity=saved, signals=[]), config_path))
++        for handle, item, _ in owned:
++            send(handle, item, signal.SIGTERM)
++        wait_for_exit()
++        if interrupt_legacy_client:
++            # Old clients set the stop event on TERM but never test it in their
++            # main loop. INT raises KeyboardInterrupt and runs their existing
++            # finally block, including stopping/reaping the original ping.
++            # Never force-kill a parent and leave its ping child behind.
++            pending = [(handle, item, config) for handle, item, config in owned
++                       if item['role'] == 'fip-client' and alive(item['identity'])]
++            for _, item, config in pending:
++                command_owned(item['identity']['pid'], item['role'], config)
++            for handle, item, _ in pending:
++                send(handle, item, signal.SIGINT)
++            if pending:
++                wait_for_exit()
++        remaining = [item for _, item, _ in owned if alive(item['identity'])]
++        if remaining:
++            details = ', '.join(f"{item['run']}/{item['role']} PID {item['identity']['pid']}"
++                                for item in remaining)
++            raise RuntimeError('Checkpointed N-S probe did not stop: '+details+
++                               '; Kolla destroy must not proceed. Evidence: '+str(evidence_path))
+         result['status'] = 'PASS'
+     except Exception as exc:
+         result.update(status='FAIL', error=str(exc))
+         raise
+     finally:
++        result['stopped'] = [item for item in result['signaled'] if not alive(item['identity'])]
++        result['remaining'] = [item for _, item, _ in owned if alive(item['identity'])]
++        result['finished_at'] = time.time()
+         for handle in handles:
+             close(handle)
+         save(evidence_path, result)
+@@ -85,8 +124,13 @@ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument('backup_root', type=Path)
+     parser.add_argument('evidence_path', type=Path)
++    parser.add_argument('--timeout', type=float, default=5,
++                        help='Seconds to wait after each signal stage (default: 5)')
++    parser.add_argument('--interrupt-legacy-client', action='store_true',
++                        help='If TERM times out, interrupt only owned fip-client parents to run their cleanup')
+     args = parser.parse_args()
+-    print(json.dumps(stop_probes(args.backup_root, args.evidence_path), sort_keys=True))
++    print(json.dumps(stop_probes(args.backup_root, args.evidence_path, args.timeout,
++                                interrupt_legacy_client=args.interrupt_legacy_client), sort_keys=True))
+ 
+ 
+ if __name__ == '__main__':
 diff --git a/scripts/reset_rabbitmq_health.py b/scripts/reset_rabbitmq_health.py
 index 45bc207..93dd5b6 100644
 --- a/scripts/reset_rabbitmq_health.py
@@ -2684,15 +3423,38 @@ index 0000000..1a5f721
 +
 +if __name__ == '__main__':
 +    raise SystemExit(main())
+diff --git a/scripts/tcp_guest_probe.py b/scripts/tcp_guest_probe.py
+index 34c7865..55130cf 100644
+--- a/scripts/tcp_guest_probe.py
++++ b/scripts/tcp_guest_probe.py
+@@ -46,7 +46,7 @@ class LineReader:
+ class Stats:
+     def __init__(self):
+         self.value = dict(attempts=0, successes=0, failures=0, consecutive_successes=0,
+-                          first_failure_mono=None, last_success_mono=None,
++                          first_failure_mono=None, first_recovery_mono=None, last_success_mono=None,
+                           longest_recovered_failure_seconds=0.0, open_failure_since=None,
+                           failure_burst_count=0)
+ 
+@@ -57,6 +57,8 @@ class Stats:
+         v['consecutive_successes'] = v['consecutive_successes'] + 1 if ok else 0
+         if ok:
+             if v['open_failure_since'] is not None:
++                if v['first_recovery_mono'] is None:
++                    v['first_recovery_mono'] = completed
+                 v['longest_recovered_failure_seconds'] = max(
+                     v['longest_recovered_failure_seconds'], completed-v['open_failure_since'])
+                 v['open_failure_since'] = None
 diff --git a/scripts/traffic_timeline.py b/scripts/traffic_timeline.py
 new file mode 100644
-index 0000000..346d14f
+index 0000000..b064d74
 --- /dev/null
 +++ b/scripts/traffic_timeline.py
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,134 @@
 +"""Traffic clock anchors and temporal task attribution; never infer causality."""
 +from datetime import datetime, timezone, timedelta
 +import json
++import math
 +from pathlib import Path
 +import re
 +
@@ -2745,30 +3507,84 @@ index 0000000..346d14f
 +        task=best.get('task_name'), host=best.get('host'), source=best.get('source'))
 +
 +
-+def build(root, ns):
++def finite(value):
++    return type(value) in (int, float) and math.isfinite(value)
++
++
++def tcp_clock_events(tcp, probe):
++    """Map the ARM-scoped client monotonic summary to its own wall clock.
++
++    The wall clock is for task correlation only; outage durations stay monotonic.
++    Old summaries can recover the first recovery only for one completed burst.
++    """
++    client = (tcp.get('snapshot') or {}).get('0') or {}
++    wall, mono = client.get('ts'), client.get('mono')
++
++    def clock(value):
++        return wall + (value-mono) if all(finite(v) for v in (value, wall, mono)) else None
++
++    recovery = probe.get('first_recovery_mono')
++    recovery_source = 'client-first-recovery-monotonic'
++    if recovery is None and probe.get('failure_burst_count') == 1 and probe.get('open_failure_since') is None:
++        first, duration = probe.get('first_failure_mono'), probe.get('longest_recovered_failure_seconds')
++        if finite(first) and finite(duration) and duration >= 0:
++            recovery = first + duration
++            recovery_source = 'legacy-single-recovered-burst-duration'
++    return dict(start_timestamp=clock(client.get('armed_mono')),
++        end_timestamp=wall if finite(wall) else None,
++        first_failure_timestamp=clock(probe.get('first_failure_mono')),
++        recovery_timestamp=clock(recovery), failure_burst_count=probe.get('failure_burst_count'),
++        clock_scope='Client snapshot wall-minus-monotonic mapping; task correlation only',
++        recovery_source=recovery_source if recovery is not None else 'UNAVAILABLE')
++
++
++def build(root, ns, *, ew=None, dataplane=None, tcp=None):
 +    tasks = read_tasks(root)
 +    result = {}
++
++    def add(key, probe):
++        events = {}
++        for field in ('start_timestamp', 'end_timestamp', 'first_failure_timestamp', 'recovery_timestamp'):
++            ts = probe.get(field)
++            if ts is None and field in ('start_timestamp', 'end_timestamp'):
++                anchor = 'start_anchor' if field == 'start_timestamp' else 'end_anchor'
++                ts = (probe.get(anchor) or {}).get('timestamp')
++            events[field] = dict(timestamp=ts, task=task_at(ts, tasks))
++        events['failure_burst_count'] = probe.get('failure_burst_count')
++        for field in ('clock_scope', 'recovery_source'):
++            if field in probe:
++                events[field] = probe[field]
++        result[key] = events
++
++    if ew is not None or dataplane is not None:
++        flows = (ew or {}).get('flows') or {}
++        for key in ('ew_different_compute_different_subnet', 'ew_different_compute_same_subnet',
++                    'ew_same_compute_different_subnet', 'ew_same_compute_same_subnet'):
++            probe = (dataplane or flows.get(key) or {}) if key == 'ew_different_compute_different_subnet' else flows.get(key) or {}
++            add(key, probe)
++    if tcp is not None:
++        for name in ('held', 'new_old', 'new_listener'):
++            probe = (tcp.get('streams') or {}).get(name) or {}
++            add('ew_tcp/'+name, tcp_clock_events(tcp, probe))
 +    for direction, value in ns.get('directions', {}).items():
 +        probes = dict(value.get('streams', {}))
 +        if value.get('icmp'):
 +            probes['icmp'] = value['icmp']
 +        for name, probe in probes.items():
-+            events = {}
-+            for field in ('start_timestamp', 'end_timestamp', 'first_failure_timestamp', 'recovery_timestamp'):
-+                ts = probe.get(field)
-+                events[field] = dict(timestamp=ts, task=task_at(ts, tasks))
-+            events['failure_burst_count'] = probe.get('failure_burst_count')
-+            result[direction+'/'+name] = events
++            add(direction+'/'+name, probe)
 +    return result
 +
 +
-+def display(event):
++def display(event, *, include_timestamp=True):
 +    ts = event.get('timestamp')
 +    if ts is None:
 +        return 'UNAVAILABLE'
-+    clock = datetime.fromtimestamp(ts, timezone(timedelta(hours=7))).isoformat(timespec='milliseconds')
 +    task = event.get('task') or {}
-+    return clock+' | phase '+(task.get('phase') or '?')+' | '+(task.get('task') or 'task unavailable')
++    value = 'phase '+(task.get('phase') or '?')+' | '+(task.get('task') or 'task unavailable')
++    if include_timestamp:
++        clock = datetime.fromtimestamp(ts, timezone(timedelta(hours=7))).isoformat(timespec='milliseconds')
++        value = clock+' | '+value
++    return value
 diff --git a/scripts/workload_validation.py b/scripts/workload_validation.py
 index 183f98d..2c699e2 100644
 --- a/scripts/workload_validation.py
@@ -2821,6 +3637,27 @@ index 183f98d..2c699e2 100644
              from ns_diagnostics import Diagnostics
              diagnostics = Diagnostics(extended)
              diagnostics.ready()
+diff --git a/tests/test_four_pairs.py b/tests/test_four_pairs.py
+index 4c6f48f..d68e546 100644
+--- a/tests/test_four_pairs.py
++++ b/tests/test_four_pairs.py
+@@ -368,12 +368,16 @@ class TCPWireTests(unittest.TestCase):
+         self.assertEqual(stats.value['failures'], 2)
+         self.assertIsNone(stats.value['open_failure_since'])
+         self.assertEqual(stats.value['failure_burst_count'], 1)
++        self.assertEqual(stats.value['first_recovery_mono'], 14.5)
+         stats.record(True, 15, 15.5)
+         stats.record(False, 16, 17)
+         stats.record(False, 18, 19)
+         self.assertEqual(stats.value['failure_burst_count'], 2)
+         self.assertEqual(stats.value['open_failure_since'], 16)
+         self.assertEqual(stats.value['longest_recovered_failure_seconds'], 4.5)
++        stats.record(True, 25, 25.5)
++        self.assertEqual(stats.value['first_recovery_mono'], 14.5)
++        self.assertEqual(stats.value['longest_recovered_failure_seconds'], 9.5)
+ 
+ 
+ class SummaryFenceTests(unittest.TestCase):
 diff --git a/tests/test_migration_diagnostics.py b/tests/test_migration_diagnostics.py
 new file mode 100644
 index 0000000..2666d27
@@ -3015,12 +3852,38 @@ index 0000000..2666d27
 +
 +if __name__ == '__main__':
 +    unittest.main()
+diff --git a/tests/test_ns_diagnostics.py b/tests/test_ns_diagnostics.py
+index 38b232d..63e3834 100644
+--- a/tests/test_ns_diagnostics.py
++++ b/tests/test_ns_diagnostics.py
+@@ -217,6 +217,21 @@ print(json.dumps(d.agent_start(root,cfg)))
+         self.assertEqual(result['status'], 'PASS')
+         self.assertFalse(result['conntrack_transfer'])
+ 
++    def test_sender_refresh_and_missing_log_are_retained_as_diagnostic_failure(self):
++        d=self.controller()
++        d.cfg['ns'].update(icmp_enabled=True,icmp_sender_logging_enabled=True)
++        d.state['captures']={kind:dict(kind=kind,host='host',status='RUNNING')
++            for kind in ('endpoint','guest-snat','guest-fip')}
++        d.x.ns_rows=Mock()
++        outcomes={'snat':{'sender_log':{'status':'UNAVAILABLE','reason':'console gap'}},
++                  'fip':{'sender_log':{'status':'PASS'}}}
++        with patch.object(d,'transport',return_value=dict(status='STOPPED',dropped_packets=0,captured_packets=5)), \
++             patch('ns_icmp_evidence.finalize',return_value=outcomes):
++            errors=d.finish()
++        d.x.ns_rows.assert_called_once()
++        self.assertIn('snat/ICMP sender log: console gap',errors)
++        self.assertEqual(json.loads((self.root/'ns-diagnostics.json').read_text())['status'],'UNAVAILABLE')
++
+     def test_pre_freeze_rejects_missing_or_replaced_capture(self):
+         d = self.controller()
+         with self.assertRaisesRegex(RuntimeError, 'missing before freeze'): d.ready()
 diff --git a/tests/test_ns_expanded_probes.py b/tests/test_ns_expanded_probes.py
 new file mode 100644
-index 0000000..a78060b
+index 0000000..4e3677c
 --- /dev/null
 +++ b/tests/test_ns_expanded_probes.py
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,243 @@
 +"""Real socket ARM, unchanged held identity, sender PCAP and full N-S text report."""
 +import copy
 +import json
@@ -3167,9 +4030,41 @@ index 0000000..a78060b
 +        self.assertEqual(outcomes['snat']['status'], 'UNAVAILABLE')
 +        self.assertNotEqual(json.loads((self.root/'ns-results.json').read_text())['status'], 'PASS')
 +
++    def test_sender_log_explains_sequence_gap_without_certifying_missing_packets(self):
++        cfg=json.loads((self.root/'validation-config.json').read_text());cfg['run']='run-gap'
++        (self.root/'validation-config.json').write_text(json.dumps(cfg))
++        baseline=json.loads((self.root/'ns-baseline.json').read_text())
++        baseline['clients']['fip'].update(boot='boot',icmp=dict(log_id='log',pid=42))
++        (self.root/'ns-baseline.json').write_text(json.dumps(baseline))
++        packets=[]
++        for i in range(1,16):
++            if i==4:continue
++            ts=10+i*.2
++            packets.append((ts,frame('10.1.0.187','10.1.0.5',i)))
++            if i not in (3,8):packets.append((ts+.01,frame('10.1.0.187','10.1.0.5',i,True)))
++        data=b'\xd4\xc3\xb2\xa1'+struct.pack('<HHIIII',2,4,0,0,65535,1)
++        for ts,packet in sorted(packets):
++            sec=int(ts);data+=struct.pack('<IIII',sec,round((ts-sec)*1e6),len(packet),len(packet))+packet
++        (self.root/'ns-diagnostics/endpoint/tcp.pcap').write_bytes(data)
++        folder=self.root/'ns';folder.mkdir()
++        log=[]
++        for i in range(1,18):
++            ts=10+i*.2-.02
++            log.append(dict(run='run-gap',label='fip',boot='boot',log_id='log',ping_pid=42,event_index=i,
++                observed_ts=ts,observed_mono=ts,icmp_sequence=i,native_ts=ts,
++                kind='error' if i==4 else 'reply',text='send failure' if i==4 else 'reply'))
++        (folder/'fip-icmp-sender.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in log))
++        value=finalize(self.root)['fip']
++        self.assertEqual(value['status'],'UNAVAILABLE')
++        self.assertEqual(value['sender_log']['status'],'PASS')
++        self.assertEqual(value['request_discontinuities'][0]['missing_request_count'],1)
++        self.assertEqual(value['request_discontinuities'][0]['sender_observations'][0]['kind'],'error')
++        self.assertFalse(value['observed_window']['certified'])
++        self.assertIsNone(value['actual_dataplane_outage_seconds'])
++
 +
 +class ExpandedReportTests(unittest.TestCase):
-+    def test_eight_ns_flows_and_per_flow_timestamps_are_in_txt(self):
++    def test_eight_ns_flows_have_task_events_without_printing_timestamps(self):
 +        stream = dict(status='PASS', attempts=20, failures=2, failure_burst_count=1,
 +            longest_recovered_failure_seconds=2.0, total_downtime_seconds=2.0,
 +            start_timestamp=100, end_timestamp=200, first_failure_timestamp=120, recovery_timestamp=122)
@@ -3189,7 +4084,9 @@ index 0000000..a78060b
 +        self.assertEqual(ns_text.count('Total packet downtime'), 2)
 +        self.assertEqual(ns_text.count('Start measurement'), 8)
 +        self.assertEqual(ns_text.count('First recovery'), 8)
-+        self.assertIn('+07:00', ns_text)
++        self.assertNotIn('+07:00', ns_text)
++        self.assertNotIn('1970-', ns_text)
++        self.assertEqual(timeline['snat/held']['start_timestamp']['timestamp'],100)
 +
 +    def test_migration_report_script_writes_expanded_ns_to_txt_and_keeps_json(self):
 +        from test_validation import ready_evidence
@@ -3215,7 +4112,7 @@ index 0000000..a78060b
 +            self.assertEqual(text.count('Start measurement'),8)
 +            self.assertIn('Inbound (FIP, ICMP)',text)
 +            self.assertEqual(report['north_south']['directions']['snat']['streams']['new_listener'],stream)
-+            self.assertEqual(len(report['traffic_timeline']),8)
++            self.assertEqual(len(report['traffic_timeline']),15)
 +
 +    def test_nested_kolla_task_inherits_enclosing_phase(self):
 +        rows = [dict(started_at=dict(epoch=100), ended_at=dict(epoch=200), play='Phase 08 - Deploy',
@@ -3230,6 +4127,511 @@ index 0000000..a78060b
 +
 +if __name__ == '__main__':
 +    unittest.main()
+diff --git a/tests/test_ns_icmp_logging.py b/tests/test_ns_icmp_logging.py
+new file mode 100644
+index 0000000..bf6d9b6
+--- /dev/null
++++ b/tests/test_ns_icmp_logging.py
+@@ -0,0 +1,98 @@
++"""Raw sender output, persistent ping identity and loss-aware console mirroring."""
++import json
++from pathlib import Path
++import tempfile
++from types import SimpleNamespace
++import unittest
++from unittest.mock import Mock,patch
++
++from test_validation import ROOT
++from ns_icmp import Ping,PREFIX
++from ns_icmp_logging import mirror_console,sender_evidence
++
++
++class SenderTests(unittest.TestCase):
++    def setUp(self):
++        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
++        self.root=Path(self.tmp.name)
++        self.cfg=dict(run='r',label='fip',source='10.1.0.187',target='10.1.0.5',icmp_interval=.2,
++            icmp_output=str(self.root/'sender.jsonl'))
++
++    def execute(self,lines,**changes):
++        cfg=dict(self.cfg,**changes)
++        process=Mock(pid=1234,stdout=iter(lines));process.poll.return_value=0
++        published=[];ping=Ping(cfg,publish=published.append)
++        with patch('ns_icmp.subprocess.Popen',return_value=process) as launch:
++            ping.run()
++        self.assertEqual(launch.call_count,1)
++        self.assertEqual(launch.call_args.kwargs['env']['LC_ALL'],'C')
++        return ping,published
++
++    def test_original_ping_records_native_clocks_sequences_errors_and_end(self):
++        ping,events=self.execute(['PING 10.1.0.5\n',
++            '[100.100001] 64 bytes from 10.1.0.5: icmp_seq=1 ttl=63 time=1 ms\n',
++            '[100.300001] no answer yet for icmp_seq=2\n',
++            '[100.500001] From 10.1.0.187 icmp_seq=3 Destination Host Unreachable\n',
++            'ping: sendmsg: No route to host\n'])
++        rows=[json.loads(x) for x in Path(self.cfg['icmp_output']).read_text().splitlines()]
++        self.assertEqual(rows,events)
++        self.assertEqual([r['event_index'] for r in rows],list(range(1,len(rows)+1)))
++        self.assertEqual([r['kind'] for r in rows],['start','output','reply','outstanding','error','error','end'])
++        self.assertEqual(rows[2]['native_ts'],100.100001)
++        self.assertEqual(rows[4]['icmp_sequence'],3)
++        self.assertEqual(ping.snapshot()['replies'],1)
++        self.assertEqual(ping.snapshot()['error_events'],2)
++        self.assertEqual({r['ping_pid'] for r in rows},{1234})
++
++    def test_log_failure_does_not_restart_or_stop_traffic_and_never_overwrites(self):
++        path=Path(self.cfg['icmp_output']);path.write_bytes(b'original evidence')
++        ping,_=self.execute(['[100.1] 64 bytes from 10.1.0.5: icmp_seq=1 ttl=63 time=1 ms\n'])
++        self.assertEqual(path.read_bytes(),b'original evidence')
++        self.assertTrue(ping.snapshot()['log_error'])
++        self.assertEqual(ping.snapshot()['replies'],1)
++
++    def test_byte_limit_keeps_early_evidence_and_ping_continues(self):
++        ping,_=self.execute(['[100.1] 64 bytes from 10.1.0.5: icmp_seq=1 ttl=63 time=1 ms\n']*8,
++            icmp_log_max_bytes=700)
++        self.assertLessEqual(Path(self.cfg['icmp_output']).stat().st_size,700)
++        self.assertIn('budget exhausted',ping.snapshot()['log_error'])
++        self.assertEqual(ping.snapshot()['replies'],8)
++
++
++class MirrorTests(unittest.TestCase):
++    def setUp(self):
++        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
++        self.root=Path(self.tmp.name)
++        self.rows=[dict(schema_version=1,run='r',label='snat',boot='boot',log_id='log',ping_pid=42,
++            event_index=i,observed_ts=float(i),observed_mono=float(i),native_ts=float(i),
++            kind='outstanding' if i in (3,4) else 'reply',icmp_sequence=i,text='native output') for i in range(1,8)]
++        self.base=dict(boot='boot',icmp=dict(log_id='log',pid=42))
++
++    def mirror(self,rows):
++        mirror_console(self.root,'\n'.join(PREFIX+json.dumps(r) for r in rows),'r')
++
++    def summary(self):
++        return sender_evidence(self.root/'ns/snat-icmp-sender.jsonl','r','snat',self.base,2.5,6.5)
++
++    def test_overlap_is_deduplicated_and_all_in_window_events_remain(self):
++        self.mirror(self.rows[:5]);self.mirror(self.rows[2:]);self.mirror(self.rows)
++        self.assertEqual(len((self.root/'ns/snat-icmp-sender.jsonl').read_text().splitlines()),7)
++        self.assertEqual(self.summary()['status'],'PASS')
++        self.assertEqual(self.summary()['outstanding_events'],2)
++
++    def test_truncated_console_or_conflicting_event_never_claims_complete(self):
++        self.mirror([r for r in self.rows if r['event_index']!=4])
++        self.assertEqual(self.summary()['missing_event_count'],1)
++        self.assertEqual(self.summary()['status'],'UNAVAILABLE')
++        self.mirror([dict(self.rows[2],text='conflict')])
++        self.assertIn('Conflicting',self.summary()['reason'])
++
++    def test_wrong_pid_clock_or_window_is_unavailable(self):
++        self.mirror([dict(r,ping_pid=43) for r in self.rows])
++        self.assertIn('PID',self.summary()['reason'])
++        (self.root/'ns/snat-icmp-sender.jsonl').unlink()
++        self.mirror(self.rows[:4])
++        self.assertIn('window',self.summary()['reason'])
++
++
++if __name__=='__main__':unittest.main()
+diff --git a/tests/test_observer_reconnect.py b/tests/test_observer_reconnect.py
+new file mode 100644
+index 0000000..c696939
+--- /dev/null
++++ b/tests/test_observer_reconnect.py
+@@ -0,0 +1,135 @@
++"""Real observer subprocess reconnects; never restart traffic or hide coverage loss."""
++from concurrent.futures import ThreadPoolExecutor
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import threading
++import time
++from types import SimpleNamespace
++import unittest
++from unittest.mock import patch
++import uuid
++
++from test_validation import ROOT
++import migration_diagnostics as d
++
++
++class ReconnectTests(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.tmp.cleanup)
++        self.root = Path(self.tmp.name)
++        self.obj = d.Observer(self.root,dict(run='r',host='node',role='core',lifetime=60,
++            max_bytes=1048576,reconnect_attempts=2,reconnect_window_seconds=30))
++        self.obj.snapshot = lambda label:self.obj.record('test-snapshot',label=label)
++        self.pool = ThreadPoolExecutor(max_workers=1)
++        self.addCleanup(self.cleanup)
++
++    def cleanup(self):
++        self.obj.stop.set()
++        for name,row in self.obj.children.items():
++            self.obj.stop_job(name,row)
++        self.pool.shutdown(wait=True)
++
++    def tick_until(self, check):
++        deadline = time.monotonic()+5
++        while time.monotonic() < deadline:
++            row = self.obj.children.get('openflow-watch',{})
++            row['retry_at'] = 0
++            self.obj.reconnect_jobs(self.pool)
++            if check():return
++            time.sleep(.02)
++        self.fail('observer did not reach expected reconnect state')
++
++    def test_eof_reconnect_retains_both_streams_initial_snapshot_and_gap(self):
++        marker = self.root/'attempt'
++        program = ('from pathlib import Path;import sys,time\n'
++            'p=Path(sys.argv[1]);retry=p.exists();p.touch()\n'
++            'print("NXST_FLOW_MONITOR reply (xid=0x6):",flush=True)\n'
++            'print("event=ADDED segment="+str(int(retry)),flush=True)\n'
++            'if not retry:print("ovs-ofctl: vconn_recv (End of file)",flush=True);sys.exit(1)\n'
++            'while True:time.sleep(.05)\n')
++        self.obj.start_job('openflow-watch',dict(reconnect=True,
++            args=[sys.executable,'-u','-c',program,str(marker),'watch:!initial']))
++        self.tick_until(lambda:len(self.obj.segments['openflow-watch'])==2 and
++            self.obj.gaps['openflow-watch'][0]['end_timestamp'] is not None)
++        self.obj.reconnect_jobs(self.pool)
++        state = self.obj.status('UNAVAILABLE')
++        self.assertEqual(state['coverage'],'GAPPED')
++        self.assertEqual(state['errors'],['openflow-watch'])
++        self.assertEqual(state['jobs']['openflow-watch']['reconnect_attempts'],1)
++        self.assertEqual(state['jobs']['openflow-watch']['segments'][0]['rc'],1)
++        data = (self.root/'openflow-watch.jsonl').read_text()
++        self.assertIn('segment=0',data)
++        self.assertIn('segment=1',data)
++        events = [json.loads(x) for x in self.obj.events.read_text().splitlines()]
++        self.assertEqual([x for x in events if x['event']=='observer-start'][-1]['command'][-1],'watch:')
++        self.assertTrue(any(x['event']=='observer-reconnected' for x in events))
++
++    def test_errors_do_not_acknowledge_reconnect_and_attempts_are_bounded(self):
++        self.obj.start_job('openflow-watch',dict(reconnect=True,args=[sys.executable,'-c',
++            'import sys;print("Error response from daemon: not running");sys.exit(1)','watch:!initial']))
++        self.tick_until(lambda:self.obj.children['openflow-watch'].get('reconnect_exhausted'))
++        self.assertEqual(len(self.obj.segments['openflow-watch']),3)
++        self.assertEqual(self.obj.reconnect_counts['openflow-watch'],2)
++        self.assertIsNone(self.obj.gaps['openflow-watch'][0]['end_timestamp'])
++        self.assertEqual(len(self.obj.gaps['openflow-watch']),1)
++
++    def test_capture_processes_are_never_reconnect_candidates(self):
++        jobs=d.core_jobs(dict(chassis=True,network=True,ns_enabled=True,tunnel_interface='eth1',
++            external_interface='ns-ex',endpoint_ip='10.1.0.187',old_port=18180,new_port=18181),self.root)
++        self.assertTrue(jobs['openflow-watch']['reconnect'])
++        self.assertTrue(jobs['ovsdb-local']['reconnect'])
++        for name in ('tunnel-pcap','gateway-pcap','docker-events'):
++            self.assertFalse(jobs[name].get('reconnect',False))
++
++    def test_live_but_unacknowledged_reconnect_is_not_recovery(self):
++        gap=dict(detected_at=time.time(),detected_mono=time.monotonic(),end_timestamp=None)
++        self.obj.gaps['openflow-watch']=[gap]
++        self.obj.start_job('openflow-watch',dict(reconnect=True,args=[sys.executable,'-c',
++            'import time;time.sleep(30)','watch:!initial']),gap=gap)
++        row=self.obj.children['openflow-watch']
++        row['started_mono']=time.monotonic()-11
++        self.obj.reconnect_jobs(self.pool)
++        self.assertIsNotNone(row['process'].poll())
++        self.assertIsNone(gap['end_timestamp'])
++        self.assertIn('observer-reconnect-ack-timeout',self.obj.events.read_text())
++
++    def test_retire_orphan_uses_unique_token_even_without_pid_ack(self):
++        token=uuid.uuid4().hex
++        owned=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],
++            env=dict(os.environ,MIGRATION_DIAG_TOKEN=token))
++        other=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])
++        wrapper=subprocess.Popen([sys.executable,'-c','pass']);wrapper.wait()
++        reader=threading.Thread(target=lambda:None);reader.start();reader.join()
++        row=dict(process=wrapper,spec={'container':'test-only'},token=token,inner_pid=None,thread=reader)
++        def run(args,**kw):
++            # This executor mounts host /proc inside a child PID namespace. Docker
++            # normally provides a matching mount; adapt only the fixture's signals.
++            shim='''kill() {
++ sig="$1"; shift
++ for proc in "$@"; do
++  mapped=$(awk '/^NSpid:/ {print $NF}' "/proc/$proc/status")
++  command kill "$sig" "${mapped:-$proc}"
++ done
++}
++'''
++            shell=args[3:]
++            shell[2]=shim+shell[2]
++            result=subprocess.run(shell,capture_output=True,text=True,timeout=5)
++            return dict(rc=result.returncode,stdout=result.stdout,stderr=result.stderr)
++        try:
++            with patch.object(d,'command',side_effect=run):
++                self.assertTrue(self.obj.stop_job('test-only',row,verify=True))
++            owned.wait(timeout=3)
++            self.assertIsNone(other.poll())
++        finally:
++            for proc in (owned,other):
++                if proc.poll() is None:proc.terminate()
++                proc.wait(timeout=3)
++
++
++if __name__=='__main__':unittest.main()
+diff --git a/tests/test_report_presentation.py b/tests/test_report_presentation.py
+index d50c27f..bd39148 100644
+--- a/tests/test_report_presentation.py
++++ b/tests/test_report_presentation.py
+@@ -144,15 +144,16 @@ class PresentationTests(unittest.TestCase):
+         self.assertRegex(held, r'Failure burst count\s+: UNAVAILABLE')
+         self.assertRegex(held, r'Longest probe failure\s+: 1.500 s')
+ 
+-    def test_dataplane_label_keeps_existing_value_and_missing_differs_from_zero(self):
+-        for value, expected in [(None,'UNAVAILABLE'),(0,'0.000 s'),
+-                                (float('nan'),'UNAVAILABLE'),(True,'UNAVAILABLE'),
+-                                (114.17412345,'114.174 s')]:
++    def test_dataplane_is_a_heading_and_never_prints_port_binding_timer(self):
++        for value in (None, 0, float('nan'), True, 114.17412345):
+             with self.subTest(value=value):
+                 text = self.text(ovn_portbinding_convergence_seconds=value)
+-                self.assertRegex(text, r'Dataplane downtime\s+: ' + expected)
++                self.assertIn('\nDataplane downtime:\n', text)
++                self.assertNotRegex(text, r'Dataplane downtime[ \t]*:[ \t]*\S')
++                self.assertNotIn('114.174', text)
+         text = self.text(dataplane_convergence_seconds=2.5)
+-        self.assertRegex(text, r'Dataplane downtime\s+: 2.500 s')
++        self.assertIn('\nDataplane downtime:\n', text)
++        self.assertNotIn('2.500 s', text)
+ 
+     def test_terminal_summary_contains_only_result_run_and_paths(self):
+         report = self.report()
+diff --git a/tests/test_reset_four_nodes.py b/tests/test_reset_four_nodes.py
+index 9431772..1a95a58 100644
+--- a/tests/test_reset_four_nodes.py
++++ b/tests/test_reset_four_nodes.py
+@@ -60,6 +60,16 @@ class ResetScopeTests(unittest.TestCase):
+         self.assertEqual(reboot['hosts'], 'network:compute')
+         self.assertEqual(reboot['serial'], 1)
+ 
++    def test_reset_enables_scoped_legacy_probe_cleanup_before_destroy(self):
++        plays = yaml.safe_load((ROOT / 'reset-lab-to-ovs.yml').read_text())
++        destroy = next(p for p in plays if p['name'] == 'Destroy the current Kolla deployment from the deployment host')
++        tasks = destroy['tasks']
++        stop_index = next(i for i, t in enumerate(tasks) if 'Stop only checkpointed controller N-S probes' in t['name'])
++        destroy_index = next(i for i, t in enumerate(tasks) if t['name'] == 'Run kolla-ansible destroy')
++        self.assertLess(stop_index, destroy_index)
++        self.assertIn('--interrupt-legacy-client', tasks[stop_index]['ansible.builtin.command']['argv'])
++        self.assertNotIn('ignore_errors', tasks[stop_index])
++
+     def test_mtu_and_native_firewall_override_paths(self):
+         plays = yaml.safe_load((ROOT / 'reset-lab-to-ovs.yml').read_text())
+         copies = [t['ansible.builtin.copy'] for p in plays for t in p.get('tasks', []) if 'ansible.builtin.copy' in t]
+diff --git a/tests/test_reset_local_probes.py b/tests/test_reset_local_probes.py
+index fbadb49..ed94b4a 100644
+--- a/tests/test_reset_local_probes.py
++++ b/tests/test_reset_local_probes.py
+@@ -1,6 +1,8 @@
+ """Reset must release owned controller listeners and never signal a foreign PID."""
+ import json
++import os
+ from pathlib import Path
++import signal
+ import socket
+ import subprocess
+ import sys
+@@ -20,6 +22,8 @@ from pathlib import Path
+ cfg = json.loads(Path(sys.argv[2]).read_text())
+ if cfg.get('ignore_term'):
+     signal.signal(signal.SIGTERM, signal.SIG_IGN)
++if cfg.get('ignore_int'):
++    signal.signal(signal.SIGINT, signal.SIG_IGN)
+ with socket.socket() as sock:
+     sock.bind(('127.0.0.1', 0))
+     sock.listen()
+@@ -71,16 +75,18 @@ class ResetLocalProbeTests(unittest.TestCase):
+         return (pid in self.children and self.children[pid].poll() is None and
+                 saved == self.identities[pid])
+ 
+-    def process(self, run='run-one', role='snat-server', ignore_term=False, script=None):
++    def process(self, run='run-one', role='snat-server', ignore_term=False, script=None,
++                fields=None, env=None):
+         root = self.backups/run
+         (root/'ns').mkdir(parents=True, exist_ok=True)
+         config = dict(run=run, console=False, output=str(root/'ns'/(role+'.jsonl')),
+                       ignore_term=ignore_term)
++        config.update(fields or {})
+         config_path = root/'ns'/(role+'.json')
+         config_path.write_text(json.dumps(config))
+         args = [sys.executable, str(script or self.script),
+                 'serve' if role=='snat-server' else 'client', str(config_path)]
+-        process = subprocess.Popen(args)
++        process = subprocess.Popen(args, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+         self.children[process.pid] = process
+         self.identities[process.pid] = dict(pid=process.pid, start_ticks=str(time.monotonic_ns()), boot='test-boot')
+         self.commands[process.pid] = args
+@@ -167,7 +173,167 @@ class ResetLocalProbeTests(unittest.TestCase):
+             stop_probes(self.backups, self.evidence, timeout=.1)
+         self.assertTrue(self.live(saved))
+         self.assertIsNone(process.poll())
+-        self.assertEqual(json.loads(self.evidence.read_text())['status'], 'FAIL')
++        evidence = json.loads(self.evidence.read_text())
++        self.assertEqual(evidence['status'], 'FAIL')
++        self.assertEqual(evidence['stopped'], [])
++        self.assertEqual(evidence['remaining'][0]['identity'], saved)
++        self.assertEqual(evidence['signaled'][0]['signals'][0]['signal'], 'SIGTERM')
++
++    def real_client(self, legacy=False, with_server=False):
++        sockets = [socket.socket() for _ in range(3)]
++        try:
++            for sock in sockets:
++                sock.bind(('127.0.0.1', 0))
++            old, new, control = [sock.getsockname()[1] for sock in sockets]
++        finally:
++            for sock in sockets:
++                sock.close()
++        fake_bin = self.base/'bin'
++        fake_bin.mkdir()
++        marker = self.base/'ping-stopped'
++        ping = fake_bin/'ping'
++        ping.write_text('#!'+sys.executable+'\n'+'''import os, signal, time
++from pathlib import Path
++stopped = False
++def stop(*_):
++    global stopped
++    stopped = True
++signal.signal(signal.SIGTERM, stop)
++while not stopped:
++    print('[1.000000] 64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.1 ms', flush=True)
++    time.sleep(.01)
++Path(os.environ['PING_STOP_MARKER']).write_text('reaped by probe cleanup')
++''')
++        ping.chmod(0o700)
++        cfg = dict(bind='127.0.0.1', source='127.0.0.1', target='127.0.0.1', port=old,
++            new_port=new, control_port=control, control_token='test-token',
++            expected_peer='127.0.0.1', expected_server='server', server='server', label='fip',
++            interval=.03, timeout=.15, lifetime=30, icmp_enabled=True,
++            icmp_output=str(self.base/'sender.jsonl'))
++        script = ROOT/'scripts/ns_probe.py'
++        if legacy:
++            source = script.read_text()
++            old_loop = "while time.monotonic()-started < self.cfg['lifetime']:"
++            fixed_loop = "while not self.stop.is_set() and time.monotonic()-started < self.cfg['lifetime']:"
++            self.assertEqual(source.count(fixed_loop), 2)
++            source = source.replace(fixed_loop, old_loop, 1)
++            source = source.replace('            signal.signal(signal.SIGINT, lambda *_: self.stop.set())\n', '', 1)
++            self.script.write_text(source)
++            script = self.script
++        if with_server:
++            from ns_probe import Server
++            server = Server(dict(cfg, run='run-one', console=False))
++            def stop_server():
++                for _, listener in list(server.listeners.values()):
++                    listener.shutdown()
++                    listener.server_close()
++            self.addCleanup(stop_server)
++        env = dict(os.environ, PATH=str(fake_bin)+os.pathsep+os.environ['PATH'],
++                   PYTHONPATH=str(ROOT/'scripts'), PING_STOP_MARKER=str(marker))
++        process, root, state = self.process(role='fip-client', fields=cfg, script=script, env=env)
++        deadline = time.monotonic()+3
++        while not (self.base/'sender.jsonl').exists() or '"kind": "reply"' not in (self.base/'sender.jsonl').read_text():
++            if process.poll() is not None or time.monotonic() > deadline:
++                self.fail('Production ping reader did not start')
++            time.sleep(.01)
++        return process, root, cfg, marker
++
++    def test_production_client_term_exits_and_reaps_ping_even_when_target_is_down(self):
++        process, _, cfg, marker = self.real_client()
++        result = stop_probes(self.backups, self.evidence, timeout=2, interrupt_legacy_client=True)
++        self.assertEqual(result['status'], 'PASS')
++        self.assertEqual(process.wait(2), 0)
++        self.assertTrue(marker.exists(), 'Original ping child was not stopped')
++        self.assertEqual([s['signal'] for s in result['stopped'][0]['signals']], ['SIGTERM'])
++        with socket.socket() as sock:
++            sock.bind(('127.0.0.1', cfg['control_port']))
++
++    def test_legacy_client_reproduces_timeout_then_interrupt_runs_ping_cleanup(self):
++        process, _, cfg, marker = self.real_client(legacy=True)
++        with self.assertRaisesRegex(RuntimeError, 'did not stop.*fip-client'):
++            stop_probes(self.backups, self.evidence, timeout=.15)
++        self.assertIsNone(process.poll())
++        self.assertFalse(marker.exists())
++        failed = json.loads(self.evidence.read_text())
++        self.assertEqual(failed['stopped'], [])
++        self.assertEqual(failed['remaining'][0]['role'], 'fip-client')
++        result = stop_probes(self.backups, self.evidence, timeout=.5, interrupt_legacy_client=True)
++        self.assertEqual(result['status'], 'PASS')
++        self.assertIsNotNone(process.poll())
++        self.assertTrue(marker.exists(), 'Interrupt must run legacy cleanup, including its ping')
++        self.assertEqual([s['signal'] for s in result['stopped'][0]['signals']], ['SIGTERM', 'SIGINT'])
++        self.assertEqual(result['remaining'], [])
++        with socket.socket() as sock:
++            sock.bind(('127.0.0.1', cfg['control_port']))
++
++    def test_production_client_with_held_and_both_listeners_stops_without_restarting_ping(self):
++        from ns_control import request
++        process, root, cfg, marker = self.real_client(with_server=True)
++        deadline = time.monotonic()+3
++        payload = dict(ip='127.0.0.1', port=cfg['control_port'], run='run-one', token=cfg['control_token'])
++        while True:
++            try:
++                checked = request(dict(payload, action='CHECK'))
++                break
++            except (RuntimeError, OSError):
++                if time.monotonic() >= deadline:
++                    self.fail('Production held/control sockets did not become ready')
++                time.sleep(.01)
++        ack = request(dict(payload, action='ARM'))
++        self.assertTrue(ack['armed'])
++        self.assertEqual(checked['connection_attempts'], 1)
++        result = stop_probes(self.backups, self.evidence, timeout=2, interrupt_legacy_client=True)
++        self.assertEqual(result['status'], 'PASS')
++        self.assertEqual(process.wait(2), 0)
++        self.assertTrue(marker.exists())
++        events = [json.loads(line) for line in (self.base/'sender.jsonl').read_text().splitlines()]
++        self.assertEqual([event['kind'] for event in events].count('start'), 1)
++        self.assertEqual([event['kind'] for event in events].count('end'), 1)
++        with socket.socket() as sock:
++            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++            sock.bind(('127.0.0.1', cfg['control_port']))
++
++    def test_legacy_interrupt_never_targets_server(self):
++        process, _, _ = self.process(ignore_term=True)
++        with self.assertRaisesRegex(RuntimeError, 'did not stop'):
++            stop_probes(self.backups, self.evidence, timeout=.1, interrupt_legacy_client=True)
++        evidence = json.loads(self.evidence.read_text())
++        self.assertEqual([s['signal'] for s in evidence['signaled'][0]['signals']], ['SIGTERM'])
++        self.assertIsNone(process.poll())
++
++    def test_client_ignoring_both_signals_still_blocks_destroy_without_kill(self):
++        process, _, _ = self.process(role='fip-client', ignore_term=True, fields=dict(ignore_int=True))
++        with self.assertRaisesRegex(RuntimeError, 'did not stop'):
++            stop_probes(self.backups, self.evidence, timeout=.1, interrupt_legacy_client=True)
++        evidence = json.loads(self.evidence.read_text())
++        self.assertEqual(evidence['status'], 'FAIL')
++        self.assertEqual(evidence['stopped'], [])
++        self.assertEqual(evidence['remaining'][0]['identity']['pid'], process.pid)
++        self.assertEqual([s['signal'] for s in evidence['signaled'][0]['signals']], ['SIGTERM', 'SIGINT'])
++        self.assertIsNone(process.poll())
++
++    def test_changed_command_after_term_blocks_legacy_interrupt(self):
++        process, _, _ = self.process(role='fip-client', ignore_term=True)
++        original_send = probes.pidfd_send_signal
++        def change_command(handle, sig):
++            original_send(handle, sig)
++            if sig == signal.SIGTERM:
++                self.commands[process.pid][-3] = '/foreign.py'
++        with patch.object(probes, 'pidfd_send_signal', side_effect=change_command):
++            with self.assertRaisesRegex(RuntimeError, 'command ownership'):
++                stop_probes(self.backups, self.evidence, timeout=.1, interrupt_legacy_client=True)
++        self.assertIsNone(process.poll())
++        evidence = json.loads(self.evidence.read_text())
++        self.assertEqual([s['signal'] for s in evidence['signaled'][0]['signals']], ['SIGTERM'])
++
++    def test_repeated_stop_after_success_is_idempotent(self):
++        process, _, _ = self.process()
++        stop_probes(self.backups, self.evidence)
++        process.wait(2)
++        again = stop_probes(self.backups, self.evidence, interrupt_legacy_client=True)
++        self.assertEqual(again['status'], 'PASS')
++        self.assertEqual(again['signaled'], [])
++        self.assertEqual(again['remaining'], [])
+ 
+ 
+ if __name__ == '__main__':
 diff --git a/tests/test_reset_rabbitmq_recovery.py b/tests/test_reset_rabbitmq_recovery.py
 new file mode 100644
 index 0000000..9e0eedf
@@ -3521,3 +4923,101 @@ index 0000000..9e0eedf
 +
 +
 +if __name__=='__main__':unittest.main()
+diff --git a/tests/test_traffic_timeline.py b/tests/test_traffic_timeline.py
+new file mode 100644
+index 0000000..addafe3
+--- /dev/null
++++ b/tests/test_traffic_timeline.py
+@@ -0,0 +1,92 @@
++"""Correlate EW/NS event clocks without relabeling binding time as an outage."""
++import copy
++import json
++from pathlib import Path
++import tempfile
++import unittest
++
++from test_validation import ROOT
++from report_format import render_text
++from traffic_timeline import build, tcp_clock_events
++
++
++class TrafficTimelineTests(unittest.TestCase):
++    def test_all_fifteen_flows_keep_clocks_in_json_and_only_tasks_in_text(self):
++        ping = dict(status='PASS', start_anchor={'timestamp':1005}, end_anchor={'timestamp':1200},
++            first_failure_timestamp=1090, recovery_timestamp=1090.4, failure_burst_count=1,
++            packets_attempted=100, packets_failed=2, packet_loss_percent=2,
++            actual_dataplane_outage_seconds=.4)
++        keys = ('ew_different_compute_different_subnet', 'ew_different_compute_same_subnet',
++                'ew_same_compute_different_subnet', 'ew_same_compute_same_subnet')
++        ew = dict(status='PASS', flows={k:ping for k in keys})
++        stream = dict(status='PASS', first_failure_mono=190, first_recovery_mono=191,
++            failure_burst_count=2, longest_recovered_failure_seconds=8, open_failure_since=None,
++            attempts=100, failures=3)
++        tcp = dict(status='PASS', snapshot={'0':dict(ts=1200, mono=300, armed_mono=100)},
++            streams={k:stream for k in ('held','new_old','new_listener')})
++        ns_stream = dict(stream, start_timestamp=1005, end_timestamp=1200,
++                         first_failure_timestamp=1090, recovery_timestamp=1091)
++        ns = dict(status='PASS', icmp_enabled=True, new_listener_enabled=True,
++            directions={d:dict(icmp=ping, streams={k:ns_stream for k in tcp['streams']})
++                        for d in ('snat','fip')})
++        report = dict(dataplane_probe=ping, ew_connectivity_matrix=ew, pair_d_tcp=tcp,
++            north_south=ns, ovn_portbinding_convergence_seconds=987.654321)
++        before = copy.deepcopy(report)
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            (root/'task-timings').mkdir()
++            tasks = [dict(execution_id=str(i), started_at=dict(epoch=start), ended_at=dict(epoch=end),
++                          play='Phase '+phase, task_name=task)
++                     for i,(start,end,phase,task) in enumerate((
++                         (999,1010,'07','Arm probes'), (1080,1110,'08','Deploy OVN controller'),
++                         (1190,1210,'12','Validate workloads')))]
++            (root/'task-timings/main.json').write_text(json.dumps({'tasks':tasks}))
++            timeline = build(root, ns, ew=ew, dataplane=ping, tcp=tcp)
++            self.assertEqual(len(timeline),15)
++            for key in keys:
++                self.assertEqual(timeline[key]['start_timestamp']['timestamp'],1005)
++                self.assertEqual(timeline[key]['end_timestamp']['task']['phase'],'12')
++                self.assertEqual(timeline[key]['first_failure_timestamp']['task']['phase'],'08')
++            first = timeline['ew_tcp/held']
++            self.assertEqual(first['start_timestamp']['timestamp'],1000)
++            self.assertEqual(first['recovery_timestamp']['timestamp'],1091)
++            self.assertEqual(first['recovery_timestamp']['task']['phase'],'08')
++            self.assertEqual(first['clock_scope'],
++                'Client snapshot wall-minus-monotonic mapping; task correlation only')
++            self.assertEqual(report,before)
++            report['traffic_timeline'] = timeline
++            text = render_text(report,root,modern=True)
++        for label in ('Start measurement','End measurement','First failure','First recovery'):
++            self.assertEqual(text.count(label),15)
++        self.assertIn('phase 07 | Arm probes',text)
++        self.assertIn('phase 08 | Deploy OVN controller',text)
++        self.assertNotIn('1970-',text)
++        self.assertNotIn('+07:00',text)
++        self.assertNotIn('987.654',text)
++        self.assertEqual(report['ovn_portbinding_convergence_seconds'],987.654321)
++
++    def test_legacy_recovery_is_derived_only_for_one_completed_burst(self):
++        tcp = dict(snapshot={'0':dict(ts=1200,mono=300,armed_mono=100)})
++        probe = dict(failure_burst_count=1,first_failure_mono=190,
++                     longest_recovered_failure_seconds=8,open_failure_since=None)
++        result = tcp_clock_events(tcp,probe)
++        self.assertEqual(result['recovery_timestamp'],1098)
++        self.assertEqual(result['recovery_source'],'legacy-single-recovered-burst-duration')
++        self.assertIsNone(tcp_clock_events(tcp,dict(probe,failure_burst_count=2))['recovery_timestamp'])
++        self.assertIsNone(tcp_clock_events(tcp,dict(probe,open_failure_since=190))['recovery_timestamp'])
++
++    def test_missing_clock_never_becomes_epoch_zero_and_zero_failures_are_explicit(self):
++        self.assertIsNone(tcp_clock_events({},dict(first_failure_mono=10))['first_failure_timestamp'])
++        tcp = dict(status='PASS',streams={'held':dict(status='PASS',failure_burst_count=0)},
++                   snapshot={'0':dict(ts=1200,mono=300,armed_mono=100)})
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            timeline = build(root,{},tcp=tcp)
++            text = render_text(dict(pair_d_tcp=tcp,traffic_timeline=timeline),root,modern=True)
++        held = text.split('Existing TCP session')[1].split('Old listener')[0]
++        self.assertEqual(held.count('NONE (no failure)'),2)
++        self.assertNotIn('1970-',text)
++
++
++if __name__ == '__main__':
++    unittest.main()

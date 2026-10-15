@@ -126,4 +126,6 @@ migration_diagnostics_enabled: true
 migration_diagnostics_directory: /var/lib/ovn-migration-diagnostics
 migration_diagnostics_lifetime_seconds: 18000
 migration_diagnostics_max_bytes: 268435456
+migration_diagnostics_reconnect_attempts: 8
+migration_diagnostics_reconnect_window_seconds: 60
 migration_diagnostics_external_interface: ns-ex
