@@ -287,7 +287,8 @@ def validation_ready(root):
             role_ready = role_ready and read_evidence(root, 'ns-diagnostics.json').get('status') == 'PASS'
     diagnostic_cfg = read_evidence(root, 'diagnostics-config.json')
     if diagnostic_cfg.get('enabled'):
-        role_ready = role_ready and read_evidence(root, 'migration-diagnostics.json').get('status') == 'PASS'
+        from diagnostic_policy import collection_ready
+        role_ready = role_ready and collection_ready(read_evidence(root, 'migration-diagnostics.json'))
     return (role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
             workload_pass(read_evidence(root, 'pre-workload-checks.json'), 'geneve') and
             workload_pass(read_evidence(root, 'post-workload-checks.json'), 'geneve') and

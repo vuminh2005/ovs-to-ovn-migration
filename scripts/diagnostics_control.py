@@ -133,11 +133,14 @@ def summarize(root):
         rows.append(dict(host=entry['host'], role=entry['role'], archive=str(state_path.parent.relative_to(root)),
             status='PASS' if state.get('status') == 'STOPPED' and not state.get('errors') else 'UNAVAILABLE',
             errors=state.get('errors', ['No archived final state']), jobs=state.get('jobs', {}),
+            cleanup_complete=state.get('cleanup_complete', state.get('status') == 'STOPPED' and state.get('stopped') is True),
             coverage=state.get('coverage', 'UNAVAILABLE'),
             preparation_segments=entry.get('segments', [])))
     roles = {row['role'] for row in rows}
     result = dict(status='PASS' if rows and roles == {'core', 'central'} and all(
         r['status'] == 'PASS' for r in rows) else 'UNAVAILABLE', collectors=rows,
+        collection_status='STOPPED' if rows and roles == {'core', 'central'} and all(
+            r['cleanup_complete'] for r in rows) else 'UNAVAILABLE',
         collected_at=time.time(), read_only_network_state=True,
         limits=dict(max_bytes_per_collector=cfg['max_bytes'], lifetime_seconds=cfg['lifetime'],
             reconnect_attempts=cfg.get('reconnect_attempts', 8), reconnect_window_seconds=cfg.get('reconnect_window_seconds', 60)),

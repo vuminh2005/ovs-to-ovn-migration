@@ -51,8 +51,11 @@ ICMP dùng raw sender-side PCAP:
 - FIP: capture eth1 endpoint, nơi phát request tới FIP.
 
 Baseline và endpoint phải là các request/reply có thật trong PCAP. Endpoint cuối
-cần năm request liên tiếp có reply và đúng cadence. Sequence gap, kernel capture
-drop, supervisor gap hoặc kết thúc chưa phục hồi tạo UNAVAILABLE, không phải 0 s.
+cần năm request liên tiếp có reply và đúng cadence. Kernel capture drop,
+supervisor gap hoặc kết thúc chưa phục hồi tạo UNAVAILABLE, không phải 0 s.
+Sequence/cadence gap vẫn làm raw packet-loss metric UNAVAILABLE; một trường hợp
+đối chiếu local error rất cụ thể có thể chứng nhận riêng probe availability như
+mô tả bên dưới. EW giữ nguyên quy tắc PCAP strict.
 Các file cũ mang tên `tcp.pcap` được giữ để tương thích, nhưng filter mới bao gồm
 TCP hai listener, ICMP và ARP. JSON `ns-icmp-results.json` lưu kết quả độc lập.
 
@@ -68,16 +71,51 @@ FIP ghi trực tiếp ở `ns/fip-icmp-sender.jsonl` trên controller. Guest SNA
 Nova console bằng prefix riêng `OVN_NS_ICMP_JSON `. Collector ghép các lần đọc
 console vào `ns/snat-icmp-sender.jsonl`, deduplicate và kiểm tra event index,
 boot/PID/log identity, monotonic clock và coverage giữa hai PCAP anchor.
-Phase 12 đọc console lần cuối sau khi dừng capture. Không cần SSH vào guest,
-không mở thêm listener hoặc phụ thuộc qrouter namespace sau cutover.
+Console mirror là nguồn phụ, không còn là bản SNAT bắt buộc phải liên tục.
+Với run mới, `icmp_sender_export_enabled: true` được lưu trong validation config.
+Phase 12 chỉ yêu cầu export **sau khi cả ba N-S captures đã dừng/fetch**:
+
+1. Controller gửi yêu cầu có token/nonce qua listener SNAT cũ đang có trên
+   endpoint, kèm run, boot, ping PID/log ID/probe ID từ baseline.
+2. Echo server gắn thông báo export vào response tiếp theo. Client SNAT mở
+   socket outbound riêng để gửi prefix hoàn chỉnh của file gốc trong guest.
+   Không dùng lại held socket, không tăng connection_attempts của held, không
+   restart ping hoặc listener. Không mở listener/VM/FIP/SG mới, không cần SSH,
+   guest-agent hoặc qrouter namespace sau cutover.
+3. Guest chờ native timestamp trong log vượt thời điểm stop capture SNAT +2 s,
+   tối đa 60 s; tránh console/raw-reader lag làm thiếu đoạn cuối. File vẫn append
+   trong lúc export, chỉ snapshot phần kết thúc bằng newline đầy đủ.
+4. Receiver kiểm tra token/nonce/identity, giới hạn 64 MiB, SHA256, toàn bộ event
+   index từ event 1 và monotonic ordering trước publish. Chỉ nhận đường dẫn cố
+   định từ config, không nhận remote path. File đầy đủ là
+   `ns/snat-icmp-sender.full.jsonl`, kèm `.full.receipt.json` và request checkpoint;
+   mirror cũ được giữ riêng. File đã publish không bị ghi đè.
+
+Collection có timeout 90 s, upload tối đa ba lượt với cùng nonce. Mỗi receiver
+có timeout tổng 60 s, không lặp vô hạn. Hash/ownership được kiểm tra lại trước
+phân tích. Lỗi export không được biến thành mirror PASS hoặc che network failure.
+Log gốc cần vượt cả hai PCAP anchors; snapshot chưa đủ coverage vẫn UNAVAILABLE.
 
 Sender stdout là bằng chứng thứ cấp về sequence/lỗi, không phải timestamp phát
 packet ở wire. Sequence thiếu trong PCAP được mô tả trong `request_discontinuities`
 và đối chiếu sender events cùng khoảng thời gian (tolerance 2 giây, cần kiểm tra
 clock offset). `observed_window` giữ burst thấy trong PCAP với `certified: false`
-khi coverage chưa đủ. Không tự điền request thiếu hoặc đổi metric thành PASS.
-Log sender thiếu/đứt đoạn là diagnostics UNAVAILABLE khi logging được bật trong
-cấu hình run mới; PCAP vẫn tự quyết định tính hợp lệ của metric traffic.
+khi coverage chưa đủ. Không tự điền request thiếu trong PCAP.
+
+N-S có nhánh `measurement_kind: icmp-probe-availability` chỉ khi mọi sequence
+thiếu đều khớp chính xác **một** sender error `From <source> ... Destination Host
+Unreachable`, đúng original identity/continuous event coverage và timestamp.
+Mỗi gap phải nằm bên trong một burst đã có captured failure và captured recovery;
+không dùng timestamp báo lỗi để giả làm timestamp gửi probe. Identifier đổi,
+capture drop, lỗi không map được, reply mâu thuẫn, thiếu log hoặc lỗi local mở
+một burst mới mà không biết thời điểm gửi đều giữ UNAVAILABLE.
+
+Nhánh này thêm local_send_failures/probe_attempts/probe_failures và probe failure
+percent. Raw `packets_*` không đổi, `packet_loss_percent` vẫn null khi wire
+coverage thiếu; toàn bộ kết quả strict cũ nằm trong `wire_capture_metrics`.
+TXT hiển thị Probe failure rate / Local send failures / Longest probe outage /
+Total probe downtime cho trường hợp đó, không gọi chúng là wire packet loss.
+Log sender thiếu/đứt đoạn vẫn là N-S diagnostics UNAVAILABLE khi logging được bật.
 
 `migration-report.txt` hiển thị ICMP và ba TCP stream cho cả SNAT/FIP: loss/probe
 failure rate, failure burst count, longest outage, total downtime và bốn mốc bắt
@@ -164,8 +202,19 @@ không được coi là phục hồi. PCAP và tiến trình traffic không đư
 segment được giữ trong events/state và report JSON. Gap có thời gian phát hiện,
 output cuối và thời gian xác nhận kết nối lại; duration là từ phát hiện đến ACK,
 không phải phép đo downtime traffic. Coverage là `GAPPED` nếu từng bị ngắt.
-Gate vẫn strict: reconnect không xóa lỗi cũ; một run vẫn có thể là
-`MIGRATED_VALIDATION_INCOMPLETE` dù observer đã thu được dữ liệu trở lại.
+Reconnect không xóa lỗi cũ. `migration-diagnostics.json.status` vẫn UNAVAILABLE
+khi coverage thiếu; `diagnostic_coverage` trong report giữ GAPPED/UNAVAILABLE,
+warning theo host/observer và tổng gap duration. TXT có phần Diagnostics coverage
+khi không đầy đủ. Đây không phải số downtime traffic và không chứng nhận dữ liệu
+trong gap.
+
+Functional traffic validation không yêu cầu forensic stream liên tục nữa.
+Collector vẫn phải dừng/fetch và chứng minh `cleanup_complete`, được tổng hợp
+thành `collection_status: STOPPED`; không chứng minh được shutdown thì cleanup
+vẫn bị chặn. PCAP/N-S sender/TCP/VM identity/cấu hình/boot/network checks không
+được nới lỏng. Run có thể SUCCESS với diagnostics GAPPED được công khai nếu mọi
+kiểm chứng traffic/workload và cleanup đều đạt. Archive legacy hoàn chỉnh vẫn
+được đọc; archive legacy UNAVAILABLE thiếu proof cleanup không tự trở thành PASS.
 
 Trong thư mục run:
 
@@ -175,6 +224,9 @@ Trong thư mục run:
 - `ns-arm.json`: timestamp mở listener, ACK và session/ARM continuity.
 - `ns-results.json`, `ns-icmp-results.json`, `migration-report.{json,txt}`.
 - `ns/{snat,fip}-icmp-sender.jsonl`: log sender gốc hoặc mirror có kiểm tra index.
+- `ns/snat-icmp-sender.full.jsonl`: bản export nguyên byte từ file sender guest.
+- `ns/snat-icmp-sender.full.receipt.json`: identity, số byte, SHA256 và event index.
+- `ns/snat-icmp-export-request.json`: nonce, identity và capture time fence.
 
 Lịch sử này dùng để kiểm chứng ba câu hỏi: flow/controller change nào trùng
 packet lỗi đầu tiên; EW phục hồi qua pipeline/tunnel nào; gateway binding/ARP/NAT

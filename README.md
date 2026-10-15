@@ -231,6 +231,12 @@ then the three TCP streams. North–South lists outbound SNAT and inbound FIP,
 each with held-session and new-connection streams.
 
 ICMP shows result, packet loss, failure burst count and longest packet outage.
+For N-S ICMP, a PCAP sequence gap can instead be certified as failed probe
+attempts only when the continuous original sender log proves every missing
+sequence is a local `Destination Host Unreachable` inside an already observed
+outage. TXT then labels the metric **Probe failure rate** and **probe downtime**;
+JSON keeps the original, unavailable wire-packet metric separately. Unknown
+gaps remain unavailable.
 TCP shows result, **probe failure rate**, failure burst count and **longest probe
 failure**: these application echoes do not measure TCP packet loss. A burst is
 one consecutive sequence of failed probes; an unrecovered burst is included in
@@ -245,7 +251,10 @@ and first failure/recovery as `phase | task`, without timestamps in TXT. JSON
 retains the timestamps and task overlap evidence. EW TCP clocks map the client
 ARM-scoped monotonic summary to its snapshot wall clock for correlation only;
 outage durations stay monotonic. Missing task evidence remains unavailable.
-All metric boundaries and validation/cleanup gates remain unchanged.
+Traffic/session identity and capture checks remain required. Forensic observer
+coverage is reported separately: a recovered OpenFlow/OVSDB gap remains `GAPPED`
+with a warning, while functional traffic can pass. Collector shutdown must still
+be verified before cleanup can proceed.
 
 DHCP, MTU, provisioning, remediation, identities, cleanup, diagnostics, phase timing
 and all other evidence remain complete in JSON. Text rounds seconds to three
@@ -859,6 +868,15 @@ collector OVS/OVN/Kolla xuyên cutover và task/phase/total downtime trong
 `migration-report.txt`; timestamp đầy đủ ở JSON. Observer OpenFlow/OVSDB có
 reconnect giới hạn, lưu segment và gap; PCAP/traffic giữ nguyên tiến trình.
 Sender ICMP lưu stdout/stderr gốc cùng PID/boot/event index để đối chiếu sequence
-gap và lỗi gửi cục bộ. Khoảng trống vẫn là bằng chứng chưa đầy đủ, không tự đổi PASS.
+gap và lỗi gửi cục bộ. Sau khi dừng cả ba N-S captures, guest SNAT export file
+sender gốc qua endpoint hiện có; kiểm tra identity, event index, hash và phần
+đuôi log vượt mốc dừng capture. Console mirror vẫn được giữ riêng. Export không
+restart ping hoặc phiên held, không tạo VM/FIP/listener/port mới.
+
+Chỉ chứng nhận probe downtime khi log liên tục giải thích đủ từng sequence thiếu
+bằng lỗi gửi cục bộ trong một outage đã quan sát được; không suy diễn timestamp
+gửi từ timestamp báo lỗi. Metric PCAP gốc vẫn được giữ nguyên. Gap không giải
+thích được tiếp tục UNAVAILABLE. Diagnostics coverage GAPPED được ghi thành
+warning riêng; collector chưa chứng minh dừng an toàn vẫn chặn cleanup.
 Xem [thiết kế, cách đo và các file bằng chứng](docs/ns-observability.md).
 Workflow và các tiêu chí bảo toàn phiên held vẫn giữ nguyên.

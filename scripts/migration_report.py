@@ -45,6 +45,8 @@ def evidence(name):
 report['orchestration_recovery']=evidence('orchestration-recovery.json')
 diagnostic_cfg = evidence('diagnostics-config.json') or {}
 report['migration_diagnostics'] = (evidence('migration-diagnostics.json') or {'status':'UNAVAILABLE'}) if diagnostic_cfg.get('enabled') else {'status':'DISABLED'}
+from diagnostic_policy import coverage
+report['diagnostic_coverage'] = coverage(report['migration_diagnostics'])
 report['image_preflight']=[dict(json.loads(path.read_text()),
     evidence_directory=str(path.parent),
     image_identities={entry.name:json.loads(entry.read_text()) for entry in sorted(path.parent.glob('*.json')) if entry.name!='result.json'})
@@ -194,7 +196,7 @@ if orchestration.get('semantics_rc',0) or orchestration.get('workload_rc',0):
 if report['result']=='SUCCESS' and post_remediation.get('remediation_action')=='soft reboot' and post_remediation.get('status')=='PASS':
     report['result']='SUCCESS_WITH_REMEDIATION'
     report['existing_workload_migration']['status']='PASS AFTER REMEDIATION'
-report['limitations'][0]='ICMP metrics require a continuous drop-free compute-tap PCAP, endpoints and request cadence; gaps or unrecovered loss yield UNAVAILABLE. Console packet history is secondary only. PortBinding convergence remains separate.'
+report['limitations'][0]='EW ICMP requires continuous drop-free PCAP. N-S local-error gaps may certify probe availability only when every missing attempt matches the original sender and lies inside a captured loss/recovery burst; raw wire packet-loss coverage remains separate. Unexplained gaps or unrecovered loss stay UNAVAILABLE. PortBinding convergence remains separate.'
 if report['result'] in ('SUCCESS', 'SUCCESS_WITH_REMEDIATION') and report['north_south_diagnostics']['status'] not in ('PASS', 'DISABLED'):
     report['result'] = 'MIGRATED_VALIDATION_INCOMPLETE'
 

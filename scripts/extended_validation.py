@@ -333,6 +333,10 @@ class Extended:
                     icmp_interval=self.cfg.get('interval', .2))
                 cfg['icmp_output'] = (str(self.root/'ns/fip-icmp-sender.jsonl') if fields['label'] == 'fip'
                     else '/var/lib/ovn-migration-icmp/'+self.cfg['run']+'/snat-icmp-sender.jsonl')
+                if fields['label'] == 'snat' and ns.get('icmp_sender_export_enabled'):
+                    cfg['icmp_export_enabled'] = True
+            if fields.get('server') == 'external-endpoint' and ns.get('icmp_sender_export_enabled'):
+                cfg['icmp_receive_path'] = str(self.root/'ns/snat-icmp-sender.full.jsonl')
             if fields.get('label') == 'fip':
                 cfg['control_bind'] = '127.0.0.1'
         return cfg
@@ -366,6 +370,9 @@ class Extended:
         if cfg.get('icmp_enabled'):
             data['write_files'].append(dict(path='/usr/local/bin/ns_icmp.py',
                 content=(Path(__file__).parent/'ns_icmp.py').read_text(), permissions='0700'))
+        if cfg.get('icmp_export_enabled'):
+            data['write_files'].append(dict(path='/usr/local/bin/ns_log_transfer.py',
+                content=(Path(__file__).parent/'ns_log_transfer.py').read_text(), permissions='0700'))
         self.server(vm, data)
 
     def create_ns(self):

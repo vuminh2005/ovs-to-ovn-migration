@@ -50,7 +50,13 @@ def sender_evidence(path, run, direction, baseline, start, end):
         if not expected:
             raise ValueError('No baseline sender log identity')
         rows = {}
-        for line in Path(path).read_text().splitlines():
+        raw = Path(path).read_bytes()
+        if len(raw) > 67108864:
+            raise ValueError('Sender log exceeds byte budget')
+        if raw and not raw.endswith(b'\n'):
+            raw = raw.rsplit(b'\n', 1)[0]+b'\n' if b'\n' in raw else b''
+            result['trailing_partial_line'] = True
+        for line in raw.decode().splitlines():
             row = json.loads(line)
             if row.get('run') != run or row.get('label') != direction or row.get('log_id') != expected:
                 raise ValueError('Sender run/label/log identity changed')
@@ -82,7 +88,8 @@ def sender_evidence(path, run, direction, baseline, start, end):
             errors=[r for r in selected if r['kind'] == 'error'][-20:],
             outstanding_events=sum(r['kind']=='outstanding' for r in selected),
             sequence_observations=[dict(icmp_sequence=r.get('icmp_sequence'), native_ts=r.get('native_ts'),
-                observed_ts=r['observed_ts'], kind=r['kind']) for r in selected if r.get('icmp_sequence') is not None])
+                observed_ts=r['observed_ts'], kind=r['kind'], text=r.get('text', ''))
+                for r in selected if r.get('icmp_sequence') is not None])
         if missing:
             raise ValueError('Sender console mirror has missing event indices')
         result['status'] = 'PASS'

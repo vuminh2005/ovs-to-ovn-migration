@@ -155,6 +155,34 @@ class Client:
                             console.write(ICMP_PREFIX+json.dumps(value, sort_keys=True)+'\n')
             self.ping = Ping(cfg, publish=publish)
         self.probe_id = str(uuid.uuid4())
+        self.export_lock = threading.Lock()
+        self.export_nonce = None
+        self.export_error = None
+
+    def request_export(self, instruction):
+        if not self.cfg.get('icmp_export_enabled') or not instruction or not self.ping:
+            return
+        nonce = instruction.get('nonce')
+        if not isinstance(nonce, str) or len(nonce) != 32:
+            return
+        with self.export_lock:
+            if self.export_nonce == nonce:
+                return
+            self.export_nonce = nonce
+        def transfer():
+            from ns_log_transfer import upload
+            for attempt in range(3):
+                try:
+                    upload(self, nonce, not_before=instruction.get('not_before_timestamp'))
+                    self.export_error = None
+                    return
+                except Exception as exc:
+                    self.export_error = str(exc)
+                    if attempt < 2:
+                        self.stop.wait(1)
+                if self.stop.is_set():
+                    return
+        threading.Thread(target=transfer, daemon=True).start()
 
     def connect(self, stats, port=None):
         with stats.lock:
@@ -215,6 +243,7 @@ class Client:
                         first = stats.snapshot()['first_session']
                         if name == 'held' and first and session != first:
                             raise ValueError('held session identity changed')
+                        self.request_export(response.get('icmp_export'))
                         break
                 except (TimeoutError, socket.timeout) as exc:
                     error = str(exc)
@@ -310,6 +339,7 @@ class Client:
                                    started_mono=started, armed=self.armed, armed_mono=self.armed_mono,
                                    armed_ts=self.armed_ts, listener_ack=self.listener_ack,
                                    icmp=self.ping.snapshot() if self.ping else None,
+                                   icmp_export_error=self.export_error,
                                    streams={k: s.snapshot() for k, s in self.stats.items()}))
                 self.stop.wait(1)
         finally:
@@ -332,6 +362,10 @@ class Server:
         self.lock = threading.Lock()
         self.opened = None
         self.stop = threading.Event()
+        self.log_receiver = None
+        if cfg.get('icmp_receive_path'):
+            from ns_log_transfer import Receiver
+            self.log_receiver = Receiver(cfg)
         self.add_listener(cfg['port'])
 
     def add_listener(self, port):
@@ -352,12 +386,22 @@ class Server:
                         if row.get('control'):
                             if port != owner.cfg['port'] or row.get('token') != owner.cfg.get('control_token'):
                                 raise ValueError('Listener control ownership mismatch')
-                            reply = owner.open_new()
+                            if row['control'] == 'ICMP_UPLOAD' and owner.log_receiver:
+                                owner.log_receiver.receive(sock, row)
+                                return
+                            elif row['control'] == 'ICMP_EXPORT' and owner.log_receiver:
+                                reply = owner.log_receiver.request(row)
+                            elif row['control'] == 'OPEN':
+                                reply = owner.open_new()
+                            else:
+                                raise ValueError('Unknown listener control action')
                             sock.sendall((json.dumps(reply)+'\n').encode())
                             return
                         last_request = {k: row.get(k) for k in ('run', 'probe', 'seq')}
                         row.update(server=owner.cfg['server'], server_boot=boot_id(), listener=listener_id,
                             connection=connection, peer=peer[0], peer_port=peer[1])
+                        if owner.log_receiver:
+                            row['icmp_export'] = owner.log_receiver.instruction()
                         sock.sendall((json.dumps(row)+'\n').encode())
                     except (OSError, EOFError, ValueError) as exc:
                         if owner.cfg.get('output'):

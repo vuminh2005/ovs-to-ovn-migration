@@ -363,6 +363,7 @@ exit 0'''
         return dict(status=state, run=self.cfg['run'], config=self.cfg,
             identity=identity(os.getpid()), heartbeat_ts=time.time(), jobs=jobs, errors=list(self.errors),
             stopped=state != 'RUNNING', finished_ts=time.time() if state != 'RUNNING' else None,
+            cleanup_complete=getattr(self, 'cleanup_complete', False),
             coverage='GAPPED' if self.gaps else 'NO_OBSERVED_GAPS')
 
     def run(self):
@@ -410,8 +411,10 @@ exit 0'''
             self.errors.append(str(exc))
             self.record('collector-error', error=str(exc))
         finally:
+            self.cleanup_complete = True
             for name, row in self.children.items():
                 if not self.stop_job(name, row, verify=True):
+                    self.cleanup_complete = False
                     self.errors.append(name+': observer cleanup not proven')
             executor.shutdown(wait=True, cancel_futures=True)
             self.tail_logs()

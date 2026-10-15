@@ -137,13 +137,20 @@ def render_text(report, root, *, modern):
     def icmp(label, flow, result=None, timeline_key=None):
         heading(label, 2)
         field('Result', check(result or flow.get('status')), 4)
-        field('Packet loss', packet_loss(flow), 4)
+        reconciled = flow.get('measurement_kind') == 'icmp-probe-availability'
+        if reconciled:
+            probe = dict(status=flow.get('status'), attempts=flow.get('probe_attempts'), failures=flow.get('probe_failures'))
+            field('Probe failure rate', probe_failure_rate(probe), 4)
+            field('Local send failures', counter(flow.get('local_send_failures')), 4)
+            field('Measurement basis', 'PCAP + verified local errors', 4)
+        else:
+            field('Packet loss', packet_loss(flow), 4)
         field('Failure burst count', counter(flow.get('failure_burst_count'))
               if flow.get('status') == 'PASS' else 'UNAVAILABLE', 4)
-        field('Longest packet outage', seconds(flow.get('actual_dataplane_outage_seconds'))
+        field('Longest probe outage' if reconciled else 'Longest packet outage', seconds(flow.get('actual_dataplane_outage_seconds'))
               if flow.get('status') == 'PASS' else 'UNAVAILABLE', 4)
         if 'total_downtime_seconds' in flow:
-            field('Total packet downtime', seconds(flow.get('total_downtime_seconds')), 4)
+            field('Total probe downtime' if reconciled else 'Total packet downtime', seconds(flow.get('total_downtime_seconds')), 4)
         if timeline_key:
             timeline(timeline_key)
 
@@ -208,6 +215,13 @@ def render_text(report, root, *, modern):
         if ns.get('new_listener_enabled') or 'new_listener' in value.get('streams', {}):
             names.append(('new_listener', 'New listener / new connection every probe'))
         tcp(name, value, names, direction=direction)
+    diagnostics = report.get('diagnostic_coverage') or {}
+    if diagnostics.get('status') not in (None, 'PASS', 'DISABLED'):
+        heading('Diagnostics coverage')
+        field('Status', diagnostics['status'], 2)
+        field('Scope', 'Traffic validation is evaluated separately', 2)
+        for warning in diagnostics.get('warnings', []):
+            lines.append('  '+warning)
     return '\n'.join(lines) + '\n'
 
 

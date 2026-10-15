@@ -232,6 +232,30 @@ print(json.dumps(d.agent_start(root,cfg)))
         self.assertIn('snat/ICMP sender log: console gap',errors)
         self.assertEqual(json.loads((self.root/'ns-diagnostics.json').read_text())['status'],'UNAVAILABLE')
 
+    def test_original_sender_export_occurs_only_after_all_capture_stops_before_analysis(self):
+        d=self.controller()
+        d.cfg['ns'].update(icmp_enabled=True,icmp_sender_logging_enabled=True,icmp_sender_export_enabled=True)
+        d.state['captures']={kind:dict(kind=kind,host='host',status='RUNNING')
+            for kind in ('endpoint','guest-snat','guest-fip')}
+        events=[]
+        d.x.ns_rows=lambda:events.append('refresh')
+        def stop(*args):
+            events.append('stop')
+            return dict(status='STOPPED',dropped_packets=0,captured_packets=5)
+        def export(*args):
+            self.assertEqual(events,['stop','stop','stop','refresh'])
+            data=json.loads((self.root/'ns-diagnostics.json').read_text())
+            self.assertTrue(all(c['remote']['status']=='STOPPED' for c in data['captures'].values()))
+            events.append('export')
+        def analyze(*args):
+            self.assertEqual(events[-1],'export')
+            events.append('analysis')
+            return {name:dict(sender_log=dict(status='PASS')) for name in ('snat','fip')}
+        with patch.object(d,'transport',side_effect=stop),patch('ns_log_transfer.collect',side_effect=export), \
+             patch('ns_icmp_evidence.finalize',side_effect=analyze):
+            self.assertEqual(d.finish(),[])
+        self.assertEqual(events[-2:],['export','analysis'])
+
     def test_pre_freeze_rejects_missing_or_replaced_capture(self):
         d = self.controller()
         with self.assertRaisesRegex(RuntimeError, 'missing before freeze'): d.ready()

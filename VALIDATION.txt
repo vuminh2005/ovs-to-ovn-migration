@@ -1,3 +1,48 @@
+N-S ICMP sender reconciliation/export and diagnostic coverage — 2026-10-15
+Based on the latest delivered current-playbook.zip. Earlier RabbitMQ mitigation,
+probe shutdown, observer reconnect and traffic report formatting are retained.
+
+The actual ns-debug-20261015-220206.tar.gz bundle was replayed without changing
+its evidence. FIP ICMP has 30 missing captured requests, sequences 8251–8280.
+All 30 are uniquely matched to original local Destination Host Unreachable
+events in a continuous sender log, inside the same captured failure/recovery
+burst. The reconciled metric is probe availability: 13634 attempts, 438 failures,
+30 local send failures, 3.212556843186152 percent probe failure rate, one burst
+and 94.70844602584839 seconds downtime. No send timestamps are fabricated.
+The strict wire metric remains UNAVAILABLE with packet_loss_percent=null in
+wire_capture_metrics; unrelated or unexplained evidence gaps remain unavailable.
+The old run's incomplete SNAT console mirror remains unavailable; this change
+does not retroactively certify the entire old run or its final result.
+
+New runs export the original SNAT guest JSONL after all three N-S captures stop,
+using a separate authenticated outbound socket to the existing TCP endpoint.
+Run/boot/ping/log/probe identities, nonce, exact size, SHA256, contiguous event
+indices and the final native timestamp are verified before atomic publication.
+The guest waits for its original file to cross capture-stop+2 seconds; the
+receiver checks that fence independently. The console mirror remains separate.
+No ping or held connection is restarted; no VM/FIP/listener/port is added.
+
+Forensic GAPPED/UNAVAILABLE coverage is reported separately from traffic checks.
+Original diagnostic errors and observer gaps remain visible, including TXT
+warnings. A verified collection_status=STOPPED remains mandatory for cleanup;
+failed or unproven collector shutdown, missing sender evidence and actual
+traffic/workload failures still block successful validation.
+
+521 full-suite tests PASS, 396 subtests PASS, no skips (140 SDK warnings).
+After three additional production-wiring/ordering/source-gap cases were added:
+46 final focused tests PASS, 14 subtests PASS. Nine Ansible syntax entrypoints
+PASS. Python AST 80 files / YAML 35 files PASS; source whitespace checks PASS.
+Real TCP socket tests transfer the complete raw sender file and verify its
+hash, identity, protected file mode, capture fence and unchanged held session
+and connection-attempt count. They use a local FakePing state and file, not a
+live guest ping. Negative tests reject running captures, incomplete source logs,
+wrong token/identity/hash, conflicting replies, unknown local errors and new
+unmeasured outages. No live lab reset, migration, guest or cloud API operated.
+New guest code is staged through cloud-init, so apply this version to a fresh
+run after resetting the lab baseline; old running guest code is not upgraded.
+
+Prior validation history:
+
 Conductor quorum startup mitigation and complete deploy evidence — 2026-10-15
 Based on the latest delivered current-playbook.zip. Earlier probe shutdown,
 observer, ICMP, traffic report and scheduler recovery changes remain.

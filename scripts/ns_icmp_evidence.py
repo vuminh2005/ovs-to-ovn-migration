@@ -5,6 +5,7 @@ from pathlib import Path
 
 from dataplane_capture import echo_rows, pcap_metrics, recovered_endpoint, save
 from ns_icmp_logging import sender_evidence
+from ns_icmp_reconcile import reconcile
 
 
 def finalize(root):
@@ -48,7 +49,13 @@ def finalize(root):
             bursts = value.get('failure_bursts', [])
             value['total_downtime_seconds'] = (sum(b['duration_seconds'] for b in bursts)
                 if value['status'] == 'PASS' else None)
-            sender = sender_evidence(root/'ns'/(direction+'-icmp-sender.jsonl'), cfg.get('run'), direction,
+            sender_path = root/'ns'/(direction+'-icmp-sender.jsonl')
+            full = root/'ns/snat-icmp-sender.full.jsonl'
+            if direction == 'snat' and (full.exists() or ns.get('icmp_sender_export_enabled')):
+                sender_path = full
+                from ns_log_transfer import verify_export
+                verify_export(root, cfg.get('run'), baseline['clients'][direction])
+            sender = sender_evidence(sender_path, cfg.get('run'), direction,
                 baseline['clients'][direction], start['timestamp'], end['reply_timestamp'] if end else None)
             observations = sender.pop('sequence_observations', [])
             discontinuities = []
@@ -67,6 +74,7 @@ def finalize(root):
                         0 < (r['icmp_sequence']-prior['icmp_sequence']) % 65536 < delta])
                 discontinuities.append(gap)
             value.update(sender_log=sender, request_discontinuities=discontinuities)
+            value = reconcile(value, rows, start, end, sender, observations, cfg['interval'], source)
             if value['status'] != 'PASS' and bursts:
                 value['observed_window'] = dict(certified=False,
                     scope='Captured requests/replies only; missing sender requests remain unaccounted',
@@ -76,10 +84,15 @@ def finalize(root):
             value.update(status='UNAVAILABLE', reason=str(exc))
         outcomes[direction] = value
         entry = result.setdefault('directions', {}).setdefault(direction, {})
+        if 'tcp_status' not in entry:
+            streams = entry.get('streams', {})
+            entry['tcp_status'] = ('PASS' if streams and all(s.get('status') == 'PASS' for s in streams.values())
+                                   and entry.get('boot_continuity', 'PASS') == 'PASS'
+                                   else entry.get('status', 'UNAVAILABLE'))
         entry['icmp'] = value
-        if value['status'] != 'PASS':
-            entry['status'] = 'FAIL'
-            result['status'] = 'FAIL'
+        entry['status'] = 'PASS' if value['status'] == 'PASS' and entry['tcp_status'] == 'PASS' else 'FAIL'
+    result['status'] = ('PASS' if not result.get('reason') and result.get('directions') and
+                        all(v.get('status') == 'PASS' for v in result['directions'].values()) else 'FAIL')
     save(root/'ns-icmp-results.json', outcomes)
     save(path, result)
     return outcomes

@@ -403,6 +403,12 @@ class Diagnostics:
                 # mirror can cover the last captured replies as well as the baseline.
                 if hasattr(self.x, 'ns_rows'):
                     self.x.ns_rows()
+                if self.cfg['ns'].get('icmp_sender_export_enabled'):
+                    from ns_log_transfer import collect
+                    try:
+                        collect(self.x)
+                    except Exception as exc:
+                        errors.append('snat/ICMP original sender export: '+str(exc))
                 outcomes = finalize(self.root)
                 if self.cfg['ns'].get('icmp_sender_logging_enabled'):
                     for direction, outcome in outcomes.items():
