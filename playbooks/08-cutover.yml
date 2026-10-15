@@ -36,6 +36,11 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Queue before-legacy-agent-stop diagnostic checkpoint
+      ansible.builtin.include_tasks: diagnostics-checkpoint-tasks.yml
+      vars:
+        diagnostic_checkpoint_label: before-legacy-agent-stop
+
     - name: Disable and stop legacy network-node agents when installed
       ansible.builtin.shell: |
         set -euo pipefail
@@ -72,6 +77,11 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Queue before-ovn-takeover diagnostic checkpoint
+      ansible.builtin.include_tasks: diagnostics-checkpoint-tasks.yml
+      vars:
+        diagnostic_checkpoint_label: before-ovn-takeover
+
     - name: Enable OpenFlow15 on existing br-int
       ansible.builtin.shell: |
         set -euo pipefail
@@ -157,6 +167,11 @@
       run_once: true
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
+    - name: Queue vm-portbinding-ready diagnostic checkpoint
+      ansible.builtin.include_tasks: diagnostics-checkpoint-tasks.yml
+      vars:
+        diagnostic_checkpoint_label: vm-portbinding-ready
+
     - name: Mark dataplane convergence end
       ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/dataplane_convergence.end
       run_once: true

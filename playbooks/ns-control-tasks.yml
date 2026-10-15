@@ -1,0 +1,18 @@
+---
+- name: Check or arm N-S clients through owned source router before cutover
+  hosts: localhost
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Send run-owned N-S control without querying Neutron
+      ansible.builtin.script:
+        cmd: "../scripts/ns_control.py {{ ns_control_payload | to_json | quote }}"
+        executable: python3
+      delegate_to: "{{ ns_control_host }}"
+      register: ns_control_reply
+      no_log: true
+    - name: Persist exact N-S control acknowledgement
+      ansible.builtin.copy:
+        dest: "{{ ns_control_ack_path }}"
+        content: "{{ ns_control_reply.stdout | trim | from_json | to_nice_json }}"
+        mode: '0600'

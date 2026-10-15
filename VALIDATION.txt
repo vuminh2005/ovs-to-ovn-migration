@@ -1,3 +1,34 @@
+N-S traffic and continuous migration diagnostics — 2026-10-15
+Source: user-supplied current-playbook.zip (current run only).
+Source SHA-256: 26cf39192170b4718f78a15586f955265d660b236309642376fe122fea6c1e78
+
+462 tests PASS; 374 subtests PASS; no skips. 140 existing SDK deprecation
+warnings. Python 3.12, ansible-core 2.16.19, OpenStackSDK 4.21.0.
+9 Ansible entrypoint/helper syntax checks PASS; Python compile and diff
+whitespace checks PASS. Existing source changes are retained.
+
+New coverage includes real localhost TCP held/new-old/new-listener behavior,
+authenticated/idempotent ARM after Neutron stop, unchanged held connection,
+sender-side ICMP PCAP burst/total-downtime measurements and capture-drop rejection,
+task/phase timestamp attribution, and actual migration_report.py TXT/JSON output
+for eight N-S flows. Host observer tests exercise real process lifecycle, owned
+cleanup, log rotation, schema adaptation, failed evidence, and a real Ansible
+stage/start/stop/fetch transport with a modeled Docker CLI. Resume preserves
+separate pre-cutover observation segments and both fetched evidence archives.
+
+N-S ICMP and TCP old/new listeners use the existing endpoint, VMs, router and FIP.
+Held never reconnects. New listeners open only after the phase-07 Neutron stop.
+The existing SNAT source-port preservation setting and migration algorithm remain.
+Read-only network observers retain logs, database/flow changes, PCAP and snapshots;
+missing evidence is UNAVAILABLE. Time overlap is not automatic proof of causality.
+Runtime prerequisites, collection limits and metric semantics are documented in
+docs/ns-observability.md. CHANGES.patch is relative to the supplied ZIP baseline.
+
+No live lab migration, reset, service restart or cloud API call was executed.
+Local TCP/PCAP/Ansible fixtures do not establish actual lab recovery times.
+
+Prior validation history:
+
 RabbitMQ ANSI/DEC parser correction — 2026-10-14
 Source: current migration.zip; previous report/timing/reset checks retained.
 

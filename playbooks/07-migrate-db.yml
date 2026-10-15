@@ -81,6 +81,23 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
+- name: Phase 07 - Open additional N-S listeners after API freeze
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Open additional SNAT and FIP listeners while retaining held sessions
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} ns-arm {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
 - name: Phase 07 - Run Neutron to OVN DB migration exactly once
   hosts: control
   any_errors_fatal: true  # a failed DB sync/compatibility gate must block later plays on every host

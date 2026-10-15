@@ -89,6 +89,12 @@
         argv: [python3, "{{ playbook_dir }}/scripts/phase_schema.py", mark, "{{ migration_run_dir }}", '07', end]
       changed_when: false
 
+    - name: Restore diagnostic observation segments before resumed cutover
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/scripts/diagnostics_control.py", ensure, "{{ migration_run_dir }}"]
+      changed_when: false
+      when: lookup('fileglob', migration_run_dir + '/diagnostics-config.json') | length > 0
+
 - import_playbook: playbooks/08-cutover.yml
 - import_playbook: playbooks/09-cleanup.yml
 - import_playbook: playbooks/10-restore-neutron.yml

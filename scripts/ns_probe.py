@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import socket
+import socketserver
+import signal
 import threading
 import time
 import uuid
@@ -61,7 +63,8 @@ class Stats:
                           terminal_event=None,
                           first_local_endpoint=None, last_local_endpoint=None,
                           first_peer_endpoint=None, last_peer_endpoint=None,
-                          recovered_failure_bursts=[])
+                          recovered_failure_bursts=[], first_failure_ts=None, first_failure_mono=None,
+                          last_success_ts=None, last_success_mono=None, open_failure_ts=None)
         self.lock = threading.Lock()
 
     def break_held(self, exc, operation, sequence, wire):
@@ -90,15 +93,22 @@ class Stats:
                 v['consecutive_successes'] = 0
                 if v['open_failure_since'] is None:
                     v['open_failure_since'] = start
+                    v['open_failure_ts'] = time.time()-(time.monotonic()-start)
+                    if v['first_failure_ts'] is None:
+                        v['first_failure_ts'], v['first_failure_mono'] = v['open_failure_ts'], start
             else:
                 v['successes'] += 1
+                completed, completed_ts = time.monotonic(), time.time()
+                v['last_success_mono'], v['last_success_ts'] = completed, completed_ts
                 v['consecutive_successes'] += 1
                 if v['open_failure_since'] is not None:
                     v['recovered_failure_bursts'].append(dict(start_mono=v['open_failure_since'],
-                        recovery_mono=time.monotonic(), duration_seconds=time.monotonic()-v['open_failure_since']))
+                        recovery_mono=completed, duration_seconds=completed-v['open_failure_since'],
+                        start_timestamp=v['open_failure_ts'], recovery_timestamp=completed_ts))
                     v['longest_recovered_failure_seconds'] = max(
                         v['longest_recovered_failure_seconds'], time.monotonic()-v['open_failure_since'])
                     v['open_failure_since'] = None
+                v['open_failure_ts'] = None
                 session = {k: response[k] for k in ('server', 'server_boot', 'listener', 'connection')}
                 if v['first_session'] is None:
                     v['first_session'] = session
@@ -125,16 +135,28 @@ class Client:
         self.cfg = cfg
         self.stats = {name: Stats() for name in ('held', 'new')}
         self.stop = threading.Event()
+        self.arm_lock = threading.Lock()
+        self.armed = False
+        self.armed_mono = None
+        self.armed_ts = None
+        self.listener_ack = None
+        if cfg.get('new_port'):
+            self.stats['new_old'] = self.stats.pop('new')
+            self.stats['new_listener'] = Stats()
+        self.ping = None
+        if cfg.get('icmp_enabled'):
+            from ns_icmp import Ping
+            self.ping = Ping(cfg)
         self.probe_id = str(uuid.uuid4())
 
-    def connect(self, stats):
+    def connect(self, stats, port=None):
         with stats.lock:
             stats.value['connection_attempts'] += 1
         sock = socket.socket()
         try:
             sock.settimeout(self.cfg['timeout'])
             sock.bind((self.cfg['source'], 0))
-            sock.connect((self.cfg['target'], self.cfg['port']))
+            sock.connect((self.cfg['target'], port or self.cfg['port']))
             return Wire(sock)
         except BaseException:
             sock.close()
@@ -147,6 +169,9 @@ class Client:
         sequence = 0
         try:
             while not self.stop.is_set():
+                if name == 'new_listener' and not self.armed:
+                    self.stop.wait(.05)
+                    continue
                 sequence += 1
                 started = time.monotonic()
                 response = None
@@ -158,7 +183,7 @@ class Client:
                         raise EOFError('held socket already closed; reconnect prohibited')
                     if wire is None:
                         operation = 'connect'
-                        wire = self.connect(stats)
+                        wire = self.connect(stats, self.cfg['new_port'] if name == 'new_listener' else None)
                         if name == 'held':
                             established = True
                     request = dict(run=self.cfg['run'], probe=self.probe_id, seq=sequence)
@@ -194,7 +219,7 @@ class Client:
                         wire.sock.close()
                         wire = None
                 stats.record(started, response, error, local_endpoint)
-                if name == 'new' and wire:
+                if name != 'held' and wire:
                     wire.sock.close()
                     wire = None
                 self.stop.wait(max(0, self.cfg['interval']-(time.monotonic()-started)))
@@ -202,60 +227,169 @@ class Client:
             if wire:
                 wire.sock.close()
 
+    def arm(self):
+        with self.arm_lock:
+            if not self.armed:
+                held = self.stats['held'].snapshot()
+                if not held['first_session'] or held['held_broken']:
+                    raise RuntimeError('Original held session is not ready')
+                wire = self.connect(Stats())  # Dedicated control socket, never the held stream.
+                try:
+                    wire.sock.sendall((json.dumps(dict(run=self.cfg['run'],
+                        control='OPEN', token=self.cfg['control_token']))+'\n').encode())
+                    reply = wire.line(time.monotonic()+self.cfg['timeout'])
+                finally:
+                    wire.sock.close()
+                if (reply.get('status') != 'PASS' or reply.get('run') != self.cfg['run'] or
+                        reply.get('new_port') != self.cfg['new_port'] or not reply.get('listener') or
+                        reply.get('server_boot') != held['first_session']['server_boot'] or
+                        reply.get('server') != held['first_session']['server']):
+                    raise RuntimeError('New listener acknowledgement/identity mismatch')
+                self.listener_ack = reply
+                self.armed_mono, self.armed_ts = time.monotonic(), time.time()
+                self.armed = True
+            return self.control_status()
+
+    def control_status(self):
+        held = self.stats['held'].snapshot()
+        return dict(status='PASS', run=self.cfg['run'], armed=self.armed,
+            armed_mono=self.armed_mono, armed_ts=self.armed_ts,
+            ready=bool(held['first_session']) and not held['held_broken'],
+            probe_id=self.probe_id, held_session=held['first_session'],
+            connection_attempts=held['connection_attempts'], listener_ack=self.listener_ack,
+            boot=boot_id(), ts=time.time(), mono=time.monotonic())
+
+    def control_server(self):
+        owner = self
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.settimeout(5)
+                try:
+                    row = Wire(self.request).line(time.monotonic()+5)
+                    if row.get('run') != owner.cfg['run'] or row.get('token') != owner.cfg['control_token']:
+                        raise ValueError('Control ownership mismatch')
+                    if row.get('action') == 'ARM':
+                        reply = owner.arm()
+                    elif row.get('action') == 'CHECK':
+                        reply = owner.control_status()
+                    else:
+                        raise ValueError('Unknown control action')
+                except Exception as exc:
+                    reply = dict(status='FAIL', run=owner.cfg['run'], error=str(exc))
+                self.request.sendall((json.dumps(reply)+'\n').encode())
+        server = ThreadServer((self.cfg.get('control_bind', self.cfg['source']), self.cfg['control_port']), Handler)
+        server.timeout = .2
+        try:
+            while not self.stop.is_set():
+                server.handle_request()
+        finally:
+            server.server_close()
+
     def run(self):
         threads = [threading.Thread(target=self.stream, args=(name,), daemon=True) for name in self.stats]
+        if self.cfg.get('control_port'):
+            threads.append(threading.Thread(target=self.control_server, daemon=True))
+        if self.ping:
+            threads.append(threading.Thread(target=self.ping.run, daemon=True))
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, lambda *_: self.stop.set())
         for thread in threads:
             thread.start()
         started = time.monotonic()
         try:
             while time.monotonic()-started < self.cfg['lifetime']:
                 emit(self.cfg, dict(kind='client', label=self.cfg['label'], probe_id=self.probe_id,
-                                   started_mono=started, streams={k: s.snapshot() for k, s in self.stats.items()}))
+                                   started_mono=started, armed=self.armed, armed_mono=self.armed_mono,
+                                   armed_ts=self.armed_ts, listener_ack=self.listener_ack,
+                                   icmp=self.ping.snapshot() if self.ping else None,
+                                   streams={k: s.snapshot() for k, s in self.stats.items()}))
                 self.stop.wait(1)
         finally:
             self.stop.set()
+            if self.ping:
+                self.ping.close()
             for thread in threads:
                 thread.join(self.cfg['timeout']+1)
 
 
-def serve(cfg):
-    listener_id = str(uuid.uuid4())
-    def handle(sock, peer):
-        with sock:
-            wire = Wire(sock)
-            connection = str(uuid.uuid4())
-            last_request = None
-            if cfg.get('output'):
-                emit(cfg, dict(kind='connection-open', connection=connection, listener=listener_id,
-                               server=cfg['server'], peer=list(peer), local=list(sock.getsockname())))
-            while True:
-                try:
-                    row = wire.line(time.monotonic()+cfg['lifetime'])
-                    last_request = {k: row.get(k) for k in ('run', 'probe', 'seq')}
-                    if row.get('run') != cfg['run']:
+class ThreadServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+class Server:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.listeners = {}
+        self.lock = threading.Lock()
+        self.opened = None
+        self.stop = threading.Event()
+        self.add_listener(cfg['port'])
+
+    def add_listener(self, port):
+        owner = self
+        listener_id = str(uuid.uuid4())
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                sock, peer = self.request, self.client_address
+                wire, connection, last_request = Wire(sock), str(uuid.uuid4()), None
+                if owner.cfg.get('output'):
+                    emit(owner.cfg, dict(kind='connection-open', connection=connection,
+                        listener=listener_id, server=owner.cfg['server'], peer=list(peer), local=list(sock.getsockname())))
+                while True:
+                    try:
+                        row = wire.line(time.monotonic()+owner.cfg['lifetime'])
+                        if row.get('run') != owner.cfg['run']:
+                            return
+                        if row.get('control'):
+                            if port != owner.cfg['port'] or row.get('token') != owner.cfg.get('control_token'):
+                                raise ValueError('Listener control ownership mismatch')
+                            reply = owner.open_new()
+                            sock.sendall((json.dumps(reply)+'\n').encode())
+                            return
+                        last_request = {k: row.get(k) for k in ('run', 'probe', 'seq')}
+                        row.update(server=owner.cfg['server'], server_boot=boot_id(), listener=listener_id,
+                            connection=connection, peer=peer[0], peer_port=peer[1])
+                        sock.sendall((json.dumps(row)+'\n').encode())
+                    except (OSError, EOFError, ValueError) as exc:
+                        if owner.cfg.get('output'):
+                            emit(owner.cfg, dict(kind='connection-close', connection=connection,
+                                listener=listener_id, peer=list(peer), last_request=last_request,
+                                error=str(exc), errno=getattr(exc, 'errno', None)))
                         return
-                    row.update(server=cfg['server'], server_boot=boot_id(), listener=listener_id,
-                               connection=connection, peer=peer[0], peer_port=peer[1])
-                    sock.sendall((json.dumps(row)+'\n').encode())
-                except (OSError, EOFError, ValueError) as exc:
-                    if cfg.get('output'):
-                        emit(cfg, dict(kind='connection-close', connection=connection, listener=listener_id,
-                                       peer=list(peer), last_request=last_request, error=str(exc),
-                                       errno=getattr(exc, 'errno', None)))
-                    return
-    with socket.socket() as listener:
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((cfg['bind'], cfg['port']))
-        listener.listen(64)
-        listener.settimeout(1)
+        server = ThreadServer((self.cfg['bind'], port), Handler)
+        self.listeners[port] = (listener_id, server)
+        threading.Thread(target=server.serve_forever, kwargs={'poll_interval':.1}, daemon=True).start()
+        return listener_id
+
+    def open_new(self):
+        with self.lock:
+            if not self.opened:
+                port = self.cfg['new_port']
+                listener = self.add_listener(port)
+                self.opened = dict(status='PASS', run=self.cfg['run'], new_port=port,
+                    listener=listener, server=self.cfg['server'], server_boot=boot_id(),
+                    opened_ts=time.time(), opened_mono=time.monotonic())
+                emit(self.cfg, dict(kind='listener-open', **self.opened))
+            return dict(self.opened)
+
+    def run(self):
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, lambda *_: self.stop.set())
         started = time.monotonic()
-        while time.monotonic()-started < cfg['lifetime']:
-            emit(cfg, dict(kind='server', listener=listener_id, server=cfg['server']))
-            try:
-                sock, peer = listener.accept()
-                threading.Thread(target=handle, args=(sock, peer), daemon=True).start()
-            except socket.timeout:
-                pass
+        try:
+            while not self.stop.is_set() and time.monotonic()-started < self.cfg['lifetime']:
+                emit(self.cfg, dict(kind='server', listener=self.listeners[self.cfg['port']][0],
+                    server=self.cfg['server'], new_listener_opened=bool(self.opened), listener_ack=self.opened))
+                self.stop.wait(.5)
+        finally:
+            for _, server in list(self.listeners.values()):
+                server.shutdown()
+                server.server_close()
+
+
+def serve(cfg):
+    Server(cfg).run()
 
 
 def main():

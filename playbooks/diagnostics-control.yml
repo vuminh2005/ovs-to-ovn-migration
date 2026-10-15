@@ -1,0 +1,57 @@
+---
+- name: Operate host observers independently of migrating containers
+  hosts: all
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Resolve owned collector checkpoint
+      ansible.builtin.set_fact:
+        diagnostic_entry: "{{ diagnostics_entries[inventory_hostname] }}"
+    - name: Prepare collector directory
+      ansible.builtin.file:
+        path: "{{ diagnostic_entry.remote_directory }}"
+        state: directory
+        mode: '0700'
+      when: diagnostics_action == 'start'
+    - name: Stage standalone host observer
+      ansible.builtin.copy:
+        src: ../scripts/migration_diagnostics.py
+        dest: "{{ diagnostic_entry.remote_directory }}/migration_diagnostics.py"
+        mode: '0700'
+      when: diagnostics_action == 'start'
+    - name: Operate original observer without changing network state
+      ansible.builtin.command:
+        argv: "{{ ['python3', diagnostic_entry.remote_directory + '/migration_diagnostics.py', diagnostics_action, diagnostic_entry.remote_directory] + (['--config', diagnostic_entry.config | to_json] if diagnostics_action == 'start' else []) + (['--label', diagnostics_label] if diagnostics_action == 'snapshot' else []) }}"
+      register: diagnostic_operation
+      changed_when: false
+      failed_when: false
+    - name: Preserve transport result even when observer is unavailable
+      ansible.builtin.copy:
+        dest: "{{ diagnostics_root }}/{{ inventory_hostname }}-{{ diagnostic_entry.role }}-{{ diagnostics_action }}.json"
+        content: "{{ diagnostic_operation | to_nice_json }}"
+        mode: '0600'
+      delegate_to: localhost
+    - name: Archive original observer evidence even after a collection error
+      ansible.builtin.command:
+        argv:
+          - tar
+          - -czf
+          - "{{ diagnostic_entry.remote_directory }}.tar.gz"
+          - -C
+          - "{{ diagnostic_entry.remote_directory }}"
+          - .
+      register: diagnostic_archive
+      changed_when: false
+      failed_when: false
+      when: diagnostics_action == 'stop'
+    - name: Fetch host evidence before any workload cleanup
+      ansible.builtin.fetch:
+        src: "{{ diagnostic_entry.remote_directory }}.tar.gz"
+        dest: "{{ diagnostics_root }}/{{ diagnostic_entry.archive_name | default(inventory_hostname + '-' + diagnostic_entry.role + '.tar.gz') }}"
+        flat: true
+      when: diagnostics_action == 'stop' and diagnostic_archive.rc == 0
+    - name: Require live collectors before freeze
+      ansible.builtin.assert:
+        that: diagnostic_operation.rc == 0
+        fail_msg: "Observer unavailable; inspect saved diagnostics result before cutover."
+      when: diagnostics_action in ['start', 'check']

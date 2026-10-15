@@ -14,6 +14,9 @@ ns_outbound_ip: 10.233.0.11
 ns_inbound_ip: 10.233.0.20
 # Dedicated port, independent of the manually started baseline services.
 ns_tcp_port: 18180
+ns_tcp_new_port: 18181
+ns_tcp_control_port: 18182
+ns_icmp_enabled: true
 validation_ew_matrix_enabled: true
 
 # Preserve the NAT profile while recording TCP tuples and resets.

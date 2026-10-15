@@ -25,6 +25,11 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: Queue before-legacy-cleanup diagnostic checkpoint
+      ansible.builtin.include_tasks: diagnostics-checkpoint-tasks.yml
+      vars:
+        diagnostic_checkpoint_label: before-legacy-cleanup
+
     - name: Delete br-tun and patch-tun
       ansible.builtin.shell: |
         set -euo pipefail

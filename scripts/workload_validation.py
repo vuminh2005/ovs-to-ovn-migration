@@ -285,6 +285,9 @@ def validation_ready(root):
         role_ready = role_ready and read_evidence(root, 'ns-results.json').get('status') == 'PASS'
         if cfg['ns'].get('diagnostics_enabled'):
             role_ready = role_ready and read_evidence(root, 'ns-diagnostics.json').get('status') == 'PASS'
+    diagnostic_cfg = read_evidence(root, 'diagnostics-config.json')
+    if diagnostic_cfg.get('enabled'):
+        role_ready = role_ready and read_evidence(root, 'migration-diagnostics.json').get('status') == 'PASS'
     return (role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
             workload_pass(read_evidence(root, 'pre-workload-checks.json'), 'geneve') and
             workload_pass(read_evidence(root, 'post-workload-checks.json'), 'geneve') and
@@ -1256,7 +1259,7 @@ class Validation:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready', 'prepare-dhcp', 'precutover-ready', 'capture-finish', 'capture-cleanup', 'd-arm'])
+    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready', 'prepare-dhcp', 'precutover-ready', 'capture-finish', 'capture-cleanup', 'd-arm', 'ns-arm'])
     p.add_argument('root', type=pathlib.Path)
     args = p.parse_args()
     if args.action == 'cleanup-ready':
@@ -1315,6 +1318,9 @@ def main():
                     if cp and cp.get('status') == 'STOPPED':
                         cap.transport('remove', cp)
         return 0
+    elif args.action == 'ns-arm':
+        if extended:
+            extended.ns_arm()
     elif args.action == 'd-arm':
         pair_d.arm()
     elif args.action == 'anchor-start':
@@ -1322,6 +1328,10 @@ def main():
     elif args.action == 'prepare-dhcp':
         v.prepare_dhcp(target=True)
     elif args.action == 'precutover-ready':
+        if read_evidence(v.root, 'diagnostics-config.json').get('enabled'):
+            from diagnostics_control import operate
+            operate(v.root, 'ensure')
+            operate(v.root, 'snapshot', label='pre-freeze')
         v.verify_precutover()
         if v.cfg.get('placement_enabled'):
             v.audit_placement(['measure', 'pre'] + (['tcp'] if pair_d.enabled else []))
@@ -1330,6 +1340,7 @@ def main():
         if extended:
             extended.matrix_ready()
             extended.ns_wait()
+            extended.ns_control('CHECK')
             from ns_diagnostics import Diagnostics
             diagnostics = Diagnostics(extended)
             diagnostics.ready()

@@ -2,6 +2,8 @@
 import datetime
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 import time
 import uuid
@@ -176,6 +178,26 @@ class CallbackModule(CallbackBase):
     def v2_runner_on_unreachable(self, result):
         self._finish(result, 'UNREACHABLE')
 
+    def _collect_failed_run_diagnostics(self, stats):
+        workflows = {'migrate-to-ovn.yml', 'resume-before-target.yml', 'resume-after-db.yml',
+            'resume-after-cleanup.yml', 'retry-validation-preparation.yml', 'retry-ns-diagnostics-preparation.yml'}
+        if (self.root is None or Path(self.playbook or '').name not in workflows or
+                os.environ.get('OVS_TO_OVN_DIAGNOSTICS_FINALIZING') == '1' or
+                not (self.root/'diagnostics-config.json').exists()):
+            return
+        failed = any(stats.summarize(host).get('failures', 0) or
+            stats.summarize(host).get('unreachable', 0) for host in getattr(stats, 'processed', {}))
+        if not failed:
+            return
+        helper = Path(__file__).resolve().parents[1]/'scripts/diagnostics_control.py'
+        env = dict(os.environ, OVS_TO_OVN_DIAGNOSTICS_FINALIZING='1')
+        try:
+            with (self.root/'diagnostics-abort.log').open('ab') as log:
+                subprocess.run([sys.executable, str(helper), 'abort', str(self.root)],
+                    stdout=log, stderr=log, stdin=subprocess.DEVNULL, env=env, timeout=240)
+        except (OSError, subprocess.TimeoutExpired):
+            self._display.warning('Run failed; diagnostics archive may be incomplete. Inspect diagnostics-abort.log.')
+
     def v2_playbook_on_stats(self, stats):
         ended = stamp()
         self._write(dict(event='invocation_end', timestamp=ended))
@@ -200,3 +222,4 @@ class CallbackModule(CallbackBase):
             os.replace(temporary, destination)
         except OSError as error:
             self._warn(error)
+        self._collect_failed_run_diagnostics(stats)

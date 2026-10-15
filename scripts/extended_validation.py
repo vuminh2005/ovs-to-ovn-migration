@@ -3,6 +3,8 @@
 import base64
 import copy
 import json
+import ipaddress
+import uuid
 from pathlib import Path
 import subprocess
 import time
@@ -316,9 +318,19 @@ class Extended:
             raise RuntimeError('EW matrix evidence incomplete')
 
     def ns_config(self, **fields):
-        return dict(run=self.cfg['run'], port=self.cfg['ns']['port'],
-                    interval=self.cfg['tcp_interval'], timeout=self.cfg['tcp_timeout'],
-                    lifetime=self.cfg['lifetime'], **fields)
+        cfg = dict(run=self.cfg['run'], port=self.cfg['ns']['port'],
+            interval=self.cfg['tcp_interval'], timeout=self.cfg['tcp_timeout'],
+            lifetime=self.cfg['lifetime'], **fields)
+        ns = self.cfg['ns']
+        if ns.get('new_port'):
+            cfg.update(new_port=ns['new_port'], control_port=ns['control_port'],
+                control_token=self.state['ns']['control_token'])
+            if fields.get('label'):
+                cfg.update(icmp_enabled=ns.get('icmp_enabled', True),
+                    icmp_interval=self.cfg.get('interval', .2))
+            if fields.get('label') == 'fip':
+                cfg['control_bind'] = '127.0.0.1'
+        return cfg
 
     def local_process(self, role, action, cfg):
         journal = self.state.setdefault('processes', {})
@@ -346,13 +358,25 @@ class Extended:
             dict(path='/etc/ns-probe.json', content=json.dumps(cfg), permissions='0600'),
             dict(path='/etc/systemd/system/ns-probe.service', content=unit)],
             runcmd=[['systemctl', 'enable', '--now', 'ns-probe']])
+        if cfg.get('icmp_enabled'):
+            data['write_files'].append(dict(path='/usr/local/bin/ns_icmp.py',
+                content=(Path(__file__).parent/'ns_icmp.py').read_text(), permissions='0700'))
         self.server(vm, data)
 
     def create_ns(self):
         if not self.ns:
             return
         cfg = self.cfg['ns']
+        if cfg.get('new_port'):
+            ports = [cfg['port'], cfg['new_port'], cfg['control_port']]
+            if len(set(ports)) != 3 or any(type(port) is not int or not 1 <= port <= 65535 for port in ports):
+                raise ValueError('N-S old, new and control ports must be distinct valid TCP ports')
+        if cfg.get('icmp_enabled') and not cfg.get('diagnostics_enabled'):
+            raise ValueError('N-S ICMP requires sender-side packet capture diagnostics')
         s = self.state.setdefault('ns', {})
+        if cfg.get('new_port') and not s.get('control_token'):
+            s['control_token'] = uuid.uuid4().hex
+            self.commit()
         prefix = self.cfg['prefix']+'-'+self.cfg['run']+'-ns'
         ext = self.resource(s, 'external_network', 'network', prefix+'-external',
             is_router_external=True, provider_network_type='flat', provider_physical_network=cfg['physnet'], mtu=cfg['mtu'])
@@ -366,8 +390,12 @@ class Extended:
                             ip_version=4, is_dhcp_enabled=True)
         sg = self.resource(s, 'security_group', 'security_group', prefix+'-security')
         rules = list(self.cloud.network.security_group_rules(security_group_id=sg.id))
-        for protocol, port in (('icmp', None), ('tcp', cfg['port'])):
-            remote = cfg['endpoint_ip']+'/32'
+        allowed = [('icmp', None, cfg['endpoint_ip']+'/32'), ('tcp', cfg['port'], cfg['endpoint_ip']+'/32')]
+        if cfg.get('new_port'):
+            gateway = str(ipaddress.ip_network(cfg['tenant_cidr']).network_address+1)
+            allowed += [('tcp', cfg['new_port'], cfg['endpoint_ip']+'/32'),
+                        ('tcp', cfg['control_port'], gateway+'/32')]
+        for protocol, port, remote in allowed:
             if not any(r.direction == 'ingress' and r.protocol == protocol and r.ether_type == 'IPv4' and
                        r.remote_ip_prefix == remote and (port is None or r.port_range_min == r.port_range_max == port) for r in rules):
                 attrs = dict(security_group_id=sg.id, direction='ingress', ether_type='IPv4', protocol=protocol, remote_ip_prefix=remote)
@@ -433,6 +461,67 @@ class Extended:
             gateway_ports=[dict(id=p.id, mac=p.mac_address, fixed_ips=p.fixed_ips) for p in ports],
             required_ips=[cfg['snat_ip'], cfg['fip_ip']], scope='Reachability gate validates the mentor-managed outer policy'))
 
+    def ns_control(self, action):
+        if not self.ns or not self.cfg['ns'].get('new_port'):
+            return {}
+        from ns_control import request
+        state, ns = self.state['ns'], self.cfg['ns']
+        payload = dict(run=self.cfg['run'], action=action, token=state['control_token'],
+            ip=state['vms']['0']['ip'], port=ns['control_port'], router=state['router'])
+        ack_path = self.root/('ns-control-'+action.lower()+'.json')
+        extra = self.root/'ns-control-transport.json'
+        save(extra, dict(ns_control_payload=payload, ns_control_host=self.cfg['pair_d_network_host'],
+            ns_control_ack_path=str(ack_path)))
+        helper = Path(__file__).parent.parent/'playbooks/ns-control-tasks.yml'
+        result = subprocess.run(['ansible-playbook', '-i', self.cfg['inventory'], str(helper),
+            '-e', '@'+str(extra)], capture_output=True, text=True, timeout=self.cfg['timeout'])
+        (self.root/('ns-control-'+action.lower()+'.log')).write_text(result.stdout+'\n'+result.stderr)
+        if result.returncode:
+            raise RuntimeError('N-S control failed; inspect ns-control log')
+        snat = read_evidence(self.root, ack_path.name)
+        fip = request(dict(payload, ip='127.0.0.1', router=None))
+        rows = dict(snat=snat, fip=fip)
+        baseline = read_evidence(self.root, 'ns-baseline.json')
+        for direction, row in rows.items():
+            original = baseline['clients'][direction]
+            if (row.get('probe_id') != original['probe_id'] or row.get('boot') != original['boot'] or
+                row.get('held_session') != original['streams']['held']['first_session'] or
+                row.get('connection_attempts') != original['streams']['held']['connection_attempts']):
+                raise RuntimeError('N-S control replaced the original held session')
+        return rows
+
+    def ns_arm(self):
+        if not self.ns or not self.cfg['ns'].get('new_port'):
+            return
+        metrics = self.root/'metrics'
+        if not (metrics/'control_plane_downtime.start').exists() or (metrics/'control_plane_downtime.end').exists():
+            raise RuntimeError('N-S listeners can open only after Neutron API freeze')
+        path = self.root/'ns-arm.json'
+        previous = read_evidence(self.root, path.name)
+        if previous.get('status') == 'PASS':
+            return  # Never reset socket identities or measurement epoch on retry.
+        save(path, dict(status='INTENT', run=self.cfg['run'], requested_ts=time.time()))
+        clients = self.ns_control('ARM')
+        save(path, dict(status='ARMED', run=self.cfg['run'], clients=clients))
+        deadline = time.monotonic()+self.cfg['timeout']
+        while time.monotonic() < deadline:
+            rows = self.ns_rows()  # Nova console/local file only; no Neutron API query.
+            ready = True
+            for direction, row in rows.items():
+                stats = row.get('streams', {}).get('new_listener', {})
+                expected = clients[direction]
+                held = row.get('streams', {}).get('held', {})
+                ready = ready and (row.get('armed_mono') == expected['armed_mono'] and
+                    stats.get('consecutive_successes', 0) >= 3 and
+                    (stats.get('last_session') or {}).get('listener') == expected['listener_ack']['listener'] and
+                    held.get('first_session') == expected['held_session'] and not held.get('held_broken', True))
+            if ready:
+                save(path, dict(status='PASS', run=self.cfg['run'], clients=clients,
+                    ready_ts=time.time(), evidence=rows))
+                return
+            time.sleep(.5)
+        raise RuntimeError('N-S new listener failed readiness before dataplane cutover')
+
     def ns_snapshot(self):
         s = self.state['ns']
         cfg = self.cfg['ns']
@@ -495,7 +584,15 @@ class Extended:
                     continue
                 if prior and any(row.get(k) != prior.get(k) for k in ('boot', 'probe_id')):
                     raise RuntimeError(direction+' client rebooted/restarted')
+                expected_streams = {'held', 'new_old', 'new_listener'} if self.cfg['ns'].get('new_port') else {'held', 'new'}
+                if set(row.get('streams', {})) != expected_streams:
+                    errors.append(direction+'/probe schema mismatch')
+                    continue
                 for stream, stats in row['streams'].items():
+                    if stream == 'new_listener' and not post:
+                        if row.get('armed') or stats['attempts']:
+                            raise RuntimeError('N-S additional listener was armed before API freeze')
+                        continue
                     if stats['held_broken'] and not post:
                         raise RuntimeError(direction+' held socket closed; reconnect prohibited')
                     if stats['consecutive_successes'] < 5 or stats['open_failure_since'] is not None:
@@ -515,11 +612,25 @@ class Extended:
                     if stream == 'held' and stats['first_session'] != stats['last_session'] and not post:
                         raise RuntimeError('Held session identity changed')
                     if prior:
-                        before = prior['streams'][stream]
+                        before = prior['streams'].get(stream, {})
                         if stream == 'held' and (stats['first_session'] != before['first_session'] or stats['connection_attempts'] != before['connection_attempts']) and not post:
                             raise RuntimeError('Held session replaced or reconnected')
-                        if stats['last_session'] and before['last_session'] and any(stats['last_session'][k] != before['last_session'][k] for k in ('server', 'server_boot', 'listener')):
+                        if stats['last_session'] and before.get('last_session') and any(stats['last_session'][k] != before['last_session'][k] for k in ('server', 'server_boot', 'listener')):
                             raise RuntimeError('N-S server listener restarted')
+                if self.cfg['ns'].get('icmp_enabled'):
+                    ping = row.get('icmp') or {}
+                    if not ping.get('alive') or ping.get('replies', 0) < 5:
+                        errors.append(direction+'/ICMP ping health unavailable')
+                    # Guest monotonic is a different clock; compare within its own summary.
+                    if row.get('mono', 0)-(ping.get('last_reply_mono') or 0) > 3:
+                        errors.append(direction+'/ICMP not recovered')
+                if post and self.cfg['ns'].get('new_port'):
+                    arm = read_evidence(self.root, 'ns-arm.json').get('clients', {}).get(direction, {})
+                    if not arm or row.get('armed_mono') != arm.get('armed_mono'):
+                        errors.append(direction+'/ARM continuity unavailable')
+                    expected_listener = (arm.get('listener_ack') or {}).get('listener')
+                    if (row.get('streams', {}).get('new_listener', {}).get('last_session') or {}).get('listener') != expected_listener:
+                        errors.append(direction+'/new listener identity changed')
             before = baseline.get('resources')
             if before and any(snapshot.get(k) != before.get(k) for k in snapshot if k != 'tenant_type'):
                 raise RuntimeError('N-S resource preservation failed')
@@ -548,7 +659,7 @@ class Extended:
             continuity = all(row.get(k) == old_row.get(k) for k in ('boot', 'probe_id'))
             streams = {}
             for name, stats in row.get('streams', {}).items():
-                old = old_row['streams'][name]
+                old = old_row['streams'].get(name, dict(attempts=0, failures=0, first_session=None, last_session=None, connection_attempts=0))
                 attempts = stats['attempts']-old['attempts'] if continuity else None
                 failed = stats['failures']-old['failures'] if continuity else None
                 bursts = [b for b in stats['recovered_failure_bursts'] if b['start_mono'] >= old_row['mono']] if continuity else []
@@ -558,21 +669,28 @@ class Extended:
                 if direction == 'snat' and name == 'held' and self.cfg['ns'].get('preserve_snat_source_port'):
                     held = held and snat_source_port_status(old) == 'PASS' and port_status == 'PASS'
                 ready = continuity and held and attempts and attempts > 0 and stats['consecutive_successes'] >= 5 and stats['open_failure_since'] is None
+                measured = continuity and attempts is not None and attempts > 0
                 streams[name] = dict(status='PASS' if ready else 'FAIL', attempts=attempts, failures=failed,
                     failed_probe_percent=100*failed/attempts if attempts else None,
-                    longest_recovered_failure_seconds=max((b['duration_seconds'] for b in bursts), default=0.0) if continuity and stats['open_failure_since'] is None else None,
+                    longest_recovered_failure_seconds=max((b['duration_seconds'] for b in bursts), default=0.0) if measured and stats['open_failure_since'] is None else None,
                     recovered_failure_bursts=bursts, open_failure_since=stats['open_failure_since'],
+                    total_downtime_seconds=sum(b['duration_seconds'] for b in bursts) if measured and stats['open_failure_since'] is None else None,
+                    start_timestamp=(row.get('armed_ts') if name == 'new_listener' else old_row.get('ts')),
+                    end_timestamp=row.get('ts'),
+                    first_failure_timestamp=bursts[0].get('start_timestamp') if bursts else stats.get('open_failure_ts'),
+                    recovery_timestamp=bursts[0].get('recovery_timestamp') if bursts else None,
                     failure_burst_count=(len(bursts) + int(stats['open_failure_since'] is not None
-                        and stats['open_failure_since'] >= old_row['mono'])) if continuity else None,
-                    terminal_error=stats['terminal_error'], first_session=old['last_session'], last_session=stats['last_session'],
+                        and stats['open_failure_since'] >= old_row['mono'])) if measured else None,
+                    terminal_error=stats['terminal_error'], first_session=old['last_session'] or stats['first_session'], last_session=stats['last_session'],
                     held_broken=stats['held_broken'], terminal_event=stats.get('terminal_event'),
                     successful_echo_source_port_match=port_status,
                     **{key:stats.get(key) for key in ('first_local_endpoint', 'last_local_endpoint',
                         'first_peer_endpoint', 'last_peer_endpoint')},
                     observed_peer_ips=stats['observed_peer_ips'], connection_attempts=stats['connection_attempts'])
-            results[direction] = dict(status='PASS' if len(streams)==2 and all(s['status']=='PASS' for s in streams.values()) else 'FAIL',
+            results[direction] = dict(status='PASS' if len(streams)==(3 if self.cfg['ns'].get('new_port') else 2) and all(s['status']=='PASS' for s in streams.values()) else 'FAIL',
                 held_session_preservation=streams.get('held', {}).get('status', 'UNAVAILABLE'),
-                boot_continuity='PASS' if continuity else 'FAIL', start_mono=old_row['mono'], end_mono=row.get('mono'), streams=streams)
+                boot_continuity='PASS' if continuity else 'FAIL', start_mono=old_row['mono'], end_mono=row.get('mono'), streams=streams,
+                icmp_health=row.get('icmp'), armed_mono=row.get('armed_mono'), listener_ack=row.get('listener_ack'))
         save(self.root/'ns-results.json', dict(status='PASS' if not errors and all(r['status']=='PASS' for r in results.values()) else 'FAIL',
             reason='; '.join(errors or []), directions=results, resources=snapshot,
             scope='Fresh pre-migration baseline summary to final recovered summary, client monotonic application probes; no held reconnect', baseline=baseline,

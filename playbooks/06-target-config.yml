@@ -119,6 +119,24 @@
         - { src: /etc/kolla/neutron-server/neutron.conf, dest: neutron.conf.target }
       run_once: true
 
+- name: Phase 06 - Monitor OVN central before DB migration
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Preserve rendered NB and SB endpoints for read-only monitors
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir }}/diagnostics-central-config.json"
+        content: "{{ {'nb': ovn_nb_connection_runtime, 'sb': ovn_sb_connection_runtime} | to_nice_json }}"
+        mode: '0600'
+    - name: Start NB SB change monitors before phase 07 migration
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", start, "{{ migration_run_dir }}", --role, central]
+      changed_when: false
+      when: migration_diagnostics_enabled | bool
     - name: Mark phase 06 end
       ansible.builtin.command:
         argv:

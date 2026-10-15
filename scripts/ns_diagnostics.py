@@ -45,8 +45,16 @@ def checked_config(cfg):
 def capture_filter(cfg):
     checked_config(cfg)
     peers = (cfg['snat_ip'], cfg['fip_ip']) if cfg['kind'] == 'endpoint' else (cfg['guest_ip'],)
-    return ('tcp and port '+str(cfg['tcp_port'])+' and host '+cfg['endpoint_ip']+
-            ' and ('+' or '.join('host '+ip for ip in peers)+')')
+    if not cfg.get('icmp_enabled') and not cfg.get('new_tcp_port'):
+        return ('tcp and port '+str(cfg['tcp_port'])+' and host '+cfg['endpoint_ip']+
+                ' and ('+' or '.join('host '+ip for ip in peers)+')')
+    ports = [cfg['tcp_port']] + ([cfg['new_tcp_port']] if cfg.get('new_tcp_port') else [])
+    if any(type(p) is not int or not 1 <= p <= 65535 for p in ports):
+        raise ValueError('Invalid additional diagnostic TCP port')
+    hosts = '('+' or '.join('host '+ip for ip in peers)+')'
+    return ('((icmp or (tcp and ('+' or '.join('port '+str(p) for p in ports)+
+        '))) and host '+cfg['endpoint_ip']+' and '+hosts+') or (arp and ('+
+        ' or '.join('host '+cfg[k] for k in ('endpoint_ip', 'snat_ip', 'fip_ip', 'guest_ip'))+'))')
 
 
 def capture_interface(cfg):
@@ -145,7 +153,7 @@ def supervise(root):
             child = subprocess.Popen(['tcpdump', '-U', '-n', '-s', '0', '-i', state['interface'],
                                       '-w', state['path'], state['filter']],
                                      stdin=subprocess.DEVNULL, stdout=log, stderr=log)
-            state.update(tcpdump=identity(child.pid), started_at=time.time())
+            state.update(tcpdump=identity(child.pid), started_at=time.time(), supervisor_gap=False)
             started = time.monotonic()
             while not Path(state['path']).exists() or Path(state['path']).stat().st_size < 24:
                 if child.poll() is not None or time.monotonic()-started > 5:
@@ -156,7 +164,12 @@ def supervise(root):
             timed_out = False
             signaled = False
             stop_deadline = None
+            heartbeat = time.monotonic()
             while child.poll() is None:
+                now = time.monotonic()
+                if now-heartbeat > 2:
+                    state['supervisor_gap'] = True
+                heartbeat = now
                 timed_out = time.monotonic()-started >= state['config']['lifetime']
                 if (stopping or timed_out or (root/'stop-request').exists()) and not signaled:
                     child.send_signal(signal.SIGINT)
@@ -288,6 +301,8 @@ class Diagnostics:
             cfg = dict(run=self.cfg['run'], kind=kind, endpoint_ip=ns['endpoint_ip'], snat_ip=ns['snat_ip'],
                        fip_ip=ns['fip_ip'], guest_ip=ns['outbound_ip'] if kind != 'guest-fip' else ns['inbound_ip'],
                        tcp_port=ns['port'], lifetime=self.cfg['lifetime'], allow_create=True)
+            if ns.get('new_port'):
+                cfg.update(new_tcp_port=ns['new_port'], icmp_enabled=ns.get('icmp_enabled', False))
             host = 'localhost'
             if kind == 'endpoint':
                 cfg['interface'] = ns['capture_interface']
@@ -380,7 +395,16 @@ class Diagnostics:
             errors.append('Missing required diagnostic capture')
         save(self.root/'ns-diagnostics.json', dict(status='PASS' if not errors else 'UNAVAILABLE', errors=errors,
              captures=self.state['captures'], conntrack_transfer=False,
-             scope='TCP captures identify tuples/RST; application outage metrics remain client monotonic.'))
+             scope='TCP/ICMP/ARP captures identify tuples, resets and packet loss; TCP application outage remains client monotonic.'))
+        if self.cfg['ns'].get('icmp_enabled'):
+            from ns_icmp_evidence import finalize
+            try:
+                finalize(self.root)
+            except Exception as exc:
+                errors.append('N-S ICMP evidence: '+str(exc))
+                result = json.loads((self.root/'ns-diagnostics.json').read_text())
+                result.update(status='UNAVAILABLE', errors=errors)
+                save(self.root/'ns-diagnostics.json', result)
         return errors
 
 

@@ -126,6 +126,20 @@
         content: "{{ {'status': ('PASS' if (fresh_bindings.results | default([]) | length == 2 and fresh_bindings.results | map(attribute='rc') | select('equalto', 0) | list | length == 2) else 'UNAVAILABLE'), 'results': fresh_bindings.results | default([])} | to_nice_json }}"
 
 
+- name: Phase 12 - Stop and archive host observers before cleanup
+  hosts: localhost
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Stop and fetch all diagnostic observers even after workload validation failure
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", stop, "{{ migration_run_dir }}"]
+      changed_when: false
+      failed_when: false
+      when: migration_diagnostics_enabled | bool
+
 - name: Phase 12 - Stop owned console collector after validation
   hosts: localhost
   gather_facts: false

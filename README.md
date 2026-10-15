@@ -832,3 +832,11 @@ remediation retains SUCCESS with its explicit fields. Any unresolved validation
 failure reports MIGRATED_VALIDATION_INCOMPLETE, preserves evidence/resources and
 never rolls back. Pair-A capture counts every actual Pair-A loss during either
 remediation; Pair-B packets never enter that metric.
+
+
+## N-S ICMP, listener bổ sung và diagnostics
+
+Bản hiện tại bổ sung ICMP + TCP held/new-old/new-listener cho cả SNAT/FIP,
+collector OVS/OVN/Kolla xuyên cutover và timestamp/task/total downtime trong
+`migration-report.txt`. Xem [thiết kế, cách đo và các file bằng chứng](docs/ns-observability.md).
+Workflow và các tiêu chí bảo toàn phiên held vẫn giữ nguyên.

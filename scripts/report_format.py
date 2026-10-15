@@ -123,7 +123,18 @@ def render_text(report, root, *, modern):
     def heading(label, indent=0):
         lines.extend(['', ' ' * indent + label])
 
-    def icmp(label, flow, result=None):
+    def timeline(key):
+        events = report.get('traffic_timeline', {}).get(key)
+        if not events:
+            return
+        from traffic_timeline import display
+        for field_name, label in (('start_timestamp', 'Start measurement'), ('end_timestamp', 'End measurement'),
+            ('first_failure_timestamp', 'First failure'), ('recovery_timestamp', 'First recovery')):
+            event = events[field_name]
+            value = 'NONE (no failure)' if field_name in ('first_failure_timestamp', 'recovery_timestamp') and events.get('failure_burst_count') == 0 else display(event)
+            field(label, value, 6)
+
+    def icmp(label, flow, result=None, timeline_key=None):
         heading(label, 2)
         field('Result', check(result or flow.get('status')), 4)
         field('Packet loss', packet_loss(flow), 4)
@@ -131,8 +142,12 @@ def render_text(report, root, *, modern):
               if flow.get('status') == 'PASS' else 'UNAVAILABLE', 4)
         field('Longest packet outage', seconds(flow.get('actual_dataplane_outage_seconds'))
               if flow.get('status') == 'PASS' else 'UNAVAILABLE', 4)
+        if 'total_downtime_seconds' in flow:
+            field('Total packet downtime', seconds(flow.get('total_downtime_seconds')), 4)
+        if timeline_key:
+            timeline(timeline_key)
 
-    def tcp(label, value, names):
+    def tcp(label, value, names, direction=None):
         heading(label, 2)
         status = value.get('status')
         if status in ('DISABLED', 'NOT TESTED'):
@@ -147,11 +162,14 @@ def render_text(report, root, *, modern):
             field('Longest probe failure', 'UNRECOVERED'
                   if stream.get('open_failure_since') is not None
                   else seconds(stream.get('longest_recovered_failure_seconds')), 6)
+            if 'total_downtime_seconds' in stream:
+                field('Total probe downtime', 'UNRECOVERED' if stream.get('open_failure_since') is not None else seconds(stream.get('total_downtime_seconds')), 6)
+            if direction:
+                timeline(direction+'/'+key)
 
     field('Total run duration', total_time(report.get('total_duration_seconds')))
     field('Control-plane downtime', seconds(report.get('control_plane_downtime_seconds')))
-    field('Dataplane downtime', seconds(report.get('ovn_portbinding_convergence_seconds',
-                                                report.get('dataplane_convergence_seconds'))))
+    heading('Dataplane downtime:')
 
     heading('1. EAST - WEST')
     matrix = report.get('ew_connectivity_matrix') or {}
@@ -180,8 +198,15 @@ def render_text(report, root, *, modern):
         value = (ns.get('directions') or {}).get(direction) or {}
         if ns.get('status') in ('DISABLED', 'NOT TESTED'):
             value = {'status': ns['status']}
-        tcp(name, value, (('held', 'Existing TCP session'),
-                          ('new', 'New connection every probe')))
+        if ns.get('icmp_enabled'):
+            icmp('Outbound (SNAT, ICMP)' if direction == 'snat' else 'Inbound (FIP, ICMP)',
+                value.get('icmp') or {}, timeline_key=direction+'/icmp')
+        old_key = 'new_old' if 'new_old' in value.get('streams', {}) else 'new'
+        names = [('held', 'Existing TCP session'),
+                 (old_key, 'Old listener / new connection every probe')]
+        if ns.get('new_listener_enabled') or 'new_listener' in value.get('streams', {}):
+            names.append(('new_listener', 'New listener / new connection every probe'))
+        tcp(name, value, names, direction=direction)
     return '\n'.join(lines) + '\n'
 
 

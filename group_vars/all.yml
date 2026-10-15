@@ -120,3 +120,10 @@ target_geneve_mtu: 1392
 
 # NS lab defaults are in group_vars/ns-lab.yml.
 validation_ns_enabled: "{{ ns_enabled }}"
+
+# Host-side observers; byte/time limits never overwrite earlier evidence.
+migration_diagnostics_enabled: true
+migration_diagnostics_directory: /var/lib/ovn-migration-diagnostics
+migration_diagnostics_lifetime_seconds: 18000
+migration_diagnostics_max_bytes: 268435456
+migration_diagnostics_external_interface: ns-ex

@@ -43,6 +43,8 @@ def evidence(name):
     p=root/name
     return json.loads(p.read_text()) if p.exists() else None
 report['orchestration_recovery']=evidence('orchestration-recovery.json')
+diagnostic_cfg = evidence('diagnostics-config.json') or {}
+report['migration_diagnostics'] = (evidence('migration-diagnostics.json') or {'status':'UNAVAILABLE'}) if diagnostic_cfg.get('enabled') else {'status':'DISABLED'}
 report['image_preflight']=[dict(json.loads(path.read_text()),
     evidence_directory=str(path.parent),
     image_identities={entry.name:json.loads(entry.read_text()) for entry in sorted(path.parent.glob('*.json')) if entry.name!='result.json'})
@@ -94,6 +96,10 @@ matrix = evidence('ew-matrix-results.json') or {'status': 'UNAVAILABLE', 'flows'
 report['ew_connectivity_matrix'] = {'status': matrix['status'] if cfg.get('ew_matrix_enabled') else 'PARTIAL',
     'flows': dict({'ew_different_compute_different_subnet': report['dataplane_probe']}, **matrix.get('flows', {}))}
 report['north_south'] = (evidence('ns-results.json') or {'status':'UNAVAILABLE'}) if cfg.get('ns', {}).get('enabled') else {'status':'DISABLED'}
+report['north_south']['icmp_enabled'] = bool(cfg.get('ns', {}).get('icmp_enabled'))
+report['north_south']['new_listener_enabled'] = bool(cfg.get('ns', {}).get('new_port'))
+from traffic_timeline import build as build_traffic_timeline
+report['traffic_timeline'] = build_traffic_timeline(root, report['north_south'])
 report['north_south_diagnostics'] = (evidence('ns-diagnostics.json') or {'status':'UNAVAILABLE'}) if cfg.get('ns', {}).get('diagnostics_enabled') and cfg.get('ns', {}).get('enabled') else {'status':'DISABLED'}
 report['extended_cleanup'] = (evidence('extended-cleanup.json') or {}).get('status', 'NOT TESTED') if cfg.get('ew_matrix_enabled') or cfg.get('ns', {}).get('enabled') else 'DISABLED'
 report['workload_capacity'] = evidence('workload-capacity.json')
