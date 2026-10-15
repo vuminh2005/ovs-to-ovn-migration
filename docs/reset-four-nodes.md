@@ -1,7 +1,8 @@
 # Reset lặp lại cụm 4 node về ML2/OVS
 
-Cập nhật 15/10/2026: reset đặt Nova scheduler 1 worker và có một lượt phục hồi
-giới hạn cho đúng lỗi Raft `scheduler` đã ghi nhận. Xem
+Cập nhật 15/10/2026: reset đặt Nova scheduler/conductor mỗi service 1 worker,
+lưu đầy đủ log deploy và có một lượt phục hồi giới hạn cho đúng lỗi Raft
+`scheduler` đã ghi nhận. Xem
 [cấu hình, điều kiện và cách kiểm chứng](reset-rabbitmq-mitigation.md).
 
 Bản reset này được sửa từ commit `a77af56`, dành cho lab hiện tại:

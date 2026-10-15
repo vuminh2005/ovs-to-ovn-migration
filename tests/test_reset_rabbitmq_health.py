@@ -1,6 +1,7 @@
 """Recovered startup errors may pass; live missing/stuck quorum queues must not."""
 import copy
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from contextlib import redirect_stdout
 
 import yaml
 
@@ -66,6 +68,30 @@ class HealthTests(unittest.TestCase):
         self.assertEqual(self.log.read_text(),'old cluster_not_formed already_started\n')
         self.assertEqual(json.loads(self.evidence.read_text()),result)
         self.assertEqual(self.evidence.stat().st_mode & 0o777,0o600)
+
+    def test_deadline_only_final_sample_does_not_report_broker_wide_failure(self):
+        captured=json.loads((ROOT/'tests/fixtures/rabbitmq-conductor-reset.json').read_text())
+        output=io.StringIO()
+        with patch.object(sys,'argv',['reset_rabbitmq_health.py',str(self.evidence)]), \
+             patch.object(health,'wait',return_value=captured['health']), redirect_stdout(output):
+            self.assertEqual(health.main(),1)
+        value=json.loads(output.getvalue())
+        self.assertTrue(value['last_sample_incomplete'])
+        self.assertEqual(value['last_issues'],captured['health']['samples'][0]['issues'])
+        self.assertNotIn('running check failed',value['last_issues'])
+        self.assertIn('running check failed',value['last_sample_issues'])
+        self.assertEqual(value['last_complete_at'],'2026-10-15T13:42:25.486630+00:00')
+
+    def test_real_broker_failure_in_complete_sample_is_not_hidden(self):
+        checks={n:dict(rc=1) for n in ('running','alarms','queues','conductor','scheduler')}
+        row=dict(checks=checks,issues=['running check failed'],observed_at='now')
+        output=io.StringIO()
+        with patch.object(sys,'argv',['reset_rabbitmq_health.py',str(self.evidence)]), \
+             patch.object(health,'wait',return_value=dict(status='FAIL',samples=[row])), redirect_stdout(output):
+            self.assertEqual(health.main(),1)
+        value=json.loads(output.getvalue())
+        self.assertFalse(value['last_sample_incomplete'])
+        self.assertEqual(value['last_issues'],['running check failed'])
 
     def test_recovery_must_be_stable_not_just_one_good_sample(self):
         result = self.run_wait([['scheduler absent'],[],['scheduler down'],[]])
@@ -196,6 +222,36 @@ class HealthTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec('ansible'), 'requires ansible-core')
 class PlaybookIntegrationTests(unittest.TestCase):
+    def test_failed_deploy_output_is_saved_before_gate_without_console_disclosure(self):
+        plays=yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
+        deploy=next(p for p in plays if p['name']=='Deploy clean source ML2 OVS cloud')
+        names=('Persist complete Kolla deploy stdout in the reset snapshot',
+               'Persist complete Kolla deploy stderr in the reset snapshot',
+               'Persist deploy exit status in this reset snapshot',
+               'Fail when deploy or RabbitMQ validation failed')
+        tasks=[copy.deepcopy(t) for t in deploy['tasks'] if t['name'] in names]
+        stdout='TASK [fixture failed registration] ***\nfatal: [compute1]: FAILED! RAW_DEPLOY_SENTINEL'
+        stderr='stderr from deploy\nsecond line'
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            value=dict(rc=2,stdout=stdout,stderr=stderr,start='2026-10-15 20:22:00',
+                       end='2026-10-15 20:34:00',delta='0:12:00')
+            variables=dict(reset_run_dir=str(root),reset_kolla_inventory='/root/multinode',
+                           reset_deploy=value,reset_rabbitmq_health=dict(rc=0),ansible_python_interpreter=sys.executable)
+            play=root/'test.yml'
+            play.write_text(yaml.safe_dump([dict(hosts='localhost',gather_facts=False,vars=variables,tasks=tasks)],sort_keys=False))
+            result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i','localhost,','-c','local',str(play)],
+                                  capture_output=True,text=True,timeout=25)
+            self.assertNotEqual(result.returncode,0)
+            self.assertNotIn('RAW_DEPLOY_SENTINEL',result.stdout+result.stderr)
+            self.assertEqual((root/'kolla-deploy.stdout.log').read_text(),stdout+'\n')
+            self.assertEqual((root/'kolla-deploy.stderr.log').read_text(),stderr+'\n')
+            self.assertEqual((root/'kolla-deploy.stdout.log').stat().st_mode & 0o777,0o600)
+            saved=json.loads((root/'deploy-result.json').read_text())
+            self.assertEqual(saved['rc'],2)
+            self.assertEqual(saved['started_at'],value['start'])
+            self.assertEqual(saved['stdout'],'kolla-deploy.stdout.log')
+
     def test_real_ansible_accepts_recovered_startup_and_rejects_failed_deploy(self):
         plays=yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
         deploy=next(p for p in plays if p['name']=='Deploy clean source ML2 OVS cloud')

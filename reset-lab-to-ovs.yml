@@ -53,6 +53,7 @@
           - ansible_limit | default('') | length == 0
           - not ansible_check_mode
           - reset_nova_scheduler_workers | int >= 1
+          - reset_nova_conductor_workers | int >= 1
           - groups['control'] | sort == ['controller']
           - groups['network'] | sort == ['network1']
           - groups['compute'] | sort == ['compute1', 'compute2']
@@ -557,6 +558,7 @@
           nova_compute_virt_type: "qemu"
           nova_console: "novnc"
           nova_scheduler_workers: {{ reset_nova_scheduler_workers | int }}
+          nova_cell_conductor_workers: {{ reset_nova_conductor_workers | int }}
 
           ###############################################################################
           # OpenStack services
@@ -729,7 +731,7 @@
       ansible.builtin.copy:
         dest: "{{ reset_run_dir }}/reset-rabbitmq-policy.json"
         mode: '0600'
-        content: "{{ {'scope': 'four-node-lab-reset', 'confirmed': reset_lab_confirm | bool, 'inventory': reset_kolla_inventory, 'control_hosts': groups['control'], 'scheduler_workers': reset_nova_scheduler_workers | int} | to_nice_json }}"
+        content: "{{ {'scope': 'four-node-lab-reset', 'confirmed': reset_lab_confirm | bool, 'inventory': reset_kolla_inventory, 'control_hosts': groups['control'], 'scheduler_workers': reset_nova_scheduler_workers | int, 'conductor_workers': reset_nova_conductor_workers | int} | to_nice_json }}"
 
     - name: Deploy OpenStack
       ansible.builtin.shell: |
@@ -742,11 +744,27 @@
       changed_when: true
       failed_when: false
 
+    - name: Persist complete Kolla deploy stdout in the reset snapshot
+      ansible.builtin.copy:
+        dest: "{{ reset_run_dir }}/kolla-deploy.stdout.log"
+        mode: '0600'
+        content: "{{ reset_deploy.stdout | default('') }}\n"
+      no_log: true
+      diff: false
+
+    - name: Persist complete Kolla deploy stderr in the reset snapshot
+      ansible.builtin.copy:
+        dest: "{{ reset_run_dir }}/kolla-deploy.stderr.log"
+        mode: '0600'
+        content: "{{ reset_deploy.stderr | default('') }}\n"
+      no_log: true
+      diff: false
+
     - name: Persist deploy exit status in this reset snapshot
       ansible.builtin.copy:
         dest: "{{ reset_run_dir }}/deploy-result.json"
         mode: '0600'
-        content: "{{ {'rc': reset_deploy.rc, 'inventory': reset_kolla_inventory} | to_nice_json }}"
+        content: "{{ {'rc': reset_deploy.rc, 'inventory': reset_kolla_inventory, 'started_at': reset_deploy.start | default(None), 'ended_at': reset_deploy.end | default(None), 'duration': reset_deploy.delta | default(None), 'stdout': 'kolla-deploy.stdout.log', 'stderr': 'kolla-deploy.stderr.log'} | to_nice_json }}"
 
     - name: Verify deployed Nova scheduler worker configuration
       ansible.builtin.command:
@@ -757,6 +775,18 @@
           - "{{ reset_run_dir }}"
           - --workers
           - "{{ reset_nova_scheduler_workers | string }}"
+      changed_when: false
+      when: reset_deploy.rc == 0
+
+    - name: Verify deployed Nova conductor worker configuration
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/scripts/reset_rabbitmq_recovery.py"
+          - verify-conductor-workers
+          - "{{ reset_run_dir }}"
+          - --workers
+          - "{{ reset_nova_conductor_workers | string }}"
       changed_when: false
       when: reset_deploy.rc == 0
 
@@ -827,6 +857,7 @@
       ansible.builtin.debug:
         msg:
           - "kolla-ansible deploy rc={{ reset_deploy.rc }}"
+          - "Complete deploy output: {{ reset_run_dir }}/kolla-deploy.stdout.log and kolla-deploy.stderr.log"
           - "RabbitMQ live readiness rc={{ reset_rabbitmq_health.rc }}"
           - "{{ reset_rabbitmq_health.stdout | default('') }}"
           - "{{ reset_rabbitmq_health.stderr | default('') }}"
@@ -843,7 +874,8 @@
           - reset_rabbitmq_health.rc == 0 or (reset_rabbitmq_recovery.rc | default(1)) == 0
         fail_msg: >-
           Deployment failed or RabbitMQ did not reach stable live readiness.
-          Inspect {{ reset_run_dir }}/rabbitmq-health.json,
+          Inspect {{ reset_run_dir }}/kolla-deploy.stdout.log,
+          kolla-deploy.stderr.log, deploy-result.json, rabbitmq-health.json,
           rabbitmq-recovery.json, rabbitmq-health-after-recovery.json and
           rabbitmq-deploy-raft-errors.log. Earlier errors alone do not establish
           stale storage; missing/stuck queues, absent consumers, alarms or new

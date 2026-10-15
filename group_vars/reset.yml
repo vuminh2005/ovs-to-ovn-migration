@@ -29,4 +29,6 @@ reset_rabbitmq_stable_seconds: 15
 # Reduce concurrent first declarations of the scheduler quorum queue in this lab.
 # This is a mitigation to verify on fresh resets, not an upstream RabbitMQ fix.
 reset_nova_scheduler_workers: 1
+# Kolla 18.8.0 renders this through nova_cell_conductor_workers.
+reset_nova_conductor_workers: 1
 reset_rabbitmq_recovery_enabled: true

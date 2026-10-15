@@ -35,10 +35,15 @@ def read(root, name):
     return json.loads((root/name).read_text())
 
 
-def verify_workers(root, expected):
+def verify_workers(root, expected, service='nova_scheduler'):
     if type(expected) is not int or expected < 1:
-        raise ValueError('Expected scheduler worker count must be a positive integer')
-    result = command(['docker', 'exec', 'nova_scheduler', 'python3', '-c', WORKERS_CODE])
+        raise ValueError('Expected Nova worker count must be a positive integer')
+    if service not in ('nova_scheduler', 'nova_conductor'):
+        raise ValueError('Unknown Nova worker service')
+    section = 'scheduler' if service == 'nova_scheduler' else 'conductor'
+    filename = 'nova-'+section+'-workers.json'
+    result = command(['docker', 'exec', service, 'python3', '-c',
+                      WORKERS_CODE.replace('"scheduler"', '"'+section+'"')])
     actual = None
     try:
         if result['rc'] == 0:
@@ -47,9 +52,9 @@ def verify_workers(root, expected):
         pass
     value = dict(status='PASS' if type(actual) is int and actual == expected else 'FAIL',
                  expected_workers=expected, effective_workers=actual, observed_at=health.utc(), check=result)
-    health.save(root/'nova-scheduler-workers.json', value)
+    health.save(root/filename, value)
     if value['status'] != 'PASS':
-        raise RuntimeError('Effective Nova scheduler workers differ; inspect nova-scheduler-workers.json')
+        raise RuntimeError('Effective Nova '+section+' workers differ; inspect '+filename)
     return value
 
 
@@ -246,7 +251,7 @@ class Recovery:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['verify-workers', 'recover'])
+    parser.add_argument('action', choices=['verify-workers', 'verify-conductor-workers', 'recover'])
     parser.add_argument('root', type=Path)
     parser.add_argument('--workers', type=int, required=True)
     parser.add_argument('--log', type=Path, default=Path('/var/log/kolla/rabbitmq/rabbit@controller.log'))
@@ -254,7 +259,9 @@ def main():
     parser.add_argument('--stable-seconds', type=int, default=15)
     args = parser.parse_args()
     try:
-        value = (verify_workers(args.root, args.workers) if args.action == 'verify-workers' else
+        value = (verify_workers(args.root, args.workers,
+                               'nova_conductor' if args.action == 'verify-conductor-workers' else 'nova_scheduler')
+                 if args.action != 'recover' else
             Recovery(args.root, args.workers, args.log, args.timeout, args.stable_seconds).recover())
         print(json.dumps({k: v for k, v in value.items() if k not in ('events', 'check')}))
         return 0 if value['status'] == 'PASS' else 1

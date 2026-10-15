@@ -56,6 +56,10 @@ blocks destroy. [Details and retry](docs/reset-four-nodes.md).
 Reset RabbitMQ 15/10/2026: mặc định `nova_scheduler_workers: 1`, kiểm tra cấu
 hình trong container và phục hồi tối đa một lần cho đúng lỗi Raft scheduler
 trong reset lab. [Điều kiện, evidence và kiểm chứng](docs/reset-rabbitmq-mitigation.md).
+Sau bằng chứng conductor khởi động 5 workers và liên tục lỗi tạo queue, reset
+cũng đặt `nova_cell_conductor_workers: 1`, kiểm tra `[conductor] workers` thực
+tế sau deploy và lưu đầy đủ stdout/stderr của Kolla deploy. Failed deploy vẫn
+chặn baseline; recovery scheduler không được dùng cho lỗi conductor.
 
 `reset-lab-to-ovs.yml` now resets the lab with `controller`, `network1`,
 `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud

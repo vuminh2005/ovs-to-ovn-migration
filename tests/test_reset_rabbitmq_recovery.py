@@ -113,7 +113,8 @@ class RecoveryTests(unittest.TestCase):
 
     def save_model(self):
         health.save(self.root/'model.json',self.model)
-        (self.root/'nova.conf').write_text('[scheduler]\nworkers = '+str(self.model['workers'])+'\n')
+        (self.root/'nova.conf').write_text('[scheduler]\nworkers = '+str(self.model['workers'])+
+            '\n[conductor]\nworkers = '+str(self.model.get('conductor_workers',1))+'\n')
 
     def calls(self):
         p=self.root/'calls.jsonl'
@@ -159,6 +160,24 @@ class RecoveryTests(unittest.TestCase):
         result=self.run_recovery()
         self.assertEqual(result['status'],'FAIL')
         self.assertIn('workers differ',result['error'])
+        self.assertFalse(any(c[0]=='systemctl' for c in self.calls()))
+
+    def test_conductor_worker_verification_reads_its_own_container_and_section(self):
+        self.model.update(workers=5,conductor_workers=1);self.save_model()
+        value=recovery.verify_workers(self.root,1,service='nova_conductor')
+        self.assertEqual(value['status'],'PASS')
+        self.assertEqual(value['effective_workers'],1)
+        self.assertEqual(self.calls()[0][:3],['docker','exec','nova_conductor'])
+        self.assertEqual(json.loads((self.root/'nova-conductor-workers.json').read_text())['status'],'PASS')
+        self.assertFalse((self.root/'nova-scheduler-workers.json').exists())
+
+    def test_five_conductor_workers_are_rejected_when_one_was_requested(self):
+        self.model['conductor_workers']=5;self.save_model()
+        with self.assertRaisesRegex(RuntimeError,'conductor workers differ'):
+            recovery.verify_workers(self.root,1,service='nova_conductor')
+        value=json.loads((self.root/'nova-conductor-workers.json').read_text())
+        self.assertEqual(value['status'],'FAIL')
+        self.assertEqual(value['effective_workers'],5)
         self.assertFalse(any(c[0]=='systemctl' for c in self.calls()))
 
     def test_foreign_systemd_unit_is_never_operated(self):
@@ -223,10 +242,11 @@ class RecoveryTests(unittest.TestCase):
         deploy=next(p for p in yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
                     if p['name']=='Deploy clean source ML2 OVS cloud')
         names=('Verify deployed Nova scheduler worker configuration',
+               'Verify deployed Nova conductor worker configuration',
                'Recover the evidenced scheduler Raft startup failure at most once',
                'Fail when deploy or RabbitMQ validation failed')
         tasks=[copy.deepcopy(t) for t in deploy['tasks'] if t['name'] in names]
-        vars=dict(reset_run_dir=str(self.root),reset_nova_scheduler_workers=1,
+        vars=dict(reset_run_dir=str(self.root),reset_nova_scheduler_workers=1,reset_nova_conductor_workers=1,
             reset_rabbitmq_log_path=str(self.log),reset_rabbitmq_health_timeout=15,
             reset_rabbitmq_stable_seconds=1,reset_rabbitmq_recovery_enabled=True,
             reset_deploy={'rc':0},reset_rabbitmq_health={'rc':1},ansible_python_interpreter=sys.executable)
@@ -245,7 +265,8 @@ class RecoveryTests(unittest.TestCase):
         change=copy.deepcopy(next(t for t in target[0]['tasks'] if t['name']=='Write target ML2/OVN globals'))
         path=self.root/'globals.yml'
         vars=dict(reset_globals_path=str(path),reset_config_path=str(self.root/'config'),
-            reset_nova_scheduler_workers=1,ns_physnet='physnet1',kolla_globals_path=str(path),
+            reset_nova_scheduler_workers=1,reset_nova_conductor_workers=1,
+            ns_physnet='physnet1',kolla_globals_path=str(path),
             target_neutron_plugin_agent='ovn',neutron_type_drivers_target='flat,vlan,geneve',
             target_tenant_network_type='geneve',ansible_python_interpreter=sys.executable)
         play=self.root/'render.yml'
@@ -255,6 +276,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         values=yaml.safe_load(path.read_text())
         self.assertEqual(values['nova_scheduler_workers'],1)
+        self.assertEqual(values['nova_cell_conductor_workers'],1)
         self.assertEqual(values['neutron_plugin_agent'],'ovn')
 
 

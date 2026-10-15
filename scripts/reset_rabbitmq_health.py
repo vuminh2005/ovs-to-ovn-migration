@@ -232,8 +232,11 @@ def main():
     args = parser.parse_args()
     result = wait(args.evidence, args.log, timeout=args.timeout, stable_seconds=args.stable_seconds)
     complete = last_complete(result) or {}
+    last_sample = result['samples'][-1] if result['samples'] else {}
+    incomplete = any(c.get('timeout_scope') == 'overall' for c in last_sample.get('checks', {}).values())
     print(json.dumps(dict(status=result['status'], evidence=str(args.evidence), samples=len(result['samples']),
-        last_issues=(result['samples'][-1]['issues'] if result['samples'] else []),
+        last_issues=(complete if incomplete and complete else last_sample).get('issues', []),
+        last_sample_issues=last_sample.get('issues', []), last_sample_incomplete=incomplete,
         last_complete_at=complete.get('observed_at'), last_complete_issues=complete.get('issues'))))
     return 0 if result['status'] == 'PASS' else 1
 

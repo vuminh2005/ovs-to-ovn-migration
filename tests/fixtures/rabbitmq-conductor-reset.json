@@ -1,0 +1,125 @@
+{
+  "source": "rabbitmq-investigation-20261015T134100Z.tar.gz",
+  "deploy": {
+    "inventory": "/root/multinode",
+    "rc": 2
+  },
+  "storage": {
+    "host": "controller",
+    "rc": 0,
+    "remaining_rabbitmq_volumes": []
+  },
+  "conductor_start": [
+    "2026-10-15 20:27:25.122 7 INFO oslo_service.service [None req-3d951106-35b7-4244-8230-878879c372a7 - - - - - -] Starting 5 workers",
+    "2026-10-15 20:27:25.130 16 INFO nova.service [-] Starting conductor node (version 29.4.1)",
+    "2026-10-15 20:27:25.132 17 INFO nova.service [-] Starting conductor node (version 29.4.1)",
+    "2026-10-15 20:27:25.133 18 INFO nova.service [-] Starting conductor node (version 29.4.1)",
+    "2026-10-15 20:27:25.134 19 INFO nova.service [-] Starting conductor node (version 29.4.1)",
+    "2026-10-15 20:27:25.135 20 INFO nova.service [-] Starting conductor node (version 29.4.1)"
+  ],
+  "health": {
+    "status": "FAIL",
+    "samples": [
+      {
+        "observed_at": "2026-10-15T13:42:25.486630+00:00",
+        "issues": [
+          "conductor check failed",
+          "conductor must be a running quorum queue with consumers",
+          "New quorum/Raft errors during readiness observation"
+        ],
+        "members": {
+          "scheduler": [
+            {
+              "node": "rabbit@controller",
+              "state": "leader",
+              "membership": "voter"
+            }
+          ]
+        },
+        "checks": {
+          "running": {
+            "rc": 0,
+            "stderr": ""
+          },
+          "alarms": {
+            "rc": 0,
+            "stderr": ""
+          },
+          "queues": {
+            "rc": 0,
+            "stderr": ""
+          },
+          "conductor": {
+            "rc": 65,
+            "stderr": "Object (queue, stream, exchange, etc) was not found\n"
+          },
+          "scheduler": {
+            "rc": 0,
+            "stderr": ""
+          }
+        },
+        "queues": {
+          "scheduler": {
+            "type": "quorum",
+            "state": "running",
+            "consumers": 1
+          }
+        },
+        "log": {
+          "continuity": "CONTINUOUS",
+          "errors": [
+            "2026-10-15 20:42:16.358834+07:00 [error] <0.54095.0>     reason: {already_started,<0.39191.0>}",
+            "2026-10-15 20:42:16.359705+07:00 [error] <0.54094.0>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             {already_started,"
+          ]
+        }
+      },
+      {
+        "observed_at": "2026-10-15T13:42:30.746465+00:00",
+        "issues": [
+          "running check failed",
+          "alarms check failed",
+          "queues check failed",
+          "conductor check failed",
+          "scheduler check failed",
+          "New quorum/Raft errors during readiness observation"
+        ],
+        "members": {},
+        "checks": {
+          "running": {
+            "rc": 124,
+            "timeout_scope": "overall",
+            "stderr": "Overall readiness deadline reached during command"
+          },
+          "alarms": {
+            "rc": 124,
+            "timeout_scope": "overall",
+            "stderr": "Overall readiness deadline reached"
+          },
+          "queues": {
+            "rc": 124,
+            "timeout_scope": "overall",
+            "stderr": "Overall readiness deadline reached"
+          },
+          "conductor": {
+            "rc": 124,
+            "timeout_scope": "overall",
+            "stderr": "Overall readiness deadline reached"
+          },
+          "scheduler": {
+            "rc": 124,
+            "timeout_scope": "overall",
+            "stderr": "Overall readiness deadline reached"
+          }
+        },
+        "queues": {},
+        "log": {
+          "continuity": "CONTINUOUS",
+          "errors": [
+            "2026-10-15 20:42:25.545897+07:00 [error] <0.54595.0>     reason: {already_started,<0.39191.0>}",
+            "2026-10-15 20:42:25.546756+07:00 [error] <0.54594.0>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             {already_started,"
+          ]
+        }
+      }
+    ]
+  }
+}

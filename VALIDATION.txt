@@ -1,3 +1,51 @@
+Conductor quorum startup mitigation and complete deploy evidence — 2026-10-15
+Based on the latest delivered current-playbook.zip. Earlier probe shutdown,
+observer, ICMP, traffic report and scheduler recovery changes remain.
+
+Actual uploaded bundle rabbitmq-investigation-20261015T134100Z.tar.gz replayed:
+deploy rc=2, post-destroy named-volume residue empty, RabbitMQ 3.13.7 running,
+no OOM and no local alarms in all 30 complete health samples. Scheduler is a
+healthy quorum queue with one consumer. Conductor is absent in 29/30 samples;
+one sample at 20:35:40.888 +07:00 has a running leader/voter but zero consumers.
+No complete sample establishes conductor readiness. Final recheck's five rc124
+checks have timeout_scope=overall; they do not establish broker-wide failure.
+Scheduler-only recovery correctly refuses both captured health documents.
+
+Conductor log starts five workers at 20:27:25.122, immediately followed by
+queue broken/delete/redeclare and already_started/cluster_not_formed errors.
+This supports startup concurrency/churn as a hypothesis; it is not a complete
+proof of the first internal RabbitMQ failure or the exact failed Kolla task.
+The previous deployment saved rc only, so its task failure cannot be recovered
+from this bundle. No old volume reuse is established by this evidence.
+
+New reset_nova_conductor_workers=1 maps to nova_cell_conductor_workers, verified
+against the installed Kolla-Ansible 18.8.0 wheel's nova-cell defaults/template
+([conductor] workers). Actual container/section is read after successful deploy;
+wrong effective worker count fails with separate nova-conductor-workers.json.
+Nova API workers, RabbitMQ image/queue type and scheduler recovery scope remain.
+This is a lab mitigation, not a RabbitMQ fix or a guarantee of non-recurrence.
+
+Kolla stdout/stderr are persisted before health validation, with mode0600,
+no_log enabled and diff disabled; deploy-result.json records rc and
+start/end/duration plus log paths. Failed deploy still blocks baseline even
+when RabbitMQ later passes. No automatic restart is authorized for conductor
+or partial deploy. Health CLI now reports last complete issues when the final
+sample only reached the overall deadline, retaining raw last-sample issues and
+the incomplete flag. Full health JSON and readiness gates are unchanged.
+
+505 full-suite tests PASS, 387 subtests PASS, no skips (140 SDK warnings).
+48 focused tests PASS, 41 subtests PASS. 9 Ansible syntax checks PASS.
+Python AST 75 files / YAML 35 files PASS; source diff whitespace checks PASS.
+Real Ansible verifies both source/target worker globals, actual worker checks,
+failed deploy stdout/stderr persistence before the rejecting gate, file mode,
+and console redaction. Real subprocess config readers distinguish scheduler
+from conductor and reject five workers when one was requested. Actual captured
+health fixture covers deadline-only display; genuine complete-sample broker
+failures stay visible. No live lab service, reset, deploy or cloud API operated.
+See docs/reset-rabbitmq-mitigation.md for evidence, limits and fresh reset command.
+
+Prior validation history:
+
 N-S probe shutdown and reset compatibility — 2026-10-15
 Based on the latest delivered current-playbook.zip. Prior RabbitMQ, observer,
 ICMP evidence and traffic-report changes are retained.

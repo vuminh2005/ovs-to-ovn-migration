@@ -1,8 +1,8 @@
 diff --git a/README.md b/README.md
-index 44807a1..69aa27c 100644
+index 44807a1..5cb37cc 100644
 --- a/README.md
 +++ b/README.md
-@@ -47,6 +47,16 @@ checkpoints, cleanup and the current nested-lab commands.
+@@ -47,6 +47,20 @@ checkpoints, cleanup and the current nested-lab commands.
  
  ## Four-node reset update
  
@@ -15,11 +15,15 @@ index 44807a1..69aa27c 100644
 +Reset RabbitMQ 15/10/2026: mặc định `nova_scheduler_workers: 1`, kiểm tra cấu
 +hình trong container và phục hồi tối đa một lần cho đúng lỗi Raft scheduler
 +trong reset lab. [Điều kiện, evidence và kiểm chứng](docs/reset-rabbitmq-mitigation.md).
++Sau bằng chứng conductor khởi động 5 workers và liên tục lỗi tạo queue, reset
++cũng đặt `nova_cell_conductor_workers: 1`, kiểm tra `[conductor] workers` thực
++tế sau deploy và lưu đầy đủ stdout/stderr của Kolla deploy. Failed deploy vẫn
++chặn baseline; recovery scheduler không được dùng cho lỗi conductor.
 +
  `reset-lab-to-ovs.yml` now resets the lab with `controller`, `network1`,
  `compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
  with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
-@@ -210,8 +220,8 @@ It contains `migration-report.json` with all timing, validation and evidence fie
+@@ -210,8 +224,8 @@ It contains `migration-report.json` with all timing, validation and evidence fie
  - resource identity preservation for networks, subnets, routers, servers and compute ports
  - result of a temporary post-migration Geneve network smoke test
  
@@ -30,7 +34,7 @@ index 44807a1..69aa27c 100644
  traffic summary. East–West lists all four ICMP placement/subnet combinations,
  then the three TCP streams. North–South lists outbound SNAT and inbound FIP,
  each with held-session and new-connection streams.
-@@ -223,11 +233,15 @@ one consecutive sequence of failed probes; an unrecovered burst is included in
+@@ -223,11 +237,15 @@ one consecutive sequence of failed probes; an unrecovered burst is included in
  the count and displayed as `UNRECOVERED` for its duration. Historical TCP evidence
  without a burst counter displays `UNAVAILABLE`, never an inferred zero.
  
@@ -51,7 +55,7 @@ index 44807a1..69aa27c 100644
  
  DHCP, MTU, provisioning, remediation, identities, cleanup, diagnostics, phase timing
  and all other evidence remain complete in JSON. Text rounds seconds to three
-@@ -832,3 +846,15 @@ remediation retains SUCCESS with its explicit fields. Any unresolved validation
+@@ -832,3 +850,15 @@ remediation retains SUCCESS with its explicit fields. Any unresolved validation
  failure reports MIGRATED_VALIDATION_INCOMPLETE, preserves evidence/resources and
  never rolls back. Pair-A capture counts every actual Pair-A loss during either
  remediation; Pair-B packets never enter that metric.
@@ -68,10 +72,58 @@ index 44807a1..69aa27c 100644
 +Xem [thiết kế, cách đo và các file bằng chứng](docs/ns-observability.md).
 +Workflow và các tiêu chí bảo toàn phiên held vẫn giữ nguyên.
 diff --git a/VALIDATION.txt b/VALIDATION.txt
-index 19cb34f..8321fc7 100644
+index 19cb34f..4f2c762 100644
 --- a/VALIDATION.txt
 +++ b/VALIDATION.txt
-@@ -1,3 +1,174 @@
+@@ -1,3 +1,222 @@
++Conductor quorum startup mitigation and complete deploy evidence — 2026-10-15
++Based on the latest delivered current-playbook.zip. Earlier probe shutdown,
++observer, ICMP, traffic report and scheduler recovery changes remain.
++
++Actual uploaded bundle rabbitmq-investigation-20261015T134100Z.tar.gz replayed:
++deploy rc=2, post-destroy named-volume residue empty, RabbitMQ 3.13.7 running,
++no OOM and no local alarms in all 30 complete health samples. Scheduler is a
++healthy quorum queue with one consumer. Conductor is absent in 29/30 samples;
++one sample at 20:35:40.888 +07:00 has a running leader/voter but zero consumers.
++No complete sample establishes conductor readiness. Final recheck's five rc124
++checks have timeout_scope=overall; they do not establish broker-wide failure.
++Scheduler-only recovery correctly refuses both captured health documents.
++
++Conductor log starts five workers at 20:27:25.122, immediately followed by
++queue broken/delete/redeclare and already_started/cluster_not_formed errors.
++This supports startup concurrency/churn as a hypothesis; it is not a complete
++proof of the first internal RabbitMQ failure or the exact failed Kolla task.
++The previous deployment saved rc only, so its task failure cannot be recovered
++from this bundle. No old volume reuse is established by this evidence.
++
++New reset_nova_conductor_workers=1 maps to nova_cell_conductor_workers, verified
++against the installed Kolla-Ansible 18.8.0 wheel's nova-cell defaults/template
++([conductor] workers). Actual container/section is read after successful deploy;
++wrong effective worker count fails with separate nova-conductor-workers.json.
++Nova API workers, RabbitMQ image/queue type and scheduler recovery scope remain.
++This is a lab mitigation, not a RabbitMQ fix or a guarantee of non-recurrence.
++
++Kolla stdout/stderr are persisted before health validation, with mode0600,
++no_log enabled and diff disabled; deploy-result.json records rc and
++start/end/duration plus log paths. Failed deploy still blocks baseline even
++when RabbitMQ later passes. No automatic restart is authorized for conductor
++or partial deploy. Health CLI now reports last complete issues when the final
++sample only reached the overall deadline, retaining raw last-sample issues and
++the incomplete flag. Full health JSON and readiness gates are unchanged.
++
++505 full-suite tests PASS, 387 subtests PASS, no skips (140 SDK warnings).
++48 focused tests PASS, 41 subtests PASS. 9 Ansible syntax checks PASS.
++Python AST 75 files / YAML 35 files PASS; source diff whitespace checks PASS.
++Real Ansible verifies both source/target worker globals, actual worker checks,
++failed deploy stdout/stderr persistence before the rejecting gate, file mode,
++and console redaction. Real subprocess config readers distinguish scheduler
++from conductor and reject five workers when one was requested. Actual captured
++health fixture covers deadline-only display; genuine complete-sample broker
++failures stay visible. No live lab service, reset, deploy or cloud API operated.
++See docs/reset-rabbitmq-mitigation.md for evidence, limits and fresh reset command.
++
++Prior validation history:
++
 +N-S probe shutdown and reset compatibility — 2026-10-15
 +Based on the latest delivered current-playbook.zip. Prior RabbitMQ, observer,
 +ICMP evidence and traffic-report changes are retained.
@@ -490,20 +542,21 @@ index 0000000..96c53f8
 +tra phát triển dùng pytest, openstacksdk, SQLAlchemy và ansible-core. Bản này đã
 +được kiểm tra cục bộ; chưa thực thi migration trên lab của người dùng.
 diff --git a/docs/reset-four-nodes.md b/docs/reset-four-nodes.md
-index 0ea1e88..24be54e 100644
+index 0ea1e88..7bb1e05 100644
 --- a/docs/reset-four-nodes.md
 +++ b/docs/reset-four-nodes.md
-@@ -1,5 +1,9 @@
+@@ -1,5 +1,10 @@
  # Reset lặp lại cụm 4 node về ML2/OVS
  
-+Cập nhật 15/10/2026: reset đặt Nova scheduler 1 worker và có một lượt phục hồi
-+giới hạn cho đúng lỗi Raft `scheduler` đã ghi nhận. Xem
++Cập nhật 15/10/2026: reset đặt Nova scheduler/conductor mỗi service 1 worker,
++lưu đầy đủ log deploy và có một lượt phục hồi giới hạn cho đúng lỗi Raft
++`scheduler` đã ghi nhận. Xem
 +[cấu hình, điều kiện và cách kiểm chứng](reset-rabbitmq-mitigation.md).
 +
  Bản reset này được sửa từ commit `a77af56`, dành cho lab hiện tại:
  
  | Group Kolla | Host | eth0 |
-@@ -33,9 +37,38 @@ network1/compute1/compute2 reboot lần lượt. Mặc định
+@@ -33,9 +38,38 @@ network1/compute1/compute2 reboot lần lượt. Mặc định
  Trước Kolla destroy, reset dừng các process `snat-server`/`fip-client` trên
  controller có checkpoint N-S hợp lệ. Controller không reboot nên listener của
  run FAIL có thể còn giữ cổng 18180. Bước này kiểm tra run/config/cmdline cùng
@@ -545,7 +598,7 @@ index 0ea1e88..24be54e 100644
  
  Network1 giữ IP `10.1.0.90/24` và MAC của eth1 trên `br-underlay`;
  Netplan và service veth tạo lại `ns-uplink ↔ ns-ex` qua reboot. Tunnel trên
-@@ -152,7 +185,9 @@ Gate mới dùng `scripts/reset_rabbitmq_health.py`, chỉ đọc trạng thái:
+@@ -152,7 +186,9 @@ Gate mới dùng `scripts/reset_rabbitmq_health.py`, chỉ đọc trạng thái:
  - Các kiểm tra phải ổn định ít nhất 15 giây, không có lỗi Raft mới trong log.
    Lỗi mới hoặc log bị rotate/truncate làm tính lại khoảng ổn định.
  - Hết 180 giây chưa đạt, lỗi đọc/parse CLI, thiếu log, hoặc deploy rc khác 0 vẫn
@@ -558,11 +611,11 @@ index 0ea1e88..24be54e 100644
  snapshot reset tại `/root/kolla-reset-snapshots/<id>/`:
 diff --git a/docs/reset-rabbitmq-mitigation.md b/docs/reset-rabbitmq-mitigation.md
 new file mode 100644
-index 0000000..c419d4a
+index 0000000..c65f438
 --- /dev/null
 +++ b/docs/reset-rabbitmq-mitigation.md
-@@ -0,0 +1,103 @@
-+# Giảm lỗi khởi tạo queue scheduler khi reset lab
+@@ -0,0 +1,154 @@
++# Giảm lỗi khởi tạo queue Nova khi reset lab
 +
 +Bản này giữ toàn bộ N-S/diagnostics/report đã gửi trước đó, và bổ sung thay đổi
 +cho các lần **reset mới từ đầu**. Đây là biện pháp giảm khả năng tái diễn và
@@ -574,6 +627,7 @@ index 0000000..c419d4a
 +
 +```yaml
 +reset_nova_scheduler_workers: 1
++reset_nova_conductor_workers: 1
 +reset_rabbitmq_recovery_enabled: true
 +```
 +
@@ -581,18 +635,60 @@ index 0000000..c419d4a
 +deploy đầu tiên. Mã Kolla-Ansible 18.8.0 đã được đối chiếu: biến này đi vào
 +`[scheduler] workers` của nova.conf. Sau deploy, helper đọc cấu hình thực tế
 +`/etc/nova/nova.conf` trong nova_scheduler; không đúng số worker thì dừng.
++Reset cũng ghi **`nova_cell_conductor_workers: 1`** (đúng tên biến Kolla 18.8.0,
++không phải `nova_conductor_workers`) để render `[conductor] workers`. Sau deploy
++thành công, helper `verify-conductor-workers` đọc cấu hình thật trong
++`nova_conductor` và ghi `nova-conductor-workers.json`; sai worker thì dừng.
 +Không in transport_url hoặc credential. Phase 06 chỉ đổi các khóa Neutron/OVN
-+nên giữ nguyên số worker. Các API/conductor workers khác giữ cấu hình hiện có.
++nên giữ nguyên cả hai số worker. API workers giữ cấu hình hiện có.
 +
-+Thay đổi này giảm mức song song của scheduler; khi so sánh run cần dùng cùng
++Thay đổi này giảm mức song song của scheduler/conductor; khi so sánh run cần dùng cùng
 +cấu hình. Con số 1 nhằm giảm cạnh tranh khởi tạo queue trong lab một controller,
 +không phải khuyến nghị hiệu năng cho production. Có thể thử A/B bằng
 +`-e reset_nova_scheduler_workers=5`, nhưng phải ghi rõ vào kết quả.
 +
++## Bằng chứng lần reset 20261015T131629018752058
++
++Bundle `rabbitmq-investigation-20261015T134100Z.tar.gz` cho thấy:
++
++- Deploy rc=2. Kiểm tra sau destroy ghi không còn named volume RabbitMQ cũ;
++  mount hiện tại là named volume `rabbitmq`. Không có bằng chứng từ bundle rằng
++  lỗi do tái sử dụng volume trước reset.
++- RabbitMQ 3.13.7/OTP 26 running, Docker healthy, không OOM và không local alarm
++  ở các mẫu đầy đủ. Scheduler quorum có leader/voter và 1 consumer.
++- `nova-conductor.log`: `Starting 5 workers` lúc **20:27:25.122 +07:00**, cả
++  5 workers khởi động lúc .130–.135. Lúc .210 driver ghi queue broken và thử
++  delete; .255 RabbitMQ ghi `already_started`, .256 không form được Raft cluster,
++  .262 declare conductor trả AMQP 541 `cluster_not_formed`. Lúc .275 còn lỗi
++  bind 404 và driver thử delete/redeclare. Đây là bằng chứng cạnh tranh/churn
++  khi startup; cơ chế lỗi nội bộ đầu tiên chưa được chứng minh đầy đủ.
++- Trong 20 mẫu ban đầu **20:34:18–20:37:11** và 10 mẫu recheck đầy đủ
++  **20:41:04–20:42:25**, 29/30 mẫu không thấy queue `conductor` trong list_queues
++  và quorum_status trả rc=65 `Object ... was not found`. Một mẫu
++  **20:35:40.888** thấy queue quorum running, leader/voter nhưng **0 consumers**:
++  chưa có mẫu conductor sẵn sàng phục vụ. Việc queue xuất hiện tạm thời phù hợp
++  với log delete/redeclare, chưa chứng minh đầy đủ cơ chế lỗi bên trong broker.
++  `conductor.controller` vẫn tồn tại, không thay thế được queue RPC chung
++  `conductor`.
++- Mẫu cuối **20:42:30** có mọi command rc=124, timeout_scope=overall: đây là
++  hết deadline của health helper, không chứng minh broker chết. Summary mới
++  dùng issues của mẫu đầy đủ gần nhất cho `last_issues` trong trường hợp này;
++  vẫn giữ `last_sample_issues`, `last_sample_incomplete` và toàn bộ samples.
++
++Giảm conductor workers là biện pháp giảm cạnh tranh, không phải bản vá RabbitMQ.
++Tăng health timeout không sửa được queue đã vắng liên tục nhiều phút.
++Bản cũ chỉ giảm scheduler; nó chưa bao phủ conductor. Bundle không chứng minh
++việc giảm scheduler gây ra lỗi conductor.
++
++Deploy cũ chỉ lưu mã thoát nên **chưa xác định được task Kolla thất bại**.
++Từ bản này, stdout/stderr đầy đủ được lưu trước health gate thành
++`kolla-deploy.stdout.log`, `kolla-deploy.stderr.log` (0600, không dump console),
++và `deploy-result.json` ghi rc, start/end/duration cùng tên hai log.
++
 +## Phục hồi chỉ trong reset lab
 +
 +Gate ban đầu vẫn chờ 180 giây, cần 15 giây ổn định. Nếu FAIL, helper chỉ xem xét
-+phục hồi khi đáp ứng đủ:
++phục hồi scheduler khi đáp ứng đủ:
 +
 +- Policy của đúng reset đã confirm, một controller, inventory không thay đổi.
 +- Deploy rc=0; bằng chứng sau destroy không còn RabbitMQ volume.
@@ -631,6 +727,8 @@ index 0000000..c419d4a
 +Trong `/root/kolla-reset-snapshots/<reset-id>/`:
 +
 +- `reset-rabbitmq-policy.json`, `nova-scheduler-workers.json`.
++- `nova-conductor-workers.json` sau deploy thành công.
++- `deploy-result.json`, `kolla-deploy.stdout.log`, `kolla-deploy.stderr.log`.
 +- `rabbitmq-health.json`: lần kiểm tra ban đầu, giữ cả khi FAIL rồi phục hồi PASS.
 +- `rabbitmq-recovery.json`: kết quả, từng command/timestamp/rc, lượt can thiệp.
 +- `rabbitmq-recovery-attempt.json`: marker chặn lần can thiệp thứ hai.
@@ -641,6 +739,12 @@ index 0000000..c419d4a
 +can thiệp thì report có `attempted: false`, không có marker can thiệp.
 +Console health hiển thị cả sample cuối và issues/timestamp của sample đầy đủ gần
 +nhất, tránh hiểu queue null do overall deadline thành queue thật sự biến mất.
++
++Lần lỗi conductor với deploy rc=2 không được tự restart bằng helper scheduler.
++Không thay rc=2 thành rc=0 hoặc coi RabbitMQ PASS là hoàn tất Kolla deploy.
++Để kiểm chứng thay đổi worker cho một lần reset sạch, cập nhật bản mới và chạy
++lại toàn bộ reset bằng lệnh bên dưới. Reset mới sẽ dừng probe cũ, tạo snapshot
++mới và áp dụng cả hai worker trước deploy; không sửa lại evidence snapshot cũ.
 +
 +```bash
 +source /root/venvs/kolla-2024.1/bin/activate
@@ -697,16 +801,18 @@ index 5973f38..c854499 100644
  
  # Preserve the NAT profile while recording TCP tuples and resets.
 diff --git a/group_vars/reset.yml b/group_vars/reset.yml
-index 5c05241..7c31157 100644
+index 5c05241..7ecf1ca 100644
 --- a/group_vars/reset.yml
 +++ b/group_vars/reset.yml
-@@ -26,3 +26,7 @@ reset_image_active_timeout: 900
+@@ -26,3 +26,9 @@ reset_image_active_timeout: 900
  reset_rabbitmq_log_path: /var/log/kolla/rabbitmq/rabbit@controller.log
  reset_rabbitmq_health_timeout: 180
  reset_rabbitmq_stable_seconds: 15
 +# Reduce concurrent first declarations of the scheduler quorum queue in this lab.
 +# This is a mitigation to verify on fresh resets, not an upstream RabbitMQ fix.
 +reset_nova_scheduler_workers: 1
++# Kolla 18.8.0 renders this through nova_cell_conductor_workers.
++reset_nova_conductor_workers: 1
 +reset_rabbitmq_recovery_enabled: true
 diff --git a/playbooks/04-validation-workloads.yml b/playbooks/04-validation-workloads.yml
 index 6b69b6f..75081c4 100644
@@ -999,18 +1105,19 @@ index 0000000..2614aa1
 +        content: "{{ ns_control_reply.stdout | trim | from_json | to_nice_json }}"
 +        mode: '0600'
 diff --git a/reset-lab-to-ovs.yml b/reset-lab-to-ovs.yml
-index 7727b43..0245bb7 100644
+index 7727b43..a2be6f9 100644
 --- a/reset-lab-to-ovs.yml
 +++ b/reset-lab-to-ovs.yml
-@@ -52,6 +52,7 @@
+@@ -52,6 +52,8 @@
            - reset_kolla_inventory == ansible_inventory_sources[0]
            - ansible_limit | default('') | length == 0
            - not ansible_check_mode
 +          - reset_nova_scheduler_workers | int >= 1
++          - reset_nova_conductor_workers | int >= 1
            - groups['control'] | sort == ['controller']
            - groups['network'] | sort == ['network1']
            - groups['compute'] | sort == ['compute1', 'compute2']
-@@ -251,6 +252,7 @@
+@@ -251,6 +253,7 @@
            - "{{ playbook_dir }}/scripts/reset_local_probes.py"
            - "{{ reset_backup_root_runtime }}"
            - "{{ reset_run_dir }}/local-probes-stop.json"
@@ -1018,7 +1125,7 @@ index 7727b43..0245bb7 100644
        register: reset_local_probes
        changed_when: reset_local_probes.rc == 0 and (reset_local_probes.stdout | from_json).stopped | length > 0
  
-@@ -264,6 +266,15 @@
+@@ -264,6 +267,15 @@
            - "{{ reset_run_dir }}/ns-diagnostic-captures-stop.json"
        changed_when: false
  
@@ -1034,15 +1141,16 @@ index 7727b43..0245bb7 100644
      - name: Run kolla-ansible destroy
        ansible.builtin.shell: |
          set -euo pipefail
-@@ -545,6 +556,7 @@
+@@ -545,6 +557,8 @@
  
            nova_compute_virt_type: "qemu"
            nova_console: "novnc"
 +          nova_scheduler_workers: {{ reset_nova_scheduler_workers | int }}
++          nova_cell_conductor_workers: {{ reset_nova_conductor_workers | int }}
  
            ###############################################################################
            # OpenStack services
-@@ -713,6 +725,12 @@
+@@ -713,6 +727,12 @@
        register: reset_rabbitmq_log_offset
        changed_when: false
  
@@ -1050,15 +1158,38 @@ index 7727b43..0245bb7 100644
 +      ansible.builtin.copy:
 +        dest: "{{ reset_run_dir }}/reset-rabbitmq-policy.json"
 +        mode: '0600'
-+        content: "{{ {'scope': 'four-node-lab-reset', 'confirmed': reset_lab_confirm | bool, 'inventory': reset_kolla_inventory, 'control_hosts': groups['control'], 'scheduler_workers': reset_nova_scheduler_workers | int} | to_nice_json }}"
++        content: "{{ {'scope': 'four-node-lab-reset', 'confirmed': reset_lab_confirm | bool, 'inventory': reset_kolla_inventory, 'control_hosts': groups['control'], 'scheduler_workers': reset_nova_scheduler_workers | int, 'conductor_workers': reset_nova_conductor_workers | int} | to_nice_json }}"
 +
      - name: Deploy OpenStack
        ansible.builtin.shell: |
          set -euo pipefail
-@@ -730,6 +748,18 @@
-         mode: '0600'
-         content: "{{ {'rc': reset_deploy.rc, 'inventory': reset_kolla_inventory} | to_nice_json }}"
+@@ -724,11 +744,51 @@
+       changed_when: true
+       failed_when: false
  
++    - name: Persist complete Kolla deploy stdout in the reset snapshot
++      ansible.builtin.copy:
++        dest: "{{ reset_run_dir }}/kolla-deploy.stdout.log"
++        mode: '0600'
++        content: "{{ reset_deploy.stdout | default('') }}\n"
++      no_log: true
++      diff: false
++
++    - name: Persist complete Kolla deploy stderr in the reset snapshot
++      ansible.builtin.copy:
++        dest: "{{ reset_run_dir }}/kolla-deploy.stderr.log"
++        mode: '0600'
++        content: "{{ reset_deploy.stderr | default('') }}\n"
++      no_log: true
++      diff: false
++
+     - name: Persist deploy exit status in this reset snapshot
+       ansible.builtin.copy:
+         dest: "{{ reset_run_dir }}/deploy-result.json"
+         mode: '0600'
+-        content: "{{ {'rc': reset_deploy.rc, 'inventory': reset_kolla_inventory} | to_nice_json }}"
++        content: "{{ {'rc': reset_deploy.rc, 'inventory': reset_kolla_inventory, 'started_at': reset_deploy.start | default(None), 'ended_at': reset_deploy.end | default(None), 'duration': reset_deploy.delta | default(None), 'stdout': 'kolla-deploy.stdout.log', 'stderr': 'kolla-deploy.stderr.log'} | to_nice_json }}"
++
 +    - name: Verify deployed Nova scheduler worker configuration
 +      ansible.builtin.command:
 +        argv:
@@ -1071,10 +1202,21 @@ index 7727b43..0245bb7 100644
 +      changed_when: false
 +      when: reset_deploy.rc == 0
 +
++    - name: Verify deployed Nova conductor worker configuration
++      ansible.builtin.command:
++        argv:
++          - python3
++          - "{{ playbook_dir }}/scripts/reset_rabbitmq_recovery.py"
++          - verify-conductor-workers
++          - "{{ reset_run_dir }}"
++          - --workers
++          - "{{ reset_nova_conductor_workers | string }}"
++      changed_when: false
++      when: reset_deploy.rc == 0
+ 
      - name: Wait for stable live RabbitMQ queues and a quiet Raft window
        ansible.builtin.command:
-         argv:
-@@ -769,6 +799,30 @@
+@@ -769,13 +829,40 @@
          mode: '0600'
          content: "{{ reset_rabbitmq_raft_errors.stdout | default('') }}\n"
  
@@ -1105,7 +1247,8 @@ index 7727b43..0245bb7 100644
      - name: Show RabbitMQ diagnostics after deploy attempt
        ansible.builtin.debug:
          msg:
-@@ -776,6 +830,8 @@
+           - "kolla-ansible deploy rc={{ reset_deploy.rc }}"
++          - "Complete deploy output: {{ reset_run_dir }}/kolla-deploy.stdout.log and kolla-deploy.stderr.log"
            - "RabbitMQ live readiness rc={{ reset_rabbitmq_health.rc }}"
            - "{{ reset_rabbitmq_health.stdout | default('') }}"
            - "{{ reset_rabbitmq_health.stderr | default('') }}"
@@ -1114,7 +1257,7 @@ index 7727b43..0245bb7 100644
            - "Live queue/quorum samples: {{ reset_run_dir }}/rabbitmq-health.json"
            - "Earlier deploy-time Raft errors (retained; live recovery decides readiness):"
            - "{{ reset_rabbitmq_raft_errors.stdout_lines | default([]) }}"
-@@ -784,10 +840,11 @@
+@@ -784,10 +871,12 @@
        ansible.builtin.assert:
          that:
            - reset_deploy.rc == 0
@@ -1123,7 +1266,8 @@ index 7727b43..0245bb7 100644
          fail_msg: >-
            Deployment failed or RabbitMQ did not reach stable live readiness.
 -          Inspect {{ reset_run_dir }}/rabbitmq-health.json and
-+          Inspect {{ reset_run_dir }}/rabbitmq-health.json,
++          Inspect {{ reset_run_dir }}/kolla-deploy.stdout.log,
++          kolla-deploy.stderr.log, deploy-result.json, rabbitmq-health.json,
 +          rabbitmq-recovery.json, rabbitmq-health-after-recovery.json and
            rabbitmq-deploy-raft-errors.log. Earlier errors alone do not establish
            stale storage; missing/stuck queues, absent consumers, alarms or new
@@ -3120,7 +3264,7 @@ index 996d06f..57fbe6d 100644
  
  if __name__ == '__main__':
 diff --git a/scripts/reset_rabbitmq_health.py b/scripts/reset_rabbitmq_health.py
-index 45bc207..93dd5b6 100644
+index 45bc207..28e9e89 100644
 --- a/scripts/reset_rabbitmq_health.py
 +++ b/scripts/reset_rabbitmq_health.py
 @@ -215,6 +215,14 @@ def wait(evidence, log, *, timeout=180, stable_seconds=15, interval=5, command_t
@@ -3138,24 +3282,27 @@ index 45bc207..93dd5b6 100644
  def main():
      parser = argparse.ArgumentParser(description=__doc__)
      parser.add_argument('evidence', type=Path)
-@@ -223,8 +231,10 @@ def main():
+@@ -223,8 +231,13 @@ def main():
      parser.add_argument('--stable-seconds', type=int, default=15)
      args = parser.parse_args()
      result = wait(args.evidence, args.log, timeout=args.timeout, stable_seconds=args.stable_seconds)
 +    complete = last_complete(result) or {}
++    last_sample = result['samples'][-1] if result['samples'] else {}
++    incomplete = any(c.get('timeout_scope') == 'overall' for c in last_sample.get('checks', {}).values())
      print(json.dumps(dict(status=result['status'], evidence=str(args.evidence), samples=len(result['samples']),
 -        last_issues=(result['samples'][-1]['issues'] if result['samples'] else []))))
-+        last_issues=(result['samples'][-1]['issues'] if result['samples'] else []),
++        last_issues=(complete if incomplete and complete else last_sample).get('issues', []),
++        last_sample_issues=last_sample.get('issues', []), last_sample_incomplete=incomplete,
 +        last_complete_at=complete.get('observed_at'), last_complete_issues=complete.get('issues'))))
      return 0 if result['status'] == 'PASS' else 1
  
  
 diff --git a/scripts/reset_rabbitmq_recovery.py b/scripts/reset_rabbitmq_recovery.py
 new file mode 100644
-index 0000000..1a5f721
+index 0000000..9b182e3
 --- /dev/null
 +++ b/scripts/reset_rabbitmq_recovery.py
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,274 @@
 +#!/usr/bin/env python3
 +"""One evidenced recovery attempt in the confirmed, freshly deployed reset lab."""
 +import argparse
@@ -3193,10 +3340,15 @@ index 0000000..1a5f721
 +    return json.loads((root/name).read_text())
 +
 +
-+def verify_workers(root, expected):
++def verify_workers(root, expected, service='nova_scheduler'):
 +    if type(expected) is not int or expected < 1:
-+        raise ValueError('Expected scheduler worker count must be a positive integer')
-+    result = command(['docker', 'exec', 'nova_scheduler', 'python3', '-c', WORKERS_CODE])
++        raise ValueError('Expected Nova worker count must be a positive integer')
++    if service not in ('nova_scheduler', 'nova_conductor'):
++        raise ValueError('Unknown Nova worker service')
++    section = 'scheduler' if service == 'nova_scheduler' else 'conductor'
++    filename = 'nova-'+section+'-workers.json'
++    result = command(['docker', 'exec', service, 'python3', '-c',
++                      WORKERS_CODE.replace('"scheduler"', '"'+section+'"')])
 +    actual = None
 +    try:
 +        if result['rc'] == 0:
@@ -3205,9 +3357,9 @@ index 0000000..1a5f721
 +        pass
 +    value = dict(status='PASS' if type(actual) is int and actual == expected else 'FAIL',
 +                 expected_workers=expected, effective_workers=actual, observed_at=health.utc(), check=result)
-+    health.save(root/'nova-scheduler-workers.json', value)
++    health.save(root/filename, value)
 +    if value['status'] != 'PASS':
-+        raise RuntimeError('Effective Nova scheduler workers differ; inspect nova-scheduler-workers.json')
++        raise RuntimeError('Effective Nova '+section+' workers differ; inspect '+filename)
 +    return value
 +
 +
@@ -3404,7 +3556,7 @@ index 0000000..1a5f721
 +
 +def main():
 +    parser = argparse.ArgumentParser(description=__doc__)
-+    parser.add_argument('action', choices=['verify-workers', 'recover'])
++    parser.add_argument('action', choices=['verify-workers', 'verify-conductor-workers', 'recover'])
 +    parser.add_argument('root', type=Path)
 +    parser.add_argument('--workers', type=int, required=True)
 +    parser.add_argument('--log', type=Path, default=Path('/var/log/kolla/rabbitmq/rabbit@controller.log'))
@@ -3412,7 +3564,9 @@ index 0000000..1a5f721
 +    parser.add_argument('--stable-seconds', type=int, default=15)
 +    args = parser.parse_args()
 +    try:
-+        value = (verify_workers(args.root, args.workers) if args.action == 'verify-workers' else
++        value = (verify_workers(args.root, args.workers,
++                               'nova_conductor' if args.action == 'verify-conductor-workers' else 'nova_scheduler')
++                 if args.action != 'recover' else
 +            Recovery(args.root, args.workers, args.log, args.timeout, args.stable_seconds).recover())
 +        print(json.dumps({k: v for k, v in value.items() if k not in ('events', 'check')}))
 +        return 0 if value['status'] == 'PASS' else 1
@@ -3637,6 +3791,137 @@ index 183f98d..2c699e2 100644
              from ns_diagnostics import Diagnostics
              diagnostics = Diagnostics(extended)
              diagnostics.ready()
+diff --git a/tests/fixtures/rabbitmq-conductor-reset.json b/tests/fixtures/rabbitmq-conductor-reset.json
+new file mode 100644
+index 0000000..58f973e
+--- /dev/null
++++ b/tests/fixtures/rabbitmq-conductor-reset.json
+@@ -0,0 +1,125 @@
++{
++  "source": "rabbitmq-investigation-20261015T134100Z.tar.gz",
++  "deploy": {
++    "inventory": "/root/multinode",
++    "rc": 2
++  },
++  "storage": {
++    "host": "controller",
++    "rc": 0,
++    "remaining_rabbitmq_volumes": []
++  },
++  "conductor_start": [
++    "2026-10-15 20:27:25.122 7 INFO oslo_service.service [None req-3d951106-35b7-4244-8230-878879c372a7 - - - - - -] Starting 5 workers",
++    "2026-10-15 20:27:25.130 16 INFO nova.service [-] Starting conductor node (version 29.4.1)",
++    "2026-10-15 20:27:25.132 17 INFO nova.service [-] Starting conductor node (version 29.4.1)",
++    "2026-10-15 20:27:25.133 18 INFO nova.service [-] Starting conductor node (version 29.4.1)",
++    "2026-10-15 20:27:25.134 19 INFO nova.service [-] Starting conductor node (version 29.4.1)",
++    "2026-10-15 20:27:25.135 20 INFO nova.service [-] Starting conductor node (version 29.4.1)"
++  ],
++  "health": {
++    "status": "FAIL",
++    "samples": [
++      {
++        "observed_at": "2026-10-15T13:42:25.486630+00:00",
++        "issues": [
++          "conductor check failed",
++          "conductor must be a running quorum queue with consumers",
++          "New quorum/Raft errors during readiness observation"
++        ],
++        "members": {
++          "scheduler": [
++            {
++              "node": "rabbit@controller",
++              "state": "leader",
++              "membership": "voter"
++            }
++          ]
++        },
++        "checks": {
++          "running": {
++            "rc": 0,
++            "stderr": ""
++          },
++          "alarms": {
++            "rc": 0,
++            "stderr": ""
++          },
++          "queues": {
++            "rc": 0,
++            "stderr": ""
++          },
++          "conductor": {
++            "rc": 65,
++            "stderr": "Object (queue, stream, exchange, etc) was not found\n"
++          },
++          "scheduler": {
++            "rc": 0,
++            "stderr": ""
++          }
++        },
++        "queues": {
++          "scheduler": {
++            "type": "quorum",
++            "state": "running",
++            "consumers": 1
++          }
++        },
++        "log": {
++          "continuity": "CONTINUOUS",
++          "errors": [
++            "2026-10-15 20:42:16.358834+07:00 [error] <0.54095.0>     reason: {already_started,<0.39191.0>}",
++            "2026-10-15 20:42:16.359705+07:00 [error] <0.54094.0>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             {already_started,"
++          ]
++        }
++      },
++      {
++        "observed_at": "2026-10-15T13:42:30.746465+00:00",
++        "issues": [
++          "running check failed",
++          "alarms check failed",
++          "queues check failed",
++          "conductor check failed",
++          "scheduler check failed",
++          "New quorum/Raft errors during readiness observation"
++        ],
++        "members": {},
++        "checks": {
++          "running": {
++            "rc": 124,
++            "timeout_scope": "overall",
++            "stderr": "Overall readiness deadline reached during command"
++          },
++          "alarms": {
++            "rc": 124,
++            "timeout_scope": "overall",
++            "stderr": "Overall readiness deadline reached"
++          },
++          "queues": {
++            "rc": 124,
++            "timeout_scope": "overall",
++            "stderr": "Overall readiness deadline reached"
++          },
++          "conductor": {
++            "rc": 124,
++            "timeout_scope": "overall",
++            "stderr": "Overall readiness deadline reached"
++          },
++          "scheduler": {
++            "rc": 124,
++            "timeout_scope": "overall",
++            "stderr": "Overall readiness deadline reached"
++          }
++        },
++        "queues": {},
++        "log": {
++          "continuity": "CONTINUOUS",
++          "errors": [
++            "2026-10-15 20:42:25.545897+07:00 [error] <0.54595.0>     reason: {already_started,<0.39191.0>}",
++            "2026-10-15 20:42:25.546756+07:00 [error] <0.54594.0>                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             {already_started,"
++          ]
++        }
++      }
++    ]
++  }
++}
 diff --git a/tests/test_four_pairs.py b/tests/test_four_pairs.py
 index 4c6f48f..d68e546 100644
 --- a/tests/test_four_pairs.py
@@ -4632,12 +4917,100 @@ index fbadb49..ed94b4a 100644
  
  
  if __name__ == '__main__':
+diff --git a/tests/test_reset_rabbitmq_health.py b/tests/test_reset_rabbitmq_health.py
+index 9df71eb..11befcd 100644
+--- a/tests/test_reset_rabbitmq_health.py
++++ b/tests/test_reset_rabbitmq_health.py
+@@ -1,6 +1,7 @@
+ """Recovered startup errors may pass; live missing/stuck quorum queues must not."""
+ import copy
+ import importlib.util
++import io
+ import json
+ import os
+ from pathlib import Path
+@@ -9,6 +10,7 @@ import sys
+ import tempfile
+ import unittest
+ from unittest.mock import patch
++from contextlib import redirect_stdout
+ 
+ import yaml
+ 
+@@ -67,6 +69,30 @@ class HealthTests(unittest.TestCase):
+         self.assertEqual(json.loads(self.evidence.read_text()),result)
+         self.assertEqual(self.evidence.stat().st_mode & 0o777,0o600)
+ 
++    def test_deadline_only_final_sample_does_not_report_broker_wide_failure(self):
++        captured=json.loads((ROOT/'tests/fixtures/rabbitmq-conductor-reset.json').read_text())
++        output=io.StringIO()
++        with patch.object(sys,'argv',['reset_rabbitmq_health.py',str(self.evidence)]), \
++             patch.object(health,'wait',return_value=captured['health']), redirect_stdout(output):
++            self.assertEqual(health.main(),1)
++        value=json.loads(output.getvalue())
++        self.assertTrue(value['last_sample_incomplete'])
++        self.assertEqual(value['last_issues'],captured['health']['samples'][0]['issues'])
++        self.assertNotIn('running check failed',value['last_issues'])
++        self.assertIn('running check failed',value['last_sample_issues'])
++        self.assertEqual(value['last_complete_at'],'2026-10-15T13:42:25.486630+00:00')
++
++    def test_real_broker_failure_in_complete_sample_is_not_hidden(self):
++        checks={n:dict(rc=1) for n in ('running','alarms','queues','conductor','scheduler')}
++        row=dict(checks=checks,issues=['running check failed'],observed_at='now')
++        output=io.StringIO()
++        with patch.object(sys,'argv',['reset_rabbitmq_health.py',str(self.evidence)]), \
++             patch.object(health,'wait',return_value=dict(status='FAIL',samples=[row])), redirect_stdout(output):
++            self.assertEqual(health.main(),1)
++        value=json.loads(output.getvalue())
++        self.assertFalse(value['last_sample_incomplete'])
++        self.assertEqual(value['last_issues'],['running check failed'])
++
+     def test_recovery_must_be_stable_not_just_one_good_sample(self):
+         result = self.run_wait([['scheduler absent'],[],['scheduler down'],[]])
+         self.assertEqual(result['status'],'PASS')
+@@ -196,6 +222,36 @@ class HealthTests(unittest.TestCase):
+ 
+ @unittest.skipUnless(importlib.util.find_spec('ansible'), 'requires ansible-core')
+ class PlaybookIntegrationTests(unittest.TestCase):
++    def test_failed_deploy_output_is_saved_before_gate_without_console_disclosure(self):
++        plays=yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
++        deploy=next(p for p in plays if p['name']=='Deploy clean source ML2 OVS cloud')
++        names=('Persist complete Kolla deploy stdout in the reset snapshot',
++               'Persist complete Kolla deploy stderr in the reset snapshot',
++               'Persist deploy exit status in this reset snapshot',
++               'Fail when deploy or RabbitMQ validation failed')
++        tasks=[copy.deepcopy(t) for t in deploy['tasks'] if t['name'] in names]
++        stdout='TASK [fixture failed registration] ***\nfatal: [compute1]: FAILED! RAW_DEPLOY_SENTINEL'
++        stderr='stderr from deploy\nsecond line'
++        with tempfile.TemporaryDirectory() as directory:
++            root=Path(directory)
++            value=dict(rc=2,stdout=stdout,stderr=stderr,start='2026-10-15 20:22:00',
++                       end='2026-10-15 20:34:00',delta='0:12:00')
++            variables=dict(reset_run_dir=str(root),reset_kolla_inventory='/root/multinode',
++                           reset_deploy=value,reset_rabbitmq_health=dict(rc=0),ansible_python_interpreter=sys.executable)
++            play=root/'test.yml'
++            play.write_text(yaml.safe_dump([dict(hosts='localhost',gather_facts=False,vars=variables,tasks=tasks)],sort_keys=False))
++            result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i','localhost,','-c','local',str(play)],
++                                  capture_output=True,text=True,timeout=25)
++            self.assertNotEqual(result.returncode,0)
++            self.assertNotIn('RAW_DEPLOY_SENTINEL',result.stdout+result.stderr)
++            self.assertEqual((root/'kolla-deploy.stdout.log').read_text(),stdout+'\n')
++            self.assertEqual((root/'kolla-deploy.stderr.log').read_text(),stderr+'\n')
++            self.assertEqual((root/'kolla-deploy.stdout.log').stat().st_mode & 0o777,0o600)
++            saved=json.loads((root/'deploy-result.json').read_text())
++            self.assertEqual(saved['rc'],2)
++            self.assertEqual(saved['started_at'],value['start'])
++            self.assertEqual(saved['stdout'],'kolla-deploy.stdout.log')
++
+     def test_real_ansible_accepts_recovered_startup_and_rejects_failed_deploy(self):
+         plays=yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
+         deploy=next(p for p in plays if p['name']=='Deploy clean source ML2 OVS cloud')
 diff --git a/tests/test_reset_rabbitmq_recovery.py b/tests/test_reset_rabbitmq_recovery.py
 new file mode 100644
-index 0000000..9e0eedf
+index 0000000..4e050b5
 --- /dev/null
 +++ b/tests/test_reset_rabbitmq_recovery.py
-@@ -0,0 +1,285 @@
+@@ -0,0 +1,307 @@
 +"""Exercise the production recovery with real subprocesses and modeled service CLIs."""
 +import copy
 +import functools
@@ -4753,7 +5126,8 @@ index 0000000..9e0eedf
 +
 +    def save_model(self):
 +        health.save(self.root/'model.json',self.model)
-+        (self.root/'nova.conf').write_text('[scheduler]\nworkers = '+str(self.model['workers'])+'\n')
++        (self.root/'nova.conf').write_text('[scheduler]\nworkers = '+str(self.model['workers'])+
++            '\n[conductor]\nworkers = '+str(self.model.get('conductor_workers',1))+'\n')
 +
 +    def calls(self):
 +        p=self.root/'calls.jsonl'
@@ -4799,6 +5173,24 @@ index 0000000..9e0eedf
 +        result=self.run_recovery()
 +        self.assertEqual(result['status'],'FAIL')
 +        self.assertIn('workers differ',result['error'])
++        self.assertFalse(any(c[0]=='systemctl' for c in self.calls()))
++
++    def test_conductor_worker_verification_reads_its_own_container_and_section(self):
++        self.model.update(workers=5,conductor_workers=1);self.save_model()
++        value=recovery.verify_workers(self.root,1,service='nova_conductor')
++        self.assertEqual(value['status'],'PASS')
++        self.assertEqual(value['effective_workers'],1)
++        self.assertEqual(self.calls()[0][:3],['docker','exec','nova_conductor'])
++        self.assertEqual(json.loads((self.root/'nova-conductor-workers.json').read_text())['status'],'PASS')
++        self.assertFalse((self.root/'nova-scheduler-workers.json').exists())
++
++    def test_five_conductor_workers_are_rejected_when_one_was_requested(self):
++        self.model['conductor_workers']=5;self.save_model()
++        with self.assertRaisesRegex(RuntimeError,'conductor workers differ'):
++            recovery.verify_workers(self.root,1,service='nova_conductor')
++        value=json.loads((self.root/'nova-conductor-workers.json').read_text())
++        self.assertEqual(value['status'],'FAIL')
++        self.assertEqual(value['effective_workers'],5)
 +        self.assertFalse(any(c[0]=='systemctl' for c in self.calls()))
 +
 +    def test_foreign_systemd_unit_is_never_operated(self):
@@ -4863,10 +5255,11 @@ index 0000000..9e0eedf
 +        deploy=next(p for p in yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
 +                    if p['name']=='Deploy clean source ML2 OVS cloud')
 +        names=('Verify deployed Nova scheduler worker configuration',
++               'Verify deployed Nova conductor worker configuration',
 +               'Recover the evidenced scheduler Raft startup failure at most once',
 +               'Fail when deploy or RabbitMQ validation failed')
 +        tasks=[copy.deepcopy(t) for t in deploy['tasks'] if t['name'] in names]
-+        vars=dict(reset_run_dir=str(self.root),reset_nova_scheduler_workers=1,
++        vars=dict(reset_run_dir=str(self.root),reset_nova_scheduler_workers=1,reset_nova_conductor_workers=1,
 +            reset_rabbitmq_log_path=str(self.log),reset_rabbitmq_health_timeout=15,
 +            reset_rabbitmq_stable_seconds=1,reset_rabbitmq_recovery_enabled=True,
 +            reset_deploy={'rc':0},reset_rabbitmq_health={'rc':1},ansible_python_interpreter=sys.executable)
@@ -4885,7 +5278,8 @@ index 0000000..9e0eedf
 +        change=copy.deepcopy(next(t for t in target[0]['tasks'] if t['name']=='Write target ML2/OVN globals'))
 +        path=self.root/'globals.yml'
 +        vars=dict(reset_globals_path=str(path),reset_config_path=str(self.root/'config'),
-+            reset_nova_scheduler_workers=1,ns_physnet='physnet1',kolla_globals_path=str(path),
++            reset_nova_scheduler_workers=1,reset_nova_conductor_workers=1,
++            ns_physnet='physnet1',kolla_globals_path=str(path),
 +            target_neutron_plugin_agent='ovn',neutron_type_drivers_target='flat,vlan,geneve',
 +            target_tenant_network_type='geneve',ansible_python_interpreter=sys.executable)
 +        play=self.root/'render.yml'
@@ -4895,6 +5289,7 @@ index 0000000..9e0eedf
 +        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
 +        values=yaml.safe_load(path.read_text())
 +        self.assertEqual(values['nova_scheduler_workers'],1)
++        self.assertEqual(values['nova_cell_conductor_workers'],1)
 +        self.assertEqual(values['neutron_plugin_agent'],'ovn')
 +
 +
