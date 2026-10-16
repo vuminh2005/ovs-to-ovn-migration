@@ -1,3 +1,55 @@
+Cutover workflow optimization and synchronized reset — 2026-10-16
+Source: final.zip supplied by the user; source SHA256:
+45b6b0dd7353387ef3cb913ddafa089c057ccc07be90c99ebb01b130e64b00ea
+
+552 full-suite tests PASS, 404 subtests PASS, no skips (140 SDK warnings).
+11 Ansible entrypoint/helper syntax checks PASS. Python AST 86 files / YAML
+36 files PASS; source diff whitespace checks PASS.
+
+Before freeze: discover Neutron image, stage the provider helper and immutable
+run-owned VM-port checkpoint/timeout, add OF15 while retaining older protocols,
+wait for the pre-freeze aggregate snapshot, and check the original Pair-A
+capture/anchor. Phase 08 only verifies OpenFlow and prepared inputs. No PCAP,
+ping or held session is restarted and measurement anchors are not rebased.
+
+Continuous log/change streams and PCAP remain. Five aggregate checkpoint
+transports leave cutover; periodic supplementary sampling and reconnect dumps
+are deferred until observed traffic recovery. Specialized N-S post-cutover
+conntrack evidence, metadata deploy, DB/provider checks and cleanup -> restart
+ordering remain. Original forensic gaps/errors stay visible in JSON.
+
+Phase 11 observes fresh success from existing EW/NS streams before AFTER,
+comparison and smoke/fresh workload. A 300-second default deadline bounds the
+loop and blocked SDK/transport calls. Missing recovery or changed identity stops
+before AFTER and persists post-restore-traffic.json; early failure can precede
+the final report. Final traffic downtime still comes from the original evidence.
+
+Reset validates owned observer shutdown before destroy, accepts stopped GAPPED
+or core-only early-failure runs, removes only ownership-validated preparation
+directories after destroy, and prepares OF15 after OVS deploy before workload.
+Post-DB resume checks the original preparation without repeating freeze/DB/ARM.
+Do not splice this version into an old frozen run missing that checkpoint.
+
+Real Ansible fixtures execute the production preparation plays, delegated facts,
+helper/port staging, OF15 include and post-DB bootstrap. Docker/OVS/cloud state
+is modeled locally. Tests cover additive/idempotent protocol preparation,
+read-only cutover checks, changed inventory/ports/hosts, frozen-run immutability,
+owned/all-before-any reset cleanup, stale summaries, TCP/ping/boot identity,
+blocked-RPC deadline, original capture preservation, snapshot completion/defer,
+and truthful failure evidence. No live lab reset/migration/service/cloud call.
+
+scripts/report_format.py is byte-identical to the supplied ZIP (SHA256:
+f3b52253be6a06b9fcc46dae99f90770c4ef6e92ad4b14ac9f12893219655c39).
+scripts/migration_report.py, metric algorithms, probes and RabbitMQ health/
+recovery scripts are also unchanged. One pre-existing test in the supplied ZIP
+expected a diagnostics TXT section absent from that ZIP's own renderer; its
+assertions now preserve current TXT and verify detailed JSON coverage instead.
+
+workflow-optimization.patch is relative to this supplied final.zip. The earlier
+CHANGES.patch is retained unchanged. See docs/cutover-workflow.md for usage.
+
+Prior validation history:
+
 N-S ICMP sender reconciliation/export and diagnostic coverage — 2026-10-15
 Based on the latest delivered current-playbook.zip. Earlier RabbitMQ mitigation,
 probe shutdown, observer reconnect and traffic report formatting are retained.

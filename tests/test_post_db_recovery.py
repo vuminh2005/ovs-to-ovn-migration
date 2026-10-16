@@ -38,6 +38,10 @@ class PostDBRecoveryTests(unittest.TestCase):
         (root/'compute-port-ids.txt').write_text('port0\nport1\n')
         put('resource-counts.before.json',{'networks':6})
         (root/'ml2_conf.ini.target').write_text('[ovn]\novn_nb_connection=tcp:controller:6641\novn_sb_connection=tcp:controller:6642\n')
+        from cutover_preparation import prepare
+        (metrics/'control_plane_downtime.start').unlink()
+        prepare(root, 'neutron:source', 120, 2, 900)
+        (metrics/'control_plane_downtime.start').write_text('2.2')
 
     def test_successful_db_frozen_before_cutover_is_selected(self):
         value=inspect(self.root,self.inventory)
@@ -102,10 +106,18 @@ class PostDBRecoveryTests(unittest.TestCase):
         self.assertNotIn('freeze-start',before)
         self.assertTrue(all(p['any_errors_fatal'] for p in plays[:3]))
 
-    def execute_bootstrap(self, frozen=True):
+    def execute_bootstrap(self, frozen=True, missing_preparation=False):
         # Run the production recovery plays, stopping before real cutover imports.
         self.inventory.write_text('[control]\ncontroller ansible_connection=local\n[network]\nnetwork1 ansible_connection=local\n[compute]\ncompute1 ansible_connection=local\ncompute2 ansible_connection=local\n')
         (self.root/'inventory.before').write_bytes(self.inventory.read_bytes())
+        # The fixture changes inventory before executing the production bootstrap.
+        from cutover_preparation import prepare
+        (self.root/'cutover-preparation.json').unlink()
+        (self.root/'metrics/control_plane_downtime.start').unlink()
+        prepare(self.root, 'neutron:source', 120, 2, 900)
+        (self.root/'metrics/control_plane_downtime.start').write_text('2.2')
+        if missing_preparation:
+            (self.root/'cutover-preparation.json').unlink()
         plays=yaml.safe_load((ROOT/'resume-after-db.yml').read_text())[:3]
         harness=self.parent/'harness';harness.mkdir()
         (harness/'scripts').symlink_to(ROOT/'scripts',target_is_directory=True)
@@ -143,6 +155,14 @@ class PostDBRecoveryTests(unittest.TestCase):
         self.assertIn('Require neutron-server to remain stopped',result.stdout)
         self.assertFalse((self.root/'metrics/phase07.end').exists())
         self.assertFalse((self.root/'orchestration-recovery.json').exists())
+
+    def test_real_ansible_rejects_missing_pre_freeze_preparation_before_live_recovery(self):
+        result=self.execute_bootstrap(missing_preparation=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('Require original pre-freeze preparation',result.stdout)
+        self.assertNotIn('Require neutron-server to remain stopped',result.stdout)
+        self.assertFalse((self.root/'metrics/phase08.start').exists())
+        self.assertEqual((self.root/'metrics/control_plane_downtime.start').read_text(),'2.2')
 
 
 if __name__=='__main__':unittest.main()

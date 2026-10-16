@@ -1,5 +1,10 @@
 # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
 
+Cập nhật 16/10/2026: chuẩn bị OpenFlow15/helper/port checkpoint trước freeze,
+hoãn dump tổng hợp và sampling bổ sung đến sau phục hồi, quan sát probe gốc
+trước AFTER/smoke; reset và resume được đồng bộ. Format TXT giữ nguyên.
+Xem [thứ tự cutover và cách kiểm chứng](docs/cutover-workflow.md).
+
 ## Bản mở rộng N-S và ma trận EW (13/10/2026)
 
 Hướng dẫn hiện hành: [docs/ns-ew-matrix.md](docs/ns-ew-matrix.md).

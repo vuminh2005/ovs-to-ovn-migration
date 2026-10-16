@@ -37,7 +37,8 @@ legacy_compute_units:
   - kolla-neutron_openvswitch_agent-container.service
 
 # ML2/OVS can leave br-int restricted to OF <= 1.4. OVN controller in the
-# validated environment needs OF1.5 negotiation, so normalize it at cutover.
+# validated environment needs OF1.5 negotiation; add support before freeze and
+# only verify the prepared protocol set at cutover.
 br_int_protocols: "OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13,OpenFlow14,OpenFlow15"
 
 # Safety / backup.
@@ -129,3 +130,6 @@ migration_diagnostics_max_bytes: 268435456
 migration_diagnostics_reconnect_attempts: 8
 migration_diagnostics_reconnect_window_seconds: 60
 migration_diagnostics_external_interface: ns-ex
+
+# Workflow barrier only; original PCAP/monotonic evidence still defines downtime.
+post_restore_observation_timeout_seconds: 300

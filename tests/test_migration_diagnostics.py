@@ -8,11 +8,13 @@ import sys
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+import threading
 from unittest.mock import patch
 
 from test_validation import ROOT
 import migration_diagnostics as d
-from diagnostics_control import archived_stopped, summarize
+from diagnostics_control import archived_stopped, summarize, reset_stop
 
 
 class CollectorProcessTests(unittest.TestCase):
@@ -78,6 +80,73 @@ class CollectorProcessTests(unittest.TestCase):
         result = self.cli('start', '--config', json.dumps(self.cfg), check=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((self.remote/'events.jsonl').read_text(), 'old evidence')
+
+    def test_pre_freeze_snapshot_is_completed_before_ack_and_policy_stays_quiet(self):
+        self.cfg['sampling_scope']='outside-cutover'
+        self.cli('start','--config',json.dumps(self.cfg)); self.started=True
+        ack=self.cli('snapshot-wait','--label','pre-freeze')
+        self.assertEqual(ack['status'],'COMPLETED')
+        events=[json.loads(line) for line in (self.remote/'events.jsonl').read_text().splitlines()]
+        self.assertTrue(any(e.get('label')=='pre-freeze' for e in events))
+        self.assertTrue(list(self.remote.glob('snapshot-*.done')))
+
+
+class CutoverSamplingTests(unittest.TestCase):
+    def test_live_pre_freeze_check_requires_acknowledged_reconnect_and_preserves_raw_gap(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            d.save(root/'config.json',dict(run='r',host='node',role='core',lifetime=60,max_bytes=1048576))
+            state=dict(status='RUNNING',errors=['openflow-watch'],identity={'pid':123},heartbeat_ts=time.time(),
+                jobs={'openflow-watch':dict(rc=None,gaps=[dict(end_timestamp=time.time())],
+                    segments=[dict(connected_at=time.time())])},coverage='GAPPED')
+            d.save(root/'state.json',state); original=(root/'state.json').read_bytes()
+            with patch.object(d,'alive',return_value=True):
+                self.assertEqual(d.operate('check',root)['coverage'],'GAPPED')
+                self.assertEqual((root/'state.json').read_bytes(),original)
+                state['jobs']['openflow-watch']['gaps'][0]['end_timestamp']=None
+                d.save(root/'state.json',state)
+                with self.assertRaisesRegex(RuntimeError,'incomplete'): d.operate('check',root)
+                state['jobs']['openflow-watch']['gaps'][0]['end_timestamp']=time.time()
+                state['errors'].append('byte-budget-exhausted'); d.save(root/'state.json',state)
+                with self.assertRaisesRegex(RuntimeError,'incomplete'): d.operate('check',root)
+
+    def test_snapshot_wait_drains_prior_work_and_reconnect_dumps_defer_until_recovery(self):
+        with tempfile.TemporaryDirectory() as folder,ThreadPoolExecutor(max_workers=1) as pool:
+            root=Path(folder); observer=d.Observer(root,dict(run='r',host='node',sampling_scope='outside-cutover'))
+            blocked=threading.Event(); entered=threading.Event(); calls=[]
+            def snapshot(label):
+                if label=='collector-start': entered.set(); blocked.wait(2)
+                calls.append(label)
+            observer.snapshot=snapshot
+            request=root/'snapshot-test.request'
+            observer.queue_snapshot(pool,'collector-start'); self.assertTrue(entered.wait(1))
+            observer.queue_snapshot(pool,'pre-freeze',request)
+            self.assertFalse(request.with_suffix('.done').exists())
+            blocked.set(); pool.submit(lambda:None).result(timeout=2)
+            self.assertEqual(json.loads(request.with_suffix('.done').read_text())['status'],'COMPLETED')
+            self.assertFalse(observer.intensive)
+            observer.queue_snapshot(pool,'observer-reconnected-openflow-watch')
+            pool.submit(lambda:None).result(timeout=2)
+            self.assertEqual(calls,['collector-start','pre-freeze'])
+            observer.queue_snapshot(pool,'post-traffic-recovery')
+            pool.submit(lambda:None).result(timeout=2)
+            self.assertTrue(observer.intensive)
+            self.assertEqual(calls[-2:],['deferred-after-recovery:observer-reconnected-openflow-watch','post-traffic-recovery'])
+
+    def test_reset_accepts_stopped_gapped_core_only_run_but_blocks_unproven_cleanup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            parent=Path(folder); root=parent/'run'; (root/'diagnostics/checkpoints').mkdir(parents=True)
+            entry=dict(host='node',role='core',config={'run':'run'})
+            d.save(root/'diagnostics-config.json',dict(enabled=True))
+            d.save(root/'diagnostics/checkpoints/node-core.json',entry)
+            archive=root/'diagnostics/node/core'; archive.mkdir(parents=True)
+            state=dict(status='UNAVAILABLE',stopped=True,cleanup_complete=True,config=entry['config'],coverage='GAPPED')
+            d.save(archive/'state.json',state)
+            with patch('diagnostics_control.operate',return_value=dict(collection_status='UNAVAILABLE')):
+                self.assertEqual(reset_stop(parent)['status'],'PASS')
+                state['cleanup_complete']=False; d.save(archive/'state.json',state)
+                with self.assertRaisesRegex(RuntimeError,'reset blocked'): reset_stop(parent)
+            self.assertEqual(json.loads((parent/'diagnostics-reset-stop.json').read_text())['status'],'FAIL')
 
 
 class CollectorEvidenceTests(unittest.TestCase):

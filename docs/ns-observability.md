@@ -163,8 +163,8 @@ Thu thập:
 5. Tunnel PCAP VXLAN/Geneve trên interface tunnel của từng chassis và PCAP
    ARP/ICMP/TCP tại external OVS port network1.
 6. Snapshot version, clock/chrony, neighbors, link, FDB, OpenFlow flow/group/port
-   counters và conntrack tại các checkpoint. Sau pre-freeze có sample nhẹ best
-   effort mỗi khoảng 2 giây; không xếp hàng vô hạn khi command chạy chậm.
+   counters và conntrack trước freeze và sau traffic phục hồi. Sampling bổ sung
+   mỗi khoảng 2 giây chỉ bật sau phục hồi; không xếp hàng vô hạn khi command chậm.
 
 Collector chạy ngoài container, có PID/starttime/boot identity và run-owned
 directory. Container-side monitor có token riêng cho từng lần launch; cleanup
@@ -177,9 +177,11 @@ Byte/lifetime limit kết thúc với UNAVAILABLE và giữ dữ liệu, không 
 ## Vòng đời và lỗi
 
 Trước freeze phải CHECK collector còn sống, không có observer bắt buộc bị mất.
-Checkpoint được request bất đồng bộ quanh pre-freeze, stop legacy agent, OVN
-takeover, VM binding ready, cleanup và Neutron restart. Các bước này có overhead
-và vẫn được tính trong timer thực tế; không hứa hẹn instrumentation không tốn thời gian.
+Run mới chờ snapshot `pre-freeze` thực hiện xong trước freeze. Năm checkpoint
+tổng hợp giữa cutover được bỏ; dump reconnect bổ sung hoãn đến sau phục hồi.
+PCAP, log/change streams và snapshot conntrack N-S chuyên biệt vẫn giữ.
+Xem [thứ tự và đánh đổi](cutover-workflow.md). Overhead còn lại vẫn được tính
+trong timer thực tế; instrumentation không được coi là miễn phí.
 
 Phase 12 dừng/fetch host observers và N-S captures ngay cả khi workload validation
 FAIL. Callback của workflow chính cố gắng dừng/fetch khi Ansible kết thúc do lỗi
@@ -195,7 +197,8 @@ Riêng các connection observer OpenFlow/OVSDB có reconnect giới hạn trong 
 supervisor đang chạy: backoff 1, 2, 4 rồi tối đa 8 giây, giới hạn tổng số lần thử.
 Mỗi lần có segment/PID/token riêng; log cũ được append, không ghi đè. Reconnect
 chỉ được xác nhận khi có monitor reply/initial JSON, không chỉ vì process sống.
-Sau reconnect lấy initial flow state và snapshot; lỗi hoặc handshake im lặng
+Sau reconnect lấy initial flow state; dump tổng hợp hoãn đến sau phục hồi theo
+policy mới. Lỗi hoặc handshake im lặng
 không được coi là phục hồi. PCAP và tiến trình traffic không được restart.
 
 `observer-gap`, `observer-reconnected`, `observer-reconnect-exhausted` và các
@@ -204,9 +207,9 @@ output cuối và thời gian xác nhận kết nối lại; duration là từ p
 không phải phép đo downtime traffic. Coverage là `GAPPED` nếu từng bị ngắt.
 Reconnect không xóa lỗi cũ. `migration-diagnostics.json.status` vẫn UNAVAILABLE
 khi coverage thiếu; `diagnostic_coverage` trong report giữ GAPPED/UNAVAILABLE,
-warning theo host/observer và tổng gap duration. TXT có phần Diagnostics coverage
-khi không đầy đủ. Đây không phải số downtime traffic và không chứng nhận dữ liệu
-trong gap.
+warning theo host/observer và tổng gap duration. Format TXT hiện hành không in
+phần diagnostics; đọc các trường này trong JSON. Đây không phải số downtime
+traffic và không chứng nhận dữ liệu trong gap.
 
 Functional traffic validation không yêu cầu forensic stream liên tục nữa.
 Collector vẫn phải dừng/fetch và chứng minh `cleanup_complete`, được tổng hợp

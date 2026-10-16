@@ -204,7 +204,7 @@ class Phase07Tests(unittest.TestCase):
         self.assertEqual(names[end_index+1], 'Verify NB logical topology and SB datapaths')
 
     def test_authoritative_migrate_mode_and_fail_closed_guards_are_preserved(self):
-        self.assertTrue(self.plays[2]['any_errors_fatal'])
+        self.assertTrue(next(p for p in self.plays if 'provider_association_container_command' in p.get('vars', {}))['any_errors_fatal'])
         utility = self.named('Run neutron-ovn-db-sync-util migrate')
         self.assertIn('--ovn-neutron_sync_mode migrate', utility['ansible.builtin.shell'])
         self.assertTrue(utility['run_once'])
@@ -232,12 +232,13 @@ class Phase07Tests(unittest.TestCase):
     def test_helper_runs_in_existing_neutron_image_after_api_freeze(self):
         migration_play = next(p for p in self.plays if 'provider_association_container_command' in p.get('vars', {}))
         command = migration_play['vars']['provider_association_container_command']
-        self.assertIn('neutron_server_image.stdout', command)
+        self.assertIn("cutover_preparation_runtime'].neutron_image", command)
         self.assertIn('/etc/kolla/neutron-server:/var/lib/kolla/config_files:ro', command)
         self.assertIn('provider_associations.py:/opt/provider_associations.py:ro', command)
         self.assertIn('kolla_set_configs', migration_play['vars']['provider_association_entrypoint'])
         self.assertEqual(migration_play['hosts'], 'control')
-        self.assertEqual(self.plays[1]['tasks'][0]['ansible.builtin.systemd_service']['state'], 'stopped')
+        freeze = self.named('Stop and disable neutron-server through Kolla systemd')
+        self.assertEqual(freeze['ansible.builtin.systemd_service']['state'], 'stopped')
         for name in ('Snapshot ProviderResourceAssociation before authoritative migrate mode',
                      'Apply Caracal L3 provider-association compatibility migration',
                      'Snapshot ProviderResourceAssociation after compatibility conversion commits'):

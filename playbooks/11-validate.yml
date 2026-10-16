@@ -1,6 +1,7 @@
 ---
 - name: Phase 11 - Validate state consistency and ML2/OVN control plane
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -17,6 +18,26 @@
           - start
       run_once: true
       changed_when: false
+
+    - name: Observe recovery of original continuity traffic before AFTER snapshots or new resources
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/live_recovery.py') | quote }} {{ migration_run_dir | quote }} --timeout {{ post_restore_observation_timeout_seconds | int }}
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when:
+        - validation_workloads_enabled | bool
+        - lookup('fileglob', migration_run_dir + '/metrics/phase11.end') | length == 0
+
+    - name: Resume supplementary diagnostic sampling only after traffic recovery
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", snapshot,
+               "{{ migration_run_dir }}", --label, post-traffic-recovery]
+      changed_when: false
+      failed_when: false
+      when: migration_diagnostics_enabled | bool
 
     - name: Snapshot post-migration resources before creating any smoke-test resource
       ansible.builtin.shell: |

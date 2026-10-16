@@ -1,5 +1,11 @@
 # Tiếp tục sau lỗi kiểm tra topology cuối phase 07
 
+Lưu ý 16/10/2026: thứ tự mới yêu cầu `cutover-preparation.json` được tạo trước
+freeze. `resume-after-db.yml` kiểm tra checkpoint này trước mọi thao tác live.
+Phần hướng dẫn cài riêng một số file bên dưới là lịch sử cho phiên bản cũ;
+không áp dụng để ghép bản tối ưu vào run cũ đang freeze. Với run mới, cài đầy đủ
+ZIP và giữ nguyên checkpoint. Xem [workflow hiện hành](cutover-workflow.md).
+
 Log `Mark DB migration end` thành công rồi task kiểm tra topology trả `141`
 phù hợp với SIGPIPE ở pipeline `ovn-nbctl show | grep -Eq ...`. `grep -q` dừng
 đọc khi thấy kết quả; producer có thể tiếp tục ghi và bị đóng pipe. `pipefail`

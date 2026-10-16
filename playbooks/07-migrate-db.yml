@@ -18,11 +18,123 @@
       run_once: true
       changed_when: false
 
+- name: Phase 07 - Stage immutable cutover inputs before Neutron freeze
+  hosts: control
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Discover neutron-server image on DB sync host
+      ansible.builtin.command:
+        argv: [docker, inspect, neutron_server, --format, '{% raw %}{{.Config.Image}}{% endraw %}']
+      register: neutron_server_image
+      run_once: true
+      changed_when: false
+
+    - name: Persist run-scoped preparation inputs before freeze
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/cutover_preparation.py", prepare,
+               "{{ hostvars['localhost']['migration_run_dir'] }}", --image, "{{ neutron_server_image.stdout }}",
+               --base, "{{ binding_timeout_base_seconds | int }}", --per-port, "{{ binding_timeout_seconds_per_port | int }}",
+               --maximum, "{{ binding_timeout_max_seconds | int }}"]
+      delegate_to: localhost
+      register: cutover_preparation_result
+      run_once: true
+      changed_when: false
+
+    - name: Publish prepared cutover values on the deployment host
+      ansible.builtin.set_fact:
+        cutover_preparation_runtime: "{{ cutover_preparation_result.stdout | from_json }}"
+      delegate_to: localhost
+      delegate_facts: true
+      run_once: true
+
+    - name: Create private run-owned provider helper directory
+      ansible.builtin.file:
+        path: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}"
+        state: directory
+        mode: '0700'
+      run_once: true
+
+    - name: Persist preparation directory ownership before staging files
+      ansible.builtin.copy:
+        dest: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}/owner.json"
+        content: "{{ hostvars['localhost']['cutover_preparation_runtime'] | to_nice_json }}"
+        mode: '0600'
+      run_once: true
+
+    - name: Stage provider association helper on the DB sync host
+      ansible.builtin.copy:
+        dest: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}/provider_associations.py"
+        content: "{{ lookup('file', playbook_dir + '/../scripts/provider_associations.py') }}"
+        mode: '0600'
+      run_once: true
+
+- name: Phase 07 - Prepare VM port checkpoint on the selected OVN CLI host
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Create private run-owned OVN CLI preparation directory
+      ansible.builtin.file:
+        path: "{{ cutover_preparation_runtime.directory }}"
+        state: directory
+        mode: '0700'
+      delegate_to: "{{ ovn_cli_host_runtime }}"
+    - name: Preserve OVN CLI preparation ownership
+      ansible.builtin.copy:
+        dest: "{{ cutover_preparation_runtime.directory }}/owner.json"
+        content: "{{ cutover_preparation_runtime | to_nice_json }}"
+        mode: '0600'
+      delegate_to: "{{ ovn_cli_host_runtime }}"
+    - name: Copy pre-existing VM port IDs before freeze
+      ansible.builtin.copy:
+        src: "{{ migration_run_dir }}/compute-port-ids.txt"
+        dest: "{{ cutover_preparation_runtime.ports_path }}"
+        mode: '0600'
+      delegate_to: "{{ ovn_cli_host_runtime }}"
+
+- name: Phase 07 - Prepare OpenFlow support while legacy agents and API are running
+  hosts: network:compute
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: Add OpenFlow15 before the final pre-freeze readiness checks
+      ansible.builtin.include_tasks: openflow-preparation-tasks.yml
+      vars:
+        openflow_protocols: "{{ br_int_protocols }}"
+        openflow_evidence_directory: "{{ hostvars['localhost']['migration_run_dir'] }}"
+
+- name: Phase 07 - Complete readiness before starting the freeze timer
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
     - name: Require authoritative Pair B MTU and workload readiness before any Neutron freeze
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
         python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} precutover-ready {{ migration_run_dir | quote }}
+      args:
+        executable: /bin/bash
+      when: validation_workloads_enabled | bool
+
+    - name: Check the original Pair A capture and anchor without resetting measurement
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} anchor-check {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
@@ -116,30 +228,10 @@
       -e KOLLA_SERVICE_NAME=neutron-server
       -v /etc/kolla/neutron-server:/var/lib/kolla/config_files:ro
       -v kolla_logs:/var/log/kolla
-      -v {{ (provider_compat_workspace.path + '/provider_associations.py:/opt/provider_associations.py:ro') | quote }}
-      --entrypoint /bin/bash {{ neutron_server_image.stdout | quote }}
+      -v {{ (hostvars['localhost']['cutover_preparation_runtime'].directory + '/provider_associations.py:/opt/provider_associations.py:ro') | quote }}
+      --entrypoint /bin/bash {{ hostvars['localhost']['cutover_preparation_runtime'].neutron_image | quote }}
       -lc {{ provider_association_entrypoint | quote }} provider-associations
   tasks:
-    - name: Discover neutron-server image on DB sync host
-      ansible.builtin.shell: docker inspect neutron_server -f '{% raw %}{{.Config.Image}}{% endraw %}'
-      register: neutron_server_image
-      run_once: true
-      changed_when: false
-
-    - name: Create private staging directory for Neutron provider compatibility helper
-      ansible.builtin.tempfile:
-        state: directory
-        suffix: -ovn-provider-associations
-      register: provider_compat_workspace
-      run_once: true
-
-    - name: Stage provider association helper on the DB sync host
-      ansible.builtin.copy:
-        dest: "{{ provider_compat_workspace.path }}/provider_associations.py"
-        content: "{{ lookup('file', playbook_dir + '/../scripts/provider_associations.py') }}"
-        mode: '0600'
-      run_once: true
-
     - name: Snapshot ProviderResourceAssociation before authoritative migrate mode
       ansible.builtin.shell: |
         set -euo pipefail
@@ -179,7 +271,7 @@
           -v /etc/kolla/neutron-server:/var/lib/kolla/config_files:ro \
           -v kolla_logs:/var/log/kolla \
           --entrypoint /bin/bash \
-          {{ neutron_server_image.stdout | quote }} \
+          {{ hostvars['localhost']['cutover_preparation_runtime'].neutron_image | quote }} \
           -lc '
             kolla_set_configs &&
             neutron-ovn-db-sync-util \

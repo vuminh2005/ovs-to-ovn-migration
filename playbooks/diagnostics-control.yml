@@ -21,7 +21,7 @@
       when: diagnostics_action == 'start'
     - name: Operate original observer without changing network state
       ansible.builtin.command:
-        argv: "{{ ['python3', diagnostic_entry.remote_directory + '/migration_diagnostics.py', diagnostics_action, diagnostic_entry.remote_directory] + (['--config', diagnostic_entry.config | to_json] if diagnostics_action == 'start' else []) + (['--label', diagnostics_label] if diagnostics_action == 'snapshot' else []) }}"
+        argv: "{{ ['python3', diagnostic_entry.remote_directory + '/migration_diagnostics.py', diagnostics_action, diagnostic_entry.remote_directory] + (['--config', diagnostic_entry.config | to_json] if diagnostics_action == 'start' else []) + (['--label', diagnostics_label] if diagnostics_action in ['snapshot', 'snapshot-wait'] else []) }}"
       register: diagnostic_operation
       changed_when: false
       failed_when: false
@@ -54,4 +54,4 @@
       ansible.builtin.assert:
         that: diagnostic_operation.rc == 0
         fail_msg: "Observer unavailable; inspect saved diagnostics result before cutover."
-      when: diagnostics_action in ['start', 'check']
+      when: diagnostics_action in ['start', 'check', 'snapshot-wait']

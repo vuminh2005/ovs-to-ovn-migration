@@ -1,5 +1,10 @@
 # Reset lặp lại cụm 4 node về ML2/OVS
 
+Cập nhật 16/10/2026: reset dọn thư mục preparation có ownership sau destroy
+và chuẩn bị OpenFlow15 trong baseline OVS trước workload. Gate shutdown chỉ
+yêu cầu các collector thực sự được checkpoint phải cleanup hoàn tất, kể cả
+run lỗi sớm hoặc coverage GAPPED. Xem [chi tiết](cutover-workflow.md).
+
 Cập nhật 15/10/2026: reset đặt Nova scheduler/conductor mỗi service 1 worker,
 lưu đầy đủ log deploy và có một lượt phục hồi giới hạn cho đúng lỗi Raft
 `scheduler` đã ghi nhận. Xem

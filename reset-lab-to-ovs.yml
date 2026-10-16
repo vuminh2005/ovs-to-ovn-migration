@@ -347,6 +347,28 @@
           A clean lab reset must not reuse old RabbitMQ Mnesia/Raft state.
 
 
+- name: Remove only owned preparation directories after successful Kolla destroy
+  hosts: control:network:compute
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  vars_files:
+    - group_vars/reset.yml
+  tasks:
+    - name: Validate ownership before removing any run preparation directory
+      ansible.builtin.script: scripts/cutover_preparation.py cleanup /tmp
+      args:
+        executable: python3
+      register: reset_preparation_cleanup
+      changed_when: reset_preparation_cleanup.rc == 0 and (reset_preparation_cleanup.stdout | from_json).removed | length > 0
+    - name: Persist removed preparation ownership in the reset snapshot
+      ansible.builtin.copy:
+        dest: "{{ hostvars['localhost']['reset_run_dir'] }}/preparation-cleanup-{{ inventory_hostname }}.json"
+        content: "{{ reset_preparation_cleanup.stdout | from_json | to_nice_json }}"
+        mode: '0600'
+      delegate_to: localhost
+
+
 - name: Verify Neutron namespaces are gone after destroy
   hosts: network:compute
   gather_facts: false
@@ -900,6 +922,12 @@
     - group_vars/reset.yml
     - group_vars/ns-lab.yml
   tasks:
+    - name: Prepare additive OpenFlow15 baseline before creating any workload
+      ansible.builtin.include_tasks: playbooks/openflow-preparation-tasks.yml
+      vars:
+        openflow_protocols: "{{ reset_br_int_protocols }}"
+        openflow_evidence_directory: "{{ hostvars['localhost']['reset_run_dir'] }}"
+
     - name: Verify neutron_openvswitch_agent is running
       ansible.builtin.shell: |
         set -euo pipefail

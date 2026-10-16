@@ -1,6 +1,7 @@
 ---
 - name: Phase 08 - Start dataplane convergence and tenant packet measurement
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -19,15 +20,15 @@
           - dataplane_convergence.start
       run_once: true
       changed_when: false
-
-    - name: Preserve the existing Pair A measurement start anchor
-      ansible.builtin.shell: |
-        set -euo pipefail
-        source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} anchor-start {{ migration_run_dir | quote }}
-      args:
-        executable: /bin/bash
-      when: validation_workloads_enabled | bool
+    - name: Verify immutable cutover preparation from the original run
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/cutover_preparation.py", verify,
+               "{{ hostvars['localhost']['migration_run_dir'] }}"]
+      register: prepared_cutover_checkpoint
+      changed_when: false
+    - name: Load original timeout and run-owned VM port checkpoint for normal or resumed cutover
+      ansible.builtin.set_fact:
+        cutover_preparation_runtime: "{{ prepared_cutover_checkpoint.stdout | from_json }}"
 
 - name: Phase 08 - Stop legacy Neutron agents on network nodes
   hosts: network
@@ -36,11 +37,6 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Queue before-legacy-agent-stop diagnostic checkpoint
-      ansible.builtin.include_tasks: diagnostics-checkpoint-tasks.yml
-      vars:
-        diagnostic_checkpoint_label: before-legacy-agent-stop
-
     - name: Disable and stop legacy network-node agents when installed
       ansible.builtin.shell: |
         set -euo pipefail
@@ -72,23 +68,19 @@
 
 - name: Phase 08 - Normalize br-int for OVN takeover
   hosts: network:compute
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Queue before-ovn-takeover diagnostic checkpoint
-      ansible.builtin.include_tasks: diagnostics-checkpoint-tasks.yml
+    - name: Verify prepared OpenFlow support without reconfiguring br-int during cutover
+      ansible.builtin.include_tasks: openflow-preparation-tasks.yml
       vars:
-        diagnostic_checkpoint_label: before-ovn-takeover
-
-    - name: Enable OpenFlow15 on existing br-int
-      ansible.builtin.shell: |
-        set -euo pipefail
-        docker exec openvswitch_vswitchd ovs-vsctl br-exists br-int
-        docker exec openvswitch_vswitchd ovs-vsctl set Bridge br-int protocols={{ br_int_protocols }}
-      args:
-        executable: /bin/bash
+        openflow_protocols: "{{ br_int_protocols }}"
+        openflow_check_only: true
+        openflow_evidence_stage: cutover-check
+        openflow_evidence_directory: "{{ hostvars['localhost']['migration_run_dir'] }}"
 
 - name: Phase 08 - Deploy OVN controller and metadata through Kolla
   hosts: localhost
@@ -111,15 +103,6 @@
       args:
         executable: /bin/bash
 
-    - name: Calculate dynamic Port_Binding timeout from old VM port count
-      ansible.builtin.shell: |
-        count=$(grep -cve '^$' {{ migration_run_dir }}/compute-port-ids.txt || true)
-        timeout=$(( {{ binding_timeout_base_seconds }} + count * {{ binding_timeout_seconds_per_port }} ))
-        [ "$timeout" -le {{ binding_timeout_max_seconds }} ] || timeout={{ binding_timeout_max_seconds }}
-        echo "$timeout"
-      register: binding_timeout
-      changed_when: false
-
 - name: Phase 08 - Wait for OVN workload takeover using SB Port_Binding
   hosts: localhost
   gather_facts: false
@@ -137,18 +120,12 @@
       run_once: true
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: Copy pre-existing VM port IDs to OVN CLI host
-      ansible.builtin.copy:
-        src: "{{ hostvars['localhost']['migration_run_dir'] }}/compute-port-ids.txt"
-        dest: /tmp/ovs-to-ovn-compute-port-ids.txt
-        mode: "0600"
-      run_once: true
-      delegate_to: "{{ ovn_cli_host_runtime }}"
     - name: Wait until every pre-existing VM port has chassis and up=true
       ansible.builtin.shell: |
         set -euo pipefail
-        ports=/tmp/ovs-to-ovn-compute-port-ids.txt
-        deadline=$(( $(date +%s) + {{ hostvars['localhost']['binding_timeout'].stdout | int }} ))
+        ports={{ hostvars['localhost']['cutover_preparation_runtime'].ports_path | quote }}
+        printf '%s  %s\n' {{ hostvars['localhost']['cutover_preparation_runtime'].ports_sha256 | quote }} "$ports" | sha256sum --check --status
+        deadline=$(( $(date +%s) + {{ hostvars['localhost']['cutover_preparation_runtime'].binding_timeout | int }} ))
         while true; do
           bad=0
           while read -r port; do
@@ -167,11 +144,6 @@
       run_once: true
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: Queue vm-portbinding-ready diagnostic checkpoint
-      ansible.builtin.include_tasks: diagnostics-checkpoint-tasks.yml
-      vars:
-        diagnostic_checkpoint_label: vm-portbinding-ready
-
     - name: Mark dataplane convergence end
       ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/dataplane_convergence.end
       run_once: true
@@ -179,6 +151,7 @@
 
 - name: Phase 08 - Verify chassis-side services and finish cutover
   hosts: network:compute
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:

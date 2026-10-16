@@ -19,6 +19,10 @@
         argv: [python3, "{{ playbook_dir }}/scripts/post_db_recovery.py", inspect, "{{ migration_resume_run_dir }}", --inventory, "{{ ansible_inventory_sources[0] }}"]
       register: post_db_checkpoint
       changed_when: false
+    - name: Require original pre-freeze preparation before resuming cutover
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/scripts/cutover_preparation.py", verify, "{{ migration_resume_run_dir }}"]
+      changed_when: false
     - name: Restore the same run runtime and endpoints without repeating freeze or migration
       ansible.builtin.set_fact:
         post_db_runtime: "{{ (post_db_checkpoint.stdout | from_json).runtime }}"

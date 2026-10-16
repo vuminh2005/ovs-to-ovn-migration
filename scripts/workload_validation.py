@@ -575,6 +575,21 @@ class Validation:
         rows = self.collect(stage, deadline=deadline)
         return {key: freshness_anchor(value) for key,value in rows.items()}
 
+    def checkpoint_check(self):
+        """Check the original measurement without creating/replacing its anchor or capture."""
+        window = read_evidence(self.root, 'validation-window.json')
+        if self.cfg.get('capture_enabled'):
+            capture = Capture(self)
+            checkpoint = capture.checkpoint()
+            if not window.get('pcap_start') or not checkpoint or checkpoint.get('status') != 'RUNNING':
+                raise RuntimeError('Original Pair-A capture/start anchor missing; restart/rebase prohibited')
+            state = capture.snapshot()
+            if state.get('status') != 'RUNNING' or state.get('parse_problems') or not state.get('observed_endpoint'):
+                raise RuntimeError('Original Pair-A capture is not observing live replies')
+        elif not window.get('start_anchor'):
+            raise RuntimeError('Original Pair-A measurement anchor missing; rebase prohibited')
+        return window
+
     def checkpoint_start(self):
         path = self.root/'validation-window.json'
         window = read_evidence(self.root, path.name)
@@ -1260,7 +1275,7 @@ class Validation:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'finalize', 'cleanup-ready', 'prepare-dhcp', 'precutover-ready', 'capture-finish', 'capture-cleanup', 'd-arm', 'ns-arm'])
+    p.add_argument('action', choices=['pre', 'post', 'collect', 'anchor-start', 'anchor-check', 'finalize', 'cleanup-ready', 'prepare-dhcp', 'precutover-ready', 'capture-finish', 'capture-cleanup', 'd-arm', 'ns-arm'])
     p.add_argument('root', type=pathlib.Path)
     args = p.parse_args()
     if args.action == 'cleanup-ready':
@@ -1326,13 +1341,16 @@ def main():
         pair_d.arm()
     elif args.action == 'anchor-start':
         v.checkpoint_start()
+    elif args.action == 'anchor-check':
+        v.checkpoint_check()
     elif args.action == 'prepare-dhcp':
         v.prepare_dhcp(target=True)
     elif args.action == 'precutover-ready':
         if read_evidence(v.root, 'diagnostics-config.json').get('enabled'):
             from diagnostics_control import operate
             operate(v.root, 'ensure')
-            operate(v.root, 'snapshot', label='pre-freeze')
+            operate(v.root, 'snapshot-wait', label='pre-freeze')
+            operate(v.root, 'check')
         v.verify_precutover()
         if v.cfg.get('placement_enabled'):
             v.audit_placement(['measure', 'pre'] + (['tcp'] if pair_d.enabled else []))

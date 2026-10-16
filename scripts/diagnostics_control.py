@@ -95,7 +95,8 @@ def archived_stopped(root, entry):
     if not path.exists():
         return False
     value = json.loads(path.read_text())
-    return value.get('stopped') is True and value.get('config') == entry['config']
+    return (value.get('stopped') is True and value.get('cleanup_complete', True) is True
+            and value.get('config') == entry['config'])
 
 
 def transport(root, action, entries, label):
@@ -110,7 +111,7 @@ def transport(root, action, entries, label):
         capture_output=True, text=True, timeout=180)
     (directory/('transport-'+selected+'-'+action+'.log')).write_text(result.stdout+'\n'+result.stderr)
     if result.returncode:
-        if action in ('start', 'check'):
+        if action in ('start', 'check', 'snapshot-wait'):
             raise RuntimeError('Diagnostics '+action+' failed; inspect diagnostics transport log')
     if action == 'stop':
         for host, entry in entries.items():
@@ -160,6 +161,9 @@ def reset_stop(backup_root):
             continue
         try:
             operate(root, 'stop')
+            entries = [json.loads(p.read_text()) for p in (root/'diagnostics/checkpoints').glob('*.json')]
+            if not all(archived_stopped(root, entry) for entry in entries):
+                raise RuntimeError('Observer shutdown/archive was not proven complete')
             stopped.append(root.name)
         except Exception as exc:
             errors.append(dict(run=root.name, error=str(exc)))
@@ -172,7 +176,7 @@ def reset_stop(backup_root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['start', 'check', 'snapshot', 'stop', 'abort', 'reset-stop', 'ensure'])
+    parser.add_argument('action', choices=['start', 'check', 'snapshot', 'snapshot-wait', 'stop', 'abort', 'reset-stop', 'ensure'])
     parser.add_argument('root', type=Path)
     parser.add_argument('--role', choices=['core', 'central'])
     parser.add_argument('--label', default='checkpoint')

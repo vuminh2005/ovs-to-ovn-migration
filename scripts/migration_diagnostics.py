@@ -153,7 +153,37 @@ class Observer:
         self.events = self.root/'events.jsonl'
         self.started = time.monotonic()
         self.intensive = False
+        self.quiet_cutover = self.cfg.get('sampling_scope') == 'outside-cutover'
+        self.deferred_snapshots = []
         self.last_sample = 0
+
+    def queue_snapshot(self, executor, label, request=None):
+        outside = self.cfg.get('sampling_scope') == 'outside-cutover'
+        if outside and label == 'pre-freeze':
+            self.quiet_cutover, self.intensive = True, False
+        elif outside and label == 'post-traffic-recovery':
+            self.quiet_cutover, self.intensive = False, True
+            for old in self.deferred_snapshots:
+                executor.submit(self.snapshot, 'deferred-after-recovery:'+old)
+            self.deferred_snapshots.clear()
+        elif outside and self.quiet_cutover and label != 'collector-start':
+            self.deferred_snapshots.append(label)
+            self.record('snapshot-deferred', label=label, reason='outside-cutover sampling policy')
+            if request:
+                save(request.with_suffix('.done'), dict(status='DEFERRED', label=label))
+            return
+        elif not outside and label == 'pre-freeze':
+            self.intensive = True  # Read old archive/config policies without rewriting them.
+        def execute():
+            try:
+                self.snapshot(label)
+                if request:
+                    save(request.with_suffix('.done'), dict(status='COMPLETED', label=label, ts=time.time()))
+            except Exception as exc:
+                self.record('snapshot-error', label=label, error=str(exc))
+                if request:
+                    save(request.with_suffix('.done'), dict(status='FAIL', label=label, reason=str(exc)))
+        executor.submit(execute)
 
     def record(self, name, **value):
         with self.lock, self.events.open('a') as f:
@@ -207,7 +237,7 @@ class Observer:
                     continue
                 if row.get('gap') and row.get('connected_at') and not row.get('snapshot_queued'):
                     row['snapshot_queued'] = True
-                    executor.submit(self.snapshot, 'observer-reconnected-'+name)
+                    self.queue_snapshot(executor, 'observer-reconnected-'+name)
                 continue
             gap = row.get('gap')
             if not row.get('gap_reported'):
@@ -380,16 +410,14 @@ exit 0'''
                 jobs = core_jobs(self.cfg, self.root)
             for name, spec in jobs.items():
                 self.start_job(name, spec)
-            executor.submit(self.snapshot, 'collector-start')
+            self.queue_snapshot(executor, 'collector-start')
             while not self.stop.is_set() and time.monotonic()-self.started < self.cfg['lifetime']:
                 self.tail_logs()
                 for request in self.root.glob('snapshot-*.request'):
                     if request.name not in seen:
                         seen.add(request.name)
                         label = request.read_text().strip()
-                        if label == 'pre-freeze':
-                            self.intensive = True
-                        executor.submit(self.snapshot, label)
+                        self.queue_snapshot(executor, label, request)
                 if self.intensive and time.monotonic()-self.last_sample >= 2:
                     # Do not queue expensive work faster than it can complete.
                     if not getattr(self, 'sample_future', None) or self.sample_future.done():
@@ -452,8 +480,20 @@ def operate(action, root, cfg=None, label='checkpoint'):
     if action == 'run':
         Observer(root, cfg).run()
         return {}
-    if action == 'snapshot':
-        (root/('snapshot-'+uuid.uuid4().hex+'.request')).write_text(label)
+    if action in ('snapshot', 'snapshot-wait'):
+        request = root/('snapshot-'+uuid.uuid4().hex+'.request')
+        request.write_text(label)
+        if action == 'snapshot-wait':
+            deadline = time.monotonic()+60
+            done = request.with_suffix('.done')
+            while not done.exists() and time.monotonic() < deadline:
+                time.sleep(.1)
+            if not done.exists():
+                raise TimeoutError('Diagnostic snapshot did not complete before freeze')
+            result = json.loads(done.read_text())
+            if result.get('status') != 'COMPLETED':
+                raise RuntimeError('Required diagnostic snapshot incomplete: '+str(result))
+            return result
         return dict(status='REQUESTED', label=label, ts=time.time())
     if action == 'stop':
         (root/'stop.request').touch(mode=0o600)
@@ -464,7 +504,11 @@ def operate(action, root, cfg=None, label='checkpoint'):
         if alive(launch['identity']):
             raise RuntimeError('Original diagnostics collector did not stop')
     state = json.loads((root/'state.json').read_text())
-    if action == 'check' and (state['status'] != 'RUNNING' or state['errors'] or
+    recovered = {name for name, job in state.get('jobs', {}).items() if job.get('gaps') and
+                 all(g.get('end_timestamp') is not None for g in job['gaps']) and job.get('rc') is None and
+                 (job.get('segments') or [{}])[-1].get('connected_at') is not None}
+    if action == 'check' and (state['status'] != 'RUNNING' or set(state['errors'])-recovered or
+            any(j.get('rc') is not None for j in state.get('jobs', {}).values() if not j.get('optional')) or
             not alive(state.get('identity')) or time.time()-state['heartbeat_ts'] > 15):
         raise RuntimeError('Diagnostics incomplete: '+str(state))
     return state
@@ -472,7 +516,7 @@ def operate(action, root, cfg=None, label='checkpoint'):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['start', 'run', 'check', 'snapshot', 'stop'])
+    parser.add_argument('action', choices=['start', 'run', 'check', 'snapshot', 'snapshot-wait', 'stop'])
     parser.add_argument('root', type=Path)
     parser.add_argument('--config')
     parser.add_argument('--label', default='checkpoint')

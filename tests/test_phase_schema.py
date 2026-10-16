@@ -259,11 +259,15 @@ class OrchestrationPhaseTests(unittest.TestCase):
         self.assertIn('--timestamp',tasks[names.index('Mark phase 00 start')]['ansible.builtin.command']['argv'])
 
     def test_phase07_timer_covers_readiness_without_earlier_freeze_checkpoint(self):
-        tasks=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())[0]['tasks']
+        plays=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
+        tasks=[task for play in plays for task in play['tasks']]
         self.assertIn('Mark phase 07 entry',tasks[0]['name'])
         self.assertEqual(tasks[0]['ansible.builtin.command']['argv'][2],'phase-entry')
-        self.assertIn('before any Neutron freeze',tasks[1]['name'])
-        self.assertIn('--freeze-start',tasks[2]['ansible.builtin.command']['argv'])
+        readiness=next(i for i,t in enumerate(tasks) if 'before any Neutron freeze' in t['name'])
+        freeze=next(i for i,t in enumerate(tasks) if '--freeze-start' in str(t.get('ansible.builtin.command',{})))
+        self.assertLess(readiness,freeze)
+        self.assertGreater(readiness,1)
+        self.assertIn('anchor-check',tasks[freeze-1]['ansible.builtin.shell'])
 
     def test_phase13_cleanup_gate_precedes_timing_publication_and_end(self):
         tasks=yaml.safe_load((ROOT/'playbooks/13-report.yml').read_text())[0]['tasks']

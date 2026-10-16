@@ -89,15 +89,18 @@ class DiagnosticPolicyTests(unittest.TestCase):
         (self.root/'migration-diagnostics.json').write_text(json.dumps(data))
         return data
 
-    def test_reconnected_observer_gap_warns_without_invalidating_certified_traffic(self):
+    def test_reconnected_observer_gap_remains_in_json_without_changing_current_txt_format(self):
         data=self.write_diagnostics()
         self.assertTrue(v.validation_ready(self.root))
         warning=coverage(data)
         self.assertEqual(warning['status'],'GAPPED')
         text=render_text(dict(diagnostic_coverage=warning),self.root,modern=True)
-        self.assertIn('Diagnostics coverage',text)
-        self.assertIn('compute1/core',text)
-        self.assertIn('1.091 s',text)
+        # The supplied final.zip TXT renderer intentionally omits diagnostics.
+        # Keep its current presentation; detailed coverage remains in JSON.
+        self.assertNotIn('Diagnostics coverage',text)
+        details='; '.join(warning['warnings'])
+        self.assertIn('compute1/core',details)
+        self.assertIn('1.091 s',details)
 
     def test_missing_or_unproven_shutdown_still_blocks_cleanup(self):
         self.write_diagnostics(collection_status='UNAVAILABLE')
