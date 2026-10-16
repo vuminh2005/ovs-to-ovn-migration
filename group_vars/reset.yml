@@ -1,6 +1,10 @@
 ---
 # Repeated destructive reset of the four-node nested lab.
 reset_lab_confirm: false
+
+# Stop actual live host observers; old migration results are not reset gates.
+# Match migration_diagnostics_directory if a non-standard location is used.
+reset_diagnostics_directory: /var/lib/ovn-migration-diagnostics
 reset_kolla_venv: /root/venvs/kolla-2024.1
 reset_kolla_inventory: /root/multinode
 reset_globals_path: /etc/kolla/globals.yml

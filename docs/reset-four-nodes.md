@@ -1,9 +1,15 @@
 # Reset lặp lại cụm 4 node về ML2/OVS
 
 Cập nhật 16/10/2026: reset dọn thư mục preparation có ownership sau destroy
-và chuẩn bị OpenFlow15 trong baseline OVS trước workload. Gate shutdown chỉ
-yêu cầu các collector thực sự được checkpoint phải cleanup hoàn tất, kể cả
-run lỗi sớm hoặc coverage GAPPED. Xem [chi tiết](cutover-workflow.md).
+và chuẩn bị OpenFlow15 trong baseline OVS trước workload. Observer được dừng theo
+process hiện tại trên mỗi host; reset không yêu cầu run cũ PASS hay archive/config
+cũ hoàn chỉnh và không stop/archive lại từng run. Xem [chi tiết](cutover-workflow.md).
+
+Nếu reset trước dừng tại `Stop and archive run-owned host observers`, Kolla destroy
+chưa chạy nhưng guest có thể đã bị dừng. Cài đầy đủ ZIP mới rồi chạy lại toàn bộ
+reset bằng lệnh có `-e reset_lab_confirm=true`; không dùng `--start-at-task`.
+Giữ các report cũ. Evidence thao tác mới ở `host-observers-stop.log` và
+`host-observers-<host>.json` trong snapshot reset.
 
 Cập nhật 15/10/2026: reset đặt Nova scheduler/conductor mỗi service 1 worker,
 lưu đầy đủ log deploy và có một lượt phục hồi giới hạn cho đúng lỗi Raft

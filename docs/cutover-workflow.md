@@ -63,10 +63,24 @@ trước smoke test hoặc tài nguyên workload mới.
 
 ## Reset và resume
 
-Reset dừng/archive đúng observer/probe được checkpoint trước destroy; coverage
-GAPPED không ngăn reset nếu mọi process đã chứng minh cleanup hoàn tất. Run chỉ
-khởi tạo core collector rồi lỗi sớm cũng được dọn; không đòi central collector
-chưa từng được tạo. Shutdown chưa được chứng minh vẫn chặn destroy.
+Reset không yêu cầu migration cũ PASS, archive hoàn chỉnh hoặc config lịch sử
+khớp tuyệt đối. Helper `reset_host_observers.py` kiểm tra process hiện tại trên
+control/network/compute trong một lượt, nhận dạng đúng invocation observer dưới
+`reset_diagnostics_directory`, rồi TERM qua pidfd. Observer của run cũ còn sống
+cũng được dừng; không chọn riêng run mới nhất và không stop/archive lặp lại mọi
+run trong backup. PID còn sống sau timeout hoặc lỗi truy cập host vẫn chặn destroy.
+Lỗi coverage, metadata/archive hỏng hoặc thiếu không phải điều kiện chặn reset.
+Observer sống có cơ hội chạy cleanup bình thường; các monitor còn trong container
+sẽ kết thúc khi Kolla destroy container. Không yêu cầu chứng nhận forensic archive
+trước một destructive reset. Các bước dừng N-S probes/captures hiện có được giữ.
+
+Evidence mới nằm trong snapshot reset: `host-observers-stop.log` và
+`host-observers-<host>.json`. Reset không viết lại kết quả diagnostics migration
+cũ. Nếu đã override `migration_diagnostics_directory`, đặt
+`reset_diagnostics_directory` cùng đường dẫn đó. Với run mới, công thức interface
+lab được materialize trước khi lưu checkpoint: network1=`br-underlay`, các host
+khác=`eth1`. Bộ đọc archive nhận biết đúng công thức cũ mà không sửa file lịch sử
+hoặc bỏ kiểm tra run/host/role và các config khác của migration.
 
 Sau Kolla destroy thành công, reset kiểm tra ownership của **mọi** thư mục
 preparation trên từng control/network/compute trước khi xóa bất kỳ thư mục nào

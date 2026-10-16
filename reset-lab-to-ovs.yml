@@ -267,14 +267,29 @@
           - "{{ reset_run_dir }}/ns-diagnostic-captures-stop.json"
       changed_when: false
 
-    - name: Stop and archive run-owned host observers before Kolla destroy
+    - name: Stop live host observers before Kolla destroy
       ansible.builtin.command:
         argv:
-          - python3
-          - "{{ playbook_dir }}/scripts/diagnostics_control.py"
-          - reset-stop
-          - "{{ reset_backup_root_runtime }}"
+          - ansible-playbook
+          - -i
+          - "{{ reset_kolla_inventory }}"
+          - "{{ playbook_dir }}/playbooks/reset-host-observers.yml"
+          - -e
+          - "{{ {'reset_observer_evidence_dir': reset_run_dir, 'reset_diagnostics_directory': reset_diagnostics_directory} | to_json }}"
+      register: reset_host_observers
       changed_when: false
+      failed_when: false
+
+    - name: Persist observer stop transport output in the reset snapshot
+      ansible.builtin.copy:
+        dest: "{{ reset_run_dir }}/host-observers-stop.log"
+        content: "{{ reset_host_observers.stdout }}\n{{ reset_host_observers.stderr }}\n"
+        mode: '0600'
+
+    - name: Require current observer shutdown before Kolla destroy
+      ansible.builtin.assert:
+        that: reset_host_observers.rc == 0
+        fail_msg: "Live host observer shutdown failed; inspect host-observers-stop.log and host-observers-*.json in the reset snapshot."
 
     - name: Run kolla-ansible destroy
       ansible.builtin.shell: |

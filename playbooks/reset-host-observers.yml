@@ -1,0 +1,26 @@
+---
+- name: Stop current migration observers independently of old run results
+  hosts: control:network:compute
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  vars_files:
+    - ../group_vars/reset.yml
+  tasks:
+    - name: Stop exact live observer invocations under the dedicated directory
+      ansible.builtin.script: "../scripts/reset_host_observers.py {{ reset_diagnostics_directory | quote }}"
+      args:
+        executable: python3
+      register: reset_observer_stop
+      changed_when: false
+      failed_when: false
+    - name: Persist live observer cleanup in the current reset snapshot
+      ansible.builtin.copy:
+        dest: "{{ reset_observer_evidence_dir }}/host-observers-{{ inventory_hostname }}.json"
+        content: "{{ reset_observer_stop | to_nice_json }}"
+        mode: '0600'
+      delegate_to: localhost
+    - name: Require live host observers to stop before destroying Kolla
+      ansible.builtin.assert:
+        that: reset_observer_stop.rc == 0 and (reset_observer_stop.stdout | from_json).status == 'PASS'
+        fail_msg: "Live observer shutdown failed; inspect host-observers-{{ inventory_hostname }}.json in the reset snapshot. Historical archive/report status is not checked."

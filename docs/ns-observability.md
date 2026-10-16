@@ -186,12 +186,13 @@ trong timer thực tế; instrumentation không được coi là miễn phí.
 Phase 12 dừng/fetch host observers và N-S captures ngay cả khi workload validation
 FAIL. Callback của workflow chính cố gắng dừng/fetch khi Ansible kết thúc do lỗi
 sớm; SIGKILL/mất nguồn có thể ngăn callback chạy, khi đó có lifetime limit và
-reset-stop để thu hồi. Không biến evidence thiếu thành PASS hoặc xóa workload.
+cleanup process trực tiếp của reset. Không biến evidence thiếu thành PASS.
 
 Retry/resume trước phase 08 có thể tạo observation segment mới. Mọi segment cũ
 và preparation gap được giữ, không nối giả thành một capture liên tục. Không tự
-restart supervisor để che gap xảy ra trong/sau cutover. Reset dừng/archive các
-collector thuộc checkpoint trước Kolla destroy, giữ các report cũ.
+restart supervisor để che gap xảy ra trong/sau cutover. Trước Kolla destroy,
+reset dừng supervisor đang sống trong thư mục collector trên từng host, không
+đòi archive/report cũ hợp lệ. Evidence reset được lưu riêng, giữ các report cũ.
 
 Riêng các connection observer OpenFlow/OVSDB có reconnect giới hạn trong chính
 supervisor đang chạy: backoff 1, 2, 4 rồi tối đa 8 giây, giới hạn tổng số lần thử.

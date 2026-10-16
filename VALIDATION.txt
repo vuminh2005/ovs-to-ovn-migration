@@ -1,3 +1,49 @@
+Reset observer cleanup independent of historical run health — 2026-10-16
+Fix based on the user's exact config diff and successful stop rc=0 evidence.
+Checkpoint tunnel_interface held the literal source-lab Jinja expression;
+remote archives held eth1 or br-underlay. Strict raw-dict equality made all
+20 stopped collector archives fail the reset guard, including the latest run.
+The previously delivered guard was too strict for destructive reset.
+
+560 full-suite tests PASS, 410 subtests PASS, no skips (140 SDK warnings).
+12 Ansible syntax entrypoint/helper checks PASS. Python AST 88 files / YAML
+37 files PASS; source diff whitespace checks PASS.
+
+Reset no longer calls diagnostics_control reset-stop or replays all historical
+run archives. A single host cleanup play on control/network/compute inspects
+current /proc invocations under reset_diagnostics_directory, validates exact
+Python observer/script/run/directory arguments and boot/PID/starttime identity,
+then sends TERM through pidfds. A live process failing to exit, or an actual
+host/transport failure, still blocks destroy with current operational evidence.
+Historical migration PASS/FAIL, archive errors, stopped/cleanup flags and config
+rendering are not conditions for this cleanup. No migration report or diagnostic
+summary is rewritten by it. Each reset snapshot retains host-observers-stop.log
+and host-observers-<host>.json. Existing N-S probe/capture cleanup is retained.
+
+Migration preparation resolves the exact known source-lab tunnel expression
+before checkpointing per-host config. Legacy comparison understands only that
+same formula, preserves old files, and still rejects changed run/host/interface
+or other configuration. It never evaluates arbitrary Jinja/Python expressions.
+TXT renderer, migration_report.py, traffic metrics/probes, N-S capture logic
+and RabbitMQ health/recovery scripts are unchanged from the prior delivered ZIP.
+
+Tests use real owned subprocesses to check two live runs stopped together,
+idempotency, a stubborn observer, command changes, foreign-prefix isolation,
+and malformed old archive/config files that are not read. Only the pidfd-open
+boundary maps this executor's host /proc IDs to its child PID namespace; matching,
+identity verification, signal delivery and waits execute the production code.
+Actual Ansible production helper and parent reset tasks execute in fixtures,
+including nested success/failure, evidence persistence and blocking before destroy.
+Legacy expression/config normalization and the existing full migration/report
+suite pass. No live lab reset, service, container or cloud API was operated.
+
+Install the full ZIP and rerun reset-lab-to-ovs.yml from the beginning with
+-e reset_lab_confirm=true. Do not use --start-at-task; the prior failed reset
+has not run Kolla destroy, but guest VMs may already have been stopped.
+See docs/reset-four-nodes.md and docs/cutover-workflow.md.
+
+Prior validation history:
+
 Cutover workflow optimization and synchronized reset — 2026-10-16
 Source: final.zip supplied by the user; source SHA256:
 45b6b0dd7353387ef3cb913ddafa089c057ccc07be90c99ebb01b130e64b00ea

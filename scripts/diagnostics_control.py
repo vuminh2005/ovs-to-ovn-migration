@@ -11,6 +11,17 @@ import uuid
 from migration_diagnostics import save
 
 
+LEGACY_TUNNEL_INTERFACE = "{{ 'br-underlay' if inventory_hostname in groups['network'] else 'eth1' }}"
+
+
+def effective_config(config):
+    """Materialize the known source-lab formula without evaluating arbitrary Jinja."""
+    value = dict(config)
+    if value.get('tunnel_interface') == LEGACY_TUNNEL_INTERFACE:
+        value['tunnel_interface'] = 'br-underlay' if value.get('network') is True else 'eth1'
+    return value
+
+
 def operate(root, action, role=None, label='checkpoint'):
     root = Path(root).resolve()
     cfg = json.loads((root/'diagnostics-config.json').read_text())
@@ -51,13 +62,14 @@ def operate(root, action, role=None, label='checkpoint'):
             config = dict(cfg, **central, run=runtime['run_id'], host=host, role=role,
                 control=host in runtime.get('control_hosts', []), network=host in runtime.get('network_hosts', []),
                 chassis=host in runtime.get('compute_hosts', [])+runtime.get('network_hosts', []))
+            config = effective_config(config)
             remote = str(Path(cfg['directory'])/runtime['run_id']/(host+'-'+role))
             entry = dict(host=host, role=role, config=config, remote_directory=remote,
                 archive_name=host+'-'+role+'.tar.gz', archive_directory='diagnostics/'+host+'/'+role, segments=[])
             path = checkpoints/(host+'-'+role+'.json')
             if path.exists():
                 old = json.loads(path.read_text())
-                if old['config'] != config:
+                if effective_config(old['config']) != config:
                     raise RuntimeError('Diagnostics checkpoint configuration changed')
                 entry = old
                 if archived_stopped(root, old):
@@ -96,7 +108,7 @@ def archived_stopped(root, entry):
         return False
     value = json.loads(path.read_text())
     return (value.get('stopped') is True and value.get('cleanup_complete', True) is True
-            and value.get('config') == entry['config'])
+            and effective_config(value.get('config', {})) == effective_config(entry['config']))
 
 
 def transport(root, action, entries, label):
@@ -152,37 +164,14 @@ def summarize(root):
     return result
 
 
-def reset_stop(backup_root):
-    errors = []
-    stopped = []
-    for path in sorted(Path(backup_root).glob('*/diagnostics-config.json')):
-        root = path.parent
-        if not (root/'diagnostics/checkpoints').exists():
-            continue
-        try:
-            operate(root, 'stop')
-            entries = [json.loads(p.read_text()) for p in (root/'diagnostics/checkpoints').glob('*.json')]
-            if not all(archived_stopped(root, entry) for entry in entries):
-                raise RuntimeError('Observer shutdown/archive was not proven complete')
-            stopped.append(root.name)
-        except Exception as exc:
-            errors.append(dict(run=root.name, error=str(exc)))
-    result = dict(status='FAIL' if errors else 'PASS', runs=stopped, errors=errors)
-    save(Path(backup_root)/'diagnostics-reset-stop.json', result)
-    if errors:
-        raise RuntimeError('Host observers could not be stopped/archived; reset blocked')
-    return result
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['start', 'check', 'snapshot', 'snapshot-wait', 'stop', 'abort', 'reset-stop', 'ensure'])
+    parser.add_argument('action', choices=['start', 'check', 'snapshot', 'snapshot-wait', 'stop', 'abort', 'ensure'])
     parser.add_argument('root', type=Path)
     parser.add_argument('--role', choices=['core', 'central'])
     parser.add_argument('--label', default='checkpoint')
     args = parser.parse_args()
-    print(json.dumps(reset_stop(args.root) if args.action == 'reset-stop' else
-                     operate(args.root, args.action, args.role, args.label)))
+    print(json.dumps(operate(args.root, args.action, args.role, args.label)))
 
 
 if __name__ == '__main__':

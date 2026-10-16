@@ -4,6 +4,9 @@ Cập nhật 16/10/2026: chuẩn bị OpenFlow15/helper/port checkpoint trước
 hoãn dump tổng hợp và sampling bổ sung đến sau phục hồi, quan sát probe gốc
 trước AFTER/smoke; reset và resume được đồng bộ. Format TXT giữ nguyên.
 Xem [thứ tự cutover và cách kiểm chứng](docs/cutover-workflow.md).
+Reset kiểm tra/dừng observer đang sống trên host, không phụ thuộc việc run cũ
+PASS hay archive/config lịch sử khớp. Lỗi so sánh công thức Jinja của tunnel
+interface với giá trị đã render được xử lý theo đúng host.
 
 ## Bản mở rộng N-S và ma trận EW (13/10/2026)
 

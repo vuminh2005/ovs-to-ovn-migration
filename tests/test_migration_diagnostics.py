@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from test_validation import ROOT
 import migration_diagnostics as d
-from diagnostics_control import archived_stopped, summarize, reset_stop
+from diagnostics_control import archived_stopped, summarize, effective_config, LEGACY_TUNNEL_INTERFACE
 
 
 class CollectorProcessTests(unittest.TestCase):
@@ -133,20 +133,24 @@ class CutoverSamplingTests(unittest.TestCase):
             self.assertTrue(observer.intensive)
             self.assertEqual(calls[-2:],['deferred-after-recovery:observer-reconnected-openflow-watch','post-traffic-recovery'])
 
-    def test_reset_accepts_stopped_gapped_core_only_run_but_blocks_unproven_cleanup(self):
+    def test_legacy_jinja_is_equivalent_only_to_the_expected_host_interface(self):
         with tempfile.TemporaryDirectory() as folder:
-            parent=Path(folder); root=parent/'run'; (root/'diagnostics/checkpoints').mkdir(parents=True)
-            entry=dict(host='node',role='core',config={'run':'run'})
-            d.save(root/'diagnostics-config.json',dict(enabled=True))
-            d.save(root/'diagnostics/checkpoints/node-core.json',entry)
-            archive=root/'diagnostics/node/core'; archive.mkdir(parents=True)
-            state=dict(status='UNAVAILABLE',stopped=True,cleanup_complete=True,config=entry['config'],coverage='GAPPED')
-            d.save(archive/'state.json',state)
-            with patch('diagnostics_control.operate',return_value=dict(collection_status='UNAVAILABLE')):
-                self.assertEqual(reset_stop(parent)['status'],'PASS')
-                state['cleanup_complete']=False; d.save(archive/'state.json',state)
-                with self.assertRaisesRegex(RuntimeError,'reset blocked'): reset_stop(parent)
-            self.assertEqual(json.loads((parent/'diagnostics-reset-stop.json').read_text())['status'],'FAIL')
+            root=Path(folder); dest=root/'diagnostics/node/core'; dest.mkdir(parents=True)
+            for network, interface in ((False,'eth1'),(True,'br-underlay')):
+                entry=dict(host='node',role='core',config=dict(run='r',host='node',role='core',
+                    network=network,tunnel_interface=LEGACY_TUNNEL_INTERFACE))
+                original=json.dumps(entry,sort_keys=True)
+                state=dict(stopped=True,cleanup_complete=True,config=effective_config(entry['config']))
+                d.save(dest/'state.json',state)
+                self.assertTrue(archived_stopped(root,entry))
+                self.assertEqual(state['config']['tunnel_interface'],interface)
+                self.assertEqual(json.dumps(entry,sort_keys=True),original)
+                for key, bad in (('run','foreign'),('host','foreign'),('tunnel_interface','wrong-interface')):
+                    changed=dict(state,config=dict(state['config'],**{key:bad}))
+                    d.save(dest/'state.json',changed)
+                    self.assertFalse(archived_stopped(root,entry))
+                state['cleanup_complete']=False; d.save(dest/'state.json',state)
+                self.assertFalse(archived_stopped(root,entry))
 
 
 class CollectorEvidenceTests(unittest.TestCase):
@@ -223,7 +227,7 @@ class AnsibleCollectorTests(unittest.TestCase):
                 ' while True: time.sleep(.1)\n')
             fake.chmod(0o700)
             cfg = dict(enabled=True, directory=str(root/'remote'), lifetime=60, max_bytes=1048576,
-                       ns_enabled=False, tunnel_interface='eth1', external_interface='ns-ex')
+                       ns_enabled=False, tunnel_interface=LEGACY_TUNNEL_INTERFACE, external_interface='ns-ex')
             d.save(root/'diagnostics-config.json',cfg)
             d.save(root/'runtime.json',dict(run_id='run', inventory=str(inventory), control_hosts=['alpha'],
                 network_hosts=[],compute_hosts=[],ovn_cli_host='alpha'))

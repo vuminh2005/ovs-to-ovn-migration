@@ -1,23 +1,72 @@
 diff --git a/README.md b/README.md
-index 78704fa..6123527 100644
+index 78704fa..088f3fd 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,5 +1,10 @@
+@@ -1,5 +1,13 @@
  # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
  
 +Cập nhật 16/10/2026: chuẩn bị OpenFlow15/helper/port checkpoint trước freeze,
 +hoãn dump tổng hợp và sampling bổ sung đến sau phục hồi, quan sát probe gốc
 +trước AFTER/smoke; reset và resume được đồng bộ. Format TXT giữ nguyên.
 +Xem [thứ tự cutover và cách kiểm chứng](docs/cutover-workflow.md).
++Reset kiểm tra/dừng observer đang sống trên host, không phụ thuộc việc run cũ
++PASS hay archive/config lịch sử khớp. Lỗi so sánh công thức Jinja của tunnel
++interface với giá trị đã render được xử lý theo đúng host.
 +
  ## Bản mở rộng N-S và ma trận EW (13/10/2026)
  
  Hướng dẫn hiện hành: [docs/ns-ew-matrix.md](docs/ns-ew-matrix.md).
 diff --git a/VALIDATION.txt b/VALIDATION.txt
-index ef8d22d..d2e061c 100644
+index ef8d22d..b3761e9 100644
 --- a/VALIDATION.txt
 +++ b/VALIDATION.txt
-@@ -1,3 +1,55 @@
+@@ -1,3 +1,101 @@
++Reset observer cleanup independent of historical run health — 2026-10-16
++Fix based on the user's exact config diff and successful stop rc=0 evidence.
++Checkpoint tunnel_interface held the literal source-lab Jinja expression;
++remote archives held eth1 or br-underlay. Strict raw-dict equality made all
++20 stopped collector archives fail the reset guard, including the latest run.
++The previously delivered guard was too strict for destructive reset.
++
++560 full-suite tests PASS, 410 subtests PASS, no skips (140 SDK warnings).
++12 Ansible syntax entrypoint/helper checks PASS. Python AST 88 files / YAML
++37 files PASS; source diff whitespace checks PASS.
++
++Reset no longer calls diagnostics_control reset-stop or replays all historical
++run archives. A single host cleanup play on control/network/compute inspects
++current /proc invocations under reset_diagnostics_directory, validates exact
++Python observer/script/run/directory arguments and boot/PID/starttime identity,
++then sends TERM through pidfds. A live process failing to exit, or an actual
++host/transport failure, still blocks destroy with current operational evidence.
++Historical migration PASS/FAIL, archive errors, stopped/cleanup flags and config
++rendering are not conditions for this cleanup. No migration report or diagnostic
++summary is rewritten by it. Each reset snapshot retains host-observers-stop.log
++and host-observers-<host>.json. Existing N-S probe/capture cleanup is retained.
++
++Migration preparation resolves the exact known source-lab tunnel expression
++before checkpointing per-host config. Legacy comparison understands only that
++same formula, preserves old files, and still rejects changed run/host/interface
++or other configuration. It never evaluates arbitrary Jinja/Python expressions.
++TXT renderer, migration_report.py, traffic metrics/probes, N-S capture logic
++and RabbitMQ health/recovery scripts are unchanged from the prior delivered ZIP.
++
++Tests use real owned subprocesses to check two live runs stopped together,
++idempotency, a stubborn observer, command changes, foreign-prefix isolation,
++and malformed old archive/config files that are not read. Only the pidfd-open
++boundary maps this executor's host /proc IDs to its child PID namespace; matching,
++identity verification, signal delivery and waits execute the production code.
++Actual Ansible production helper and parent reset tasks execute in fixtures,
++including nested success/failure, evidence persistence and blocking before destroy.
++Legacy expression/config normalization and the existing full migration/report
++suite pass. No live lab reset, service, container or cloud API was operated.
++
++Install the full ZIP and rerun reset-lab-to-ovs.yml from the beginning with
++-e reset_lab_confirm=true. Do not use --start-at-task; the prior failed reset
++has not run Kolla destroy, but guest VMs may already have been stopped.
++See docs/reset-four-nodes.md and docs/cutover-workflow.md.
++
++Prior validation history:
++
 +Cutover workflow optimization and synchronized reset — 2026-10-16
 +Source: final.zip supplied by the user; source SHA256:
 +45b6b0dd7353387ef3cb913ddafa089c057ccc07be90c99ebb01b130e64b00ea
@@ -75,10 +124,10 @@ index ef8d22d..d2e061c 100644
  probe shutdown, observer reconnect and traffic report formatting are retained.
 diff --git a/docs/cutover-workflow.md b/docs/cutover-workflow.md
 new file mode 100644
-index 0000000..9ae77dc
+index 0000000..20fc62c
 --- /dev/null
 +++ b/docs/cutover-workflow.md
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,108 @@
 +# Chuẩn bị trước freeze và quan sát phục hồi — 16/10/2026
 +
 +Bản sửa dựa trực tiếp trên `final.zip`. Format `migration-report.txt`, công
@@ -144,10 +193,24 @@ index 0000000..9ae77dc
 +
 +## Reset và resume
 +
-+Reset dừng/archive đúng observer/probe được checkpoint trước destroy; coverage
-+GAPPED không ngăn reset nếu mọi process đã chứng minh cleanup hoàn tất. Run chỉ
-+khởi tạo core collector rồi lỗi sớm cũng được dọn; không đòi central collector
-+chưa từng được tạo. Shutdown chưa được chứng minh vẫn chặn destroy.
++Reset không yêu cầu migration cũ PASS, archive hoàn chỉnh hoặc config lịch sử
++khớp tuyệt đối. Helper `reset_host_observers.py` kiểm tra process hiện tại trên
++control/network/compute trong một lượt, nhận dạng đúng invocation observer dưới
++`reset_diagnostics_directory`, rồi TERM qua pidfd. Observer của run cũ còn sống
++cũng được dừng; không chọn riêng run mới nhất và không stop/archive lặp lại mọi
++run trong backup. PID còn sống sau timeout hoặc lỗi truy cập host vẫn chặn destroy.
++Lỗi coverage, metadata/archive hỏng hoặc thiếu không phải điều kiện chặn reset.
++Observer sống có cơ hội chạy cleanup bình thường; các monitor còn trong container
++sẽ kết thúc khi Kolla destroy container. Không yêu cầu chứng nhận forensic archive
++trước một destructive reset. Các bước dừng N-S probes/captures hiện có được giữ.
++
++Evidence mới nằm trong snapshot reset: `host-observers-stop.log` và
++`host-observers-<host>.json`. Reset không viết lại kết quả diagnostics migration
++cũ. Nếu đã override `migration_diagnostics_directory`, đặt
++`reset_diagnostics_directory` cùng đường dẫn đó. Với run mới, công thức interface
++lab được materialize trước khi lưu checkpoint: network1=`br-underlay`, các host
++khác=`eth1`. Bộ đọc archive nhận biết đúng công thức cũ mà không sửa file lịch sử
++hoặc bỏ kiểm tra run/host/role và các config khác của migration.
 +
 +Sau Kolla destroy thành công, reset kiểm tra ownership của **mọi** thư mục
 +preparation trên từng control/network/compute trước khi xóa bất kỳ thư mục nào
@@ -174,7 +237,7 @@ index 0000000..9ae77dc
 +Metadata deploy, thứ tự cleanup → restart Neutron, MTU/DHCP remediation, NAT
 +profile, source-port preservation và các tiêu chí chứng nhận traffic không đổi.
 diff --git a/docs/ns-observability.md b/docs/ns-observability.md
-index ef4cf01..1ef3206 100644
+index ef4cf01..4618c26 100644
 --- a/docs/ns-observability.md
 +++ b/docs/ns-observability.md
 @@ -163,8 +163,8 @@ Thu thập:
@@ -188,7 +251,7 @@ index ef4cf01..1ef3206 100644
  
  Collector chạy ngoài container, có PID/starttime/boot identity và run-owned
  directory. Container-side monitor có token riêng cho từng lần launch; cleanup
-@@ -177,9 +177,11 @@ Byte/lifetime limit kết thúc với UNAVAILABLE và giữ dữ liệu, không
+@@ -177,25 +177,29 @@ Byte/lifetime limit kết thúc với UNAVAILABLE và giữ dữ liệu, không
  ## Vòng đời và lỗi
  
  Trước freeze phải CHECK collector còn sống, không có observer bắt buộc bị mất.
@@ -203,7 +266,19 @@ index ef4cf01..1ef3206 100644
  
  Phase 12 dừng/fetch host observers và N-S captures ngay cả khi workload validation
  FAIL. Callback của workflow chính cố gắng dừng/fetch khi Ansible kết thúc do lỗi
-@@ -195,7 +197,8 @@ Riêng các connection observer OpenFlow/OVSDB có reconnect giới hạn trong
+ sớm; SIGKILL/mất nguồn có thể ngăn callback chạy, khi đó có lifetime limit và
+-reset-stop để thu hồi. Không biến evidence thiếu thành PASS hoặc xóa workload.
++cleanup process trực tiếp của reset. Không biến evidence thiếu thành PASS.
+ 
+ Retry/resume trước phase 08 có thể tạo observation segment mới. Mọi segment cũ
+ và preparation gap được giữ, không nối giả thành một capture liên tục. Không tự
+-restart supervisor để che gap xảy ra trong/sau cutover. Reset dừng/archive các
+-collector thuộc checkpoint trước Kolla destroy, giữ các report cũ.
++restart supervisor để che gap xảy ra trong/sau cutover. Trước Kolla destroy,
++reset dừng supervisor đang sống trong thư mục collector trên từng host, không
++đòi archive/report cũ hợp lệ. Evidence reset được lưu riêng, giữ các report cũ.
+ 
+ Riêng các connection observer OpenFlow/OVSDB có reconnect giới hạn trong chính
  supervisor đang chạy: backoff 1, 2, 4 rồi tối đa 8 giây, giới hạn tổng số lần thử.
  Mỗi lần có segment/PID/token riêng; log cũ được append, không ghi đè. Reconnect
  chỉ được xác nhận khi có monitor reply/initial JSON, không chỉ vì process sống.
@@ -213,7 +288,7 @@ index ef4cf01..1ef3206 100644
  không được coi là phục hồi. PCAP và tiến trình traffic không được restart.
  
  `observer-gap`, `observer-reconnected`, `observer-reconnect-exhausted` và các
-@@ -204,9 +207,9 @@ output cuối và thời gian xác nhận kết nối lại; duration là từ p
+@@ -204,9 +208,9 @@ output cuối và thời gian xác nhận kết nối lại; duration là từ p
  không phải phép đo downtime traffic. Coverage là `GAPPED` nếu từng bị ngắt.
  Reconnect không xóa lỗi cũ. `migration-diagnostics.json.status` vẫn UNAVAILABLE
  khi coverage thiếu; `diagnostic_coverage` trong report giữ GAPPED/UNAVAILABLE,
@@ -243,16 +318,22 @@ index f59e49c..0cefcc7 100644
  phù hợp với SIGPIPE ở pipeline `ovn-nbctl show | grep -Eq ...`. `grep -q` dừng
  đọc khi thấy kết quả; producer có thể tiếp tục ghi và bị đóng pipe. `pipefail`
 diff --git a/docs/reset-four-nodes.md b/docs/reset-four-nodes.md
-index 7bb1e05..21f9377 100644
+index 7bb1e05..ca34812 100644
 --- a/docs/reset-four-nodes.md
 +++ b/docs/reset-four-nodes.md
-@@ -1,5 +1,10 @@
+@@ -1,5 +1,16 @@
  # Reset lặp lại cụm 4 node về ML2/OVS
  
 +Cập nhật 16/10/2026: reset dọn thư mục preparation có ownership sau destroy
-+và chuẩn bị OpenFlow15 trong baseline OVS trước workload. Gate shutdown chỉ
-+yêu cầu các collector thực sự được checkpoint phải cleanup hoàn tất, kể cả
-+run lỗi sớm hoặc coverage GAPPED. Xem [chi tiết](cutover-workflow.md).
++và chuẩn bị OpenFlow15 trong baseline OVS trước workload. Observer được dừng theo
++process hiện tại trên mỗi host; reset không yêu cầu run cũ PASS hay archive/config
++cũ hoàn chỉnh và không stop/archive lại từng run. Xem [chi tiết](cutover-workflow.md).
++
++Nếu reset trước dừng tại `Stop and archive run-owned host observers`, Kolla destroy
++chưa chạy nhưng guest có thể đã bị dừng. Cài đầy đủ ZIP mới rồi chạy lại toàn bộ
++reset bằng lệnh có `-e reset_lab_confirm=true`; không dùng `--start-at-task`.
++Giữ các report cũ. Evidence thao tác mới ở `host-observers-stop.log` và
++`host-observers-<host>.json` trong snapshot reset.
 +
  Cập nhật 15/10/2026: reset đặt Nova scheduler/conductor mỗi service 1 worker,
  lưu đầy đủ log deploy và có một lượt phục hồi giới hạn cho đúng lỗi Raft
@@ -279,10 +360,21 @@ index 0fb139c..d24850b 100644
 +# Workflow barrier only; original PCAP/monotonic evidence still defines downtime.
 +post_restore_observation_timeout_seconds: 300
 diff --git a/group_vars/reset.yml b/group_vars/reset.yml
-index 7ecf1ca..e59c583 100644
+index 7ecf1ca..a5d1694 100644
 --- a/group_vars/reset.yml
 +++ b/group_vars/reset.yml
-@@ -22,6 +22,8 @@ reset_managed_flavor_name: ovn-validation.small
+@@ -1,6 +1,10 @@
+ ---
+ # Repeated destructive reset of the four-node nested lab.
+ reset_lab_confirm: false
++
++# Stop actual live host observers; old migration results are not reset gates.
++# Match migration_diagnostics_directory if a non-standard location is used.
++reset_diagnostics_directory: /var/lib/ovn-migration-diagnostics
+ reset_kolla_venv: /root/venvs/kolla-2024.1
+ reset_kolla_inventory: /root/multinode
+ reset_globals_path: /etc/kolla/globals.yml
+@@ -22,6 +26,8 @@ reset_managed_flavor_name: ovn-validation.small
  reset_image_cache_dir: /var/cache/ovs-to-ovn-validation
  reset_image_download_timeout: 120
  reset_image_active_timeout: 900
@@ -724,11 +816,78 @@ index 0000000..38c4040
 +    content: "{{ prepared_openflow.stdout | from_json | to_nice_json }}"
 +    mode: '0600'
 +  delegate_to: localhost
+diff --git a/playbooks/reset-host-observers.yml b/playbooks/reset-host-observers.yml
+new file mode 100644
+index 0000000..8d76e0e
+--- /dev/null
++++ b/playbooks/reset-host-observers.yml
+@@ -0,0 +1,26 @@
++---
++- name: Stop current migration observers independently of old run results
++  hosts: control:network:compute
++  gather_facts: false
++  become: true
++  any_errors_fatal: true
++  vars_files:
++    - ../group_vars/reset.yml
++  tasks:
++    - name: Stop exact live observer invocations under the dedicated directory
++      ansible.builtin.script: "../scripts/reset_host_observers.py {{ reset_diagnostics_directory | quote }}"
++      args:
++        executable: python3
++      register: reset_observer_stop
++      changed_when: false
++      failed_when: false
++    - name: Persist live observer cleanup in the current reset snapshot
++      ansible.builtin.copy:
++        dest: "{{ reset_observer_evidence_dir }}/host-observers-{{ inventory_hostname }}.json"
++        content: "{{ reset_observer_stop | to_nice_json }}"
++        mode: '0600'
++      delegate_to: localhost
++    - name: Require live host observers to stop before destroying Kolla
++      ansible.builtin.assert:
++        that: reset_observer_stop.rc == 0 and (reset_observer_stop.stdout | from_json).status == 'PASS'
++        fail_msg: "Live observer shutdown failed; inspect host-observers-{{ inventory_hostname }}.json in the reset snapshot. Historical archive/report status is not checked."
 diff --git a/reset-lab-to-ovs.yml b/reset-lab-to-ovs.yml
-index a2be6f9..94ee33c 100644
+index a2be6f9..8715e1f 100644
 --- a/reset-lab-to-ovs.yml
 +++ b/reset-lab-to-ovs.yml
-@@ -347,6 +347,28 @@
+@@ -267,14 +267,29 @@
+           - "{{ reset_run_dir }}/ns-diagnostic-captures-stop.json"
+       changed_when: false
+ 
+-    - name: Stop and archive run-owned host observers before Kolla destroy
++    - name: Stop live host observers before Kolla destroy
+       ansible.builtin.command:
+         argv:
+-          - python3
+-          - "{{ playbook_dir }}/scripts/diagnostics_control.py"
+-          - reset-stop
+-          - "{{ reset_backup_root_runtime }}"
++          - ansible-playbook
++          - -i
++          - "{{ reset_kolla_inventory }}"
++          - "{{ playbook_dir }}/playbooks/reset-host-observers.yml"
++          - -e
++          - "{{ {'reset_observer_evidence_dir': reset_run_dir, 'reset_diagnostics_directory': reset_diagnostics_directory} | to_json }}"
++      register: reset_host_observers
+       changed_when: false
++      failed_when: false
++
++    - name: Persist observer stop transport output in the reset snapshot
++      ansible.builtin.copy:
++        dest: "{{ reset_run_dir }}/host-observers-stop.log"
++        content: "{{ reset_host_observers.stdout }}\n{{ reset_host_observers.stderr }}\n"
++        mode: '0600'
++
++    - name: Require current observer shutdown before Kolla destroy
++      ansible.builtin.assert:
++        that: reset_host_observers.rc == 0
++        fail_msg: "Live host observer shutdown failed; inspect host-observers-stop.log and host-observers-*.json in the reset snapshot."
+ 
+     - name: Run kolla-ansible destroy
+       ansible.builtin.shell: |
+@@ -347,6 +362,28 @@
            A clean lab reset must not reuse old RabbitMQ Mnesia/Raft state.
  
  
@@ -757,7 +916,7 @@ index a2be6f9..94ee33c 100644
  - name: Verify Neutron namespaces are gone after destroy
    hosts: network:compute
    gather_facts: false
-@@ -900,6 +922,12 @@
+@@ -900,6 +937,12 @@
      - group_vars/reset.yml
      - group_vars/ns-lab.yml
    tasks:
@@ -891,20 +1050,54 @@ index 0000000..57dc155
 +              if args.action == 'prepare' else verify(args.root))
 +    print(json.dumps(result, sort_keys=True))
 diff --git a/scripts/diagnostics_control.py b/scripts/diagnostics_control.py
-index 7099bd7..7d44c44 100644
+index 7099bd7..a085de5 100644
 --- a/scripts/diagnostics_control.py
 +++ b/scripts/diagnostics_control.py
-@@ -95,7 +95,8 @@ def archived_stopped(root, entry):
+@@ -11,6 +11,17 @@ import uuid
+ from migration_diagnostics import save
+ 
+ 
++LEGACY_TUNNEL_INTERFACE = "{{ 'br-underlay' if inventory_hostname in groups['network'] else 'eth1' }}"
++
++
++def effective_config(config):
++    """Materialize the known source-lab formula without evaluating arbitrary Jinja."""
++    value = dict(config)
++    if value.get('tunnel_interface') == LEGACY_TUNNEL_INTERFACE:
++        value['tunnel_interface'] = 'br-underlay' if value.get('network') is True else 'eth1'
++    return value
++
++
+ def operate(root, action, role=None, label='checkpoint'):
+     root = Path(root).resolve()
+     cfg = json.loads((root/'diagnostics-config.json').read_text())
+@@ -51,13 +62,14 @@ def operate(root, action, role=None, label='checkpoint'):
+             config = dict(cfg, **central, run=runtime['run_id'], host=host, role=role,
+                 control=host in runtime.get('control_hosts', []), network=host in runtime.get('network_hosts', []),
+                 chassis=host in runtime.get('compute_hosts', [])+runtime.get('network_hosts', []))
++            config = effective_config(config)
+             remote = str(Path(cfg['directory'])/runtime['run_id']/(host+'-'+role))
+             entry = dict(host=host, role=role, config=config, remote_directory=remote,
+                 archive_name=host+'-'+role+'.tar.gz', archive_directory='diagnostics/'+host+'/'+role, segments=[])
+             path = checkpoints/(host+'-'+role+'.json')
+             if path.exists():
+                 old = json.loads(path.read_text())
+-                if old['config'] != config:
++                if effective_config(old['config']) != config:
+                     raise RuntimeError('Diagnostics checkpoint configuration changed')
+                 entry = old
+                 if archived_stopped(root, old):
+@@ -95,7 +107,8 @@ def archived_stopped(root, entry):
      if not path.exists():
          return False
      value = json.loads(path.read_text())
 -    return value.get('stopped') is True and value.get('config') == entry['config']
 +    return (value.get('stopped') is True and value.get('cleanup_complete', True) is True
-+            and value.get('config') == entry['config'])
++            and effective_config(value.get('config', {})) == effective_config(entry['config']))
  
  
  def transport(root, action, entries, label):
-@@ -110,7 +111,7 @@ def transport(root, action, entries, label):
+@@ -110,7 +123,7 @@ def transport(root, action, entries, label):
          capture_output=True, text=True, timeout=180)
      (directory/('transport-'+selected+'-'+action+'.log')).write_text(result.stdout+'\n'+result.stderr)
      if result.returncode:
@@ -913,25 +1106,43 @@ index 7099bd7..7d44c44 100644
              raise RuntimeError('Diagnostics '+action+' failed; inspect diagnostics transport log')
      if action == 'stop':
          for host, entry in entries.items():
-@@ -160,6 +161,9 @@ def reset_stop(backup_root):
-             continue
-         try:
-             operate(root, 'stop')
-+            entries = [json.loads(p.read_text()) for p in (root/'diagnostics/checkpoints').glob('*.json')]
-+            if not all(archived_stopped(root, entry) for entry in entries):
-+                raise RuntimeError('Observer shutdown/archive was not proven complete')
-             stopped.append(root.name)
-         except Exception as exc:
-             errors.append(dict(run=root.name, error=str(exc)))
-@@ -172,7 +176,7 @@ def reset_stop(backup_root):
+@@ -151,34 +164,14 @@ def summarize(root):
+     return result
  
+ 
+-def reset_stop(backup_root):
+-    errors = []
+-    stopped = []
+-    for path in sorted(Path(backup_root).glob('*/diagnostics-config.json')):
+-        root = path.parent
+-        if not (root/'diagnostics/checkpoints').exists():
+-            continue
+-        try:
+-            operate(root, 'stop')
+-            stopped.append(root.name)
+-        except Exception as exc:
+-            errors.append(dict(run=root.name, error=str(exc)))
+-    result = dict(status='FAIL' if errors else 'PASS', runs=stopped, errors=errors)
+-    save(Path(backup_root)/'diagnostics-reset-stop.json', result)
+-    if errors:
+-        raise RuntimeError('Host observers could not be stopped/archived; reset blocked')
+-    return result
+-
+-
  def main():
      parser = argparse.ArgumentParser(description=__doc__)
 -    parser.add_argument('action', choices=['start', 'check', 'snapshot', 'stop', 'abort', 'reset-stop', 'ensure'])
-+    parser.add_argument('action', choices=['start', 'check', 'snapshot', 'snapshot-wait', 'stop', 'abort', 'reset-stop', 'ensure'])
++    parser.add_argument('action', choices=['start', 'check', 'snapshot', 'snapshot-wait', 'stop', 'abort', 'ensure'])
      parser.add_argument('root', type=Path)
      parser.add_argument('--role', choices=['core', 'central'])
      parser.add_argument('--label', default='checkpoint')
+     args = parser.parse_args()
+-    print(json.dumps(reset_stop(args.root) if args.action == 'reset-stop' else
+-                     operate(args.root, args.action, args.role, args.label)))
++    print(json.dumps(operate(args.root, args.action, args.role, args.label)))
+ 
+ 
+ if __name__ == '__main__':
 diff --git a/scripts/live_recovery.py b/scripts/live_recovery.py
 new file mode 100644
 index 0000000..44f696d
@@ -1287,6 +1498,129 @@ index 0000000..3cdffee
 +    parser.add_argument('--check', action='store_true')
 +    args = parser.parse_args()
 +    print(json.dumps(prepare(args.protocols, args.check), sort_keys=True))
+diff --git a/scripts/reset_host_observers.py b/scripts/reset_host_observers.py
+new file mode 100644
+index 0000000..4b90720
+--- /dev/null
++++ b/scripts/reset_host_observers.py
+@@ -0,0 +1,117 @@
++#!/usr/bin/env python3
++"""Stop live migration observer supervisors before a destructive lab reset.
++
++Run results, archive health and checkpoint configurations are irrelevant here.
++Match the exact observer invocation beneath the configured private directory,
++then bind TERM to that original process with a pidfd. Never match by name alone.
++"""
++import argparse
++import json
++import math
++import os
++from pathlib import Path
++import re
++import signal
++import time
++
++
++def identity(pid):
++    try:
++        path = '/proc/self/stat' if pid == os.getpid() else f'/proc/{pid}/stat'
++        text = Path(path).read_text()
++        fields = text.rsplit(')', 1)[1].split()
++        if fields[0] == 'Z':
++            return None
++        return dict(pid=int(text.split(' ', 1)[0]), start_ticks=fields[19],
++                    boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip())
++    except (FileNotFoundError, ProcessLookupError):
++        return None
++
++
++def invocation(pid, base):
++    try:
++        args = [os.fsdecode(x) for x in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0') if x]
++    except (FileNotFoundError, ProcessLookupError):
++        return None
++    if len(args) != 4 or not Path(args[0]).name.startswith('python') or args[2] != 'run':
++        return None
++    root = Path(args[3])
++    if not root.is_absolute() or Path(args[1]) != root/'migration_diagnostics.py':
++        return None
++    try:
++        relative = root.relative_to(base)
++    except ValueError:
++        return None
++    if len(relative.parts) != 2 or any(not re.fullmatch(r'[A-Za-z0-9_.-]+', p)
++                                      or p in ('.', '..') for p in relative.parts):
++        return None
++    return dict(directory=str(root), run=relative.parts[0], collector=relative.parts[1])
++
++
++def stop_observers(base, timeout=60):
++    base = Path(base)
++    if not base.is_absolute() or base == Path('/') or '..' in base.parts:
++        raise ValueError('An absolute dedicated observer directory is required')
++    if not math.isfinite(timeout) or timeout <= 0:
++        raise ValueError('Stop timeout must be finite and positive')
++    result = dict(status='IN_PROGRESS', directory=str(base), started_at=time.time(),
++                  signaled=[], stopped=[], remaining=[], timeout_seconds=timeout,
++                  scope='Current observer processes only; historical report/archive health is not a reset gate')
++    owned = []
++    try:
++        # Inspect current processes once, irrespective of the number/health of old runs.
++        for proc in Path('/proc').glob('[0-9]*'):
++            pid = int(proc.name)
++            original = identity(pid)
++            if not original or not (owner := invocation(pid, base)):
++                continue
++            try:
++                handle = os.pidfd_open(pid)
++            except ProcessLookupError:
++                continue
++            if identity(pid) != original or invocation(pid, base) != owner:
++                os.close(handle)
++                continue
++            owned.append((handle, dict(owner, identity=original)))
++        for handle, item in owned:
++            pid = item['identity']['pid']
++            if identity(pid) != item['identity']:
++                continue
++            if invocation(pid, base) != {k:item[k] for k in ('directory','run','collector')}:
++                raise RuntimeError('Observer invocation changed before stop: '+str(pid))
++            try:
++                signal.pidfd_send_signal(handle, signal.SIGTERM)
++                result['signaled'].append(item)
++            except ProcessLookupError:
++                pass
++        deadline = time.monotonic()+timeout
++        while True:
++            result['remaining'] = [item for _,item in owned
++                                   if identity(item['identity']['pid']) == item['identity']]
++            if not result['remaining']:
++                break
++            if time.monotonic() >= deadline:
++                raise TimeoutError('Live host observer did not stop before Kolla destroy')
++            time.sleep(.1)
++        result['status'] = 'PASS'
++    except Exception as exc:
++        result.update(status='FAIL', error=str(exc))
++    finally:
++        result['remaining'] = [item for _,item in owned
++                               if identity(item['identity']['pid']) == item['identity']]
++        result['stopped'] = [item for item in result['signaled']
++                             if identity(item['identity']['pid']) != item['identity']]
++        result['finished_at'] = time.time()
++        for handle, _ in owned:
++            os.close(handle)
++    return result
++
++
++if __name__ == '__main__':
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('directory', type=Path)
++    parser.add_argument('--timeout', type=float, default=60)
++    args = parser.parse_args()
++    value = stop_observers(args.directory, args.timeout)
++    print(json.dumps(value, sort_keys=True))
++    raise SystemExit(value['status'] != 'PASS')
 diff --git a/scripts/workload_validation.py b/scripts/workload_validation.py
 index a8123e2..3a0c451 100644
 --- a/scripts/workload_validation.py
@@ -1759,7 +2093,7 @@ index 0000000..a154fdd
 +
 +if __name__=='__main__': unittest.main()
 diff --git a/tests/test_migration_diagnostics.py b/tests/test_migration_diagnostics.py
-index 2666d27..8b92fa6 100644
+index 2666d27..0d095bb 100644
 --- a/tests/test_migration_diagnostics.py
 +++ b/tests/test_migration_diagnostics.py
 @@ -8,11 +8,13 @@ import sys
@@ -1773,11 +2107,11 @@ index 2666d27..8b92fa6 100644
  from test_validation import ROOT
  import migration_diagnostics as d
 -from diagnostics_control import archived_stopped, summarize
-+from diagnostics_control import archived_stopped, summarize, reset_stop
++from diagnostics_control import archived_stopped, summarize, effective_config, LEGACY_TUNNEL_INTERFACE
  
  
  class CollectorProcessTests(unittest.TestCase):
-@@ -79,6 +81,73 @@ class CollectorProcessTests(unittest.TestCase):
+@@ -79,6 +81,77 @@ class CollectorProcessTests(unittest.TestCase):
          self.assertNotEqual(result.returncode, 0)
          self.assertEqual((self.remote/'events.jsonl').read_text(), 'old evidence')
  
@@ -1833,24 +2167,37 @@ index 2666d27..8b92fa6 100644
 +            self.assertTrue(observer.intensive)
 +            self.assertEqual(calls[-2:],['deferred-after-recovery:observer-reconnected-openflow-watch','post-traffic-recovery'])
 +
-+    def test_reset_accepts_stopped_gapped_core_only_run_but_blocks_unproven_cleanup(self):
++    def test_legacy_jinja_is_equivalent_only_to_the_expected_host_interface(self):
 +        with tempfile.TemporaryDirectory() as folder:
-+            parent=Path(folder); root=parent/'run'; (root/'diagnostics/checkpoints').mkdir(parents=True)
-+            entry=dict(host='node',role='core',config={'run':'run'})
-+            d.save(root/'diagnostics-config.json',dict(enabled=True))
-+            d.save(root/'diagnostics/checkpoints/node-core.json',entry)
-+            archive=root/'diagnostics/node/core'; archive.mkdir(parents=True)
-+            state=dict(status='UNAVAILABLE',stopped=True,cleanup_complete=True,config=entry['config'],coverage='GAPPED')
-+            d.save(archive/'state.json',state)
-+            with patch('diagnostics_control.operate',return_value=dict(collection_status='UNAVAILABLE')):
-+                self.assertEqual(reset_stop(parent)['status'],'PASS')
-+                state['cleanup_complete']=False; d.save(archive/'state.json',state)
-+                with self.assertRaisesRegex(RuntimeError,'reset blocked'): reset_stop(parent)
-+            self.assertEqual(json.loads((parent/'diagnostics-reset-stop.json').read_text())['status'],'FAIL')
++            root=Path(folder); dest=root/'diagnostics/node/core'; dest.mkdir(parents=True)
++            for network, interface in ((False,'eth1'),(True,'br-underlay')):
++                entry=dict(host='node',role='core',config=dict(run='r',host='node',role='core',
++                    network=network,tunnel_interface=LEGACY_TUNNEL_INTERFACE))
++                original=json.dumps(entry,sort_keys=True)
++                state=dict(stopped=True,cleanup_complete=True,config=effective_config(entry['config']))
++                d.save(dest/'state.json',state)
++                self.assertTrue(archived_stopped(root,entry))
++                self.assertEqual(state['config']['tunnel_interface'],interface)
++                self.assertEqual(json.dumps(entry,sort_keys=True),original)
++                for key, bad in (('run','foreign'),('host','foreign'),('tunnel_interface','wrong-interface')):
++                    changed=dict(state,config=dict(state['config'],**{key:bad}))
++                    d.save(dest/'state.json',changed)
++                    self.assertFalse(archived_stopped(root,entry))
++                state['cleanup_complete']=False; d.save(dest/'state.json',state)
++                self.assertFalse(archived_stopped(root,entry))
 +
  
  class CollectorEvidenceTests(unittest.TestCase):
      def test_log_rotation_preserves_unread_tail_and_distinguishes_new_file(self):
+@@ -154,7 +227,7 @@ class AnsibleCollectorTests(unittest.TestCase):
+                 ' while True: time.sleep(.1)\n')
+             fake.chmod(0o700)
+             cfg = dict(enabled=True, directory=str(root/'remote'), lifetime=60, max_bytes=1048576,
+-                       ns_enabled=False, tunnel_interface='eth1', external_interface='ns-ex')
++                       ns_enabled=False, tunnel_interface=LEGACY_TUNNEL_INTERFACE, external_interface='ns-ex')
+             d.save(root/'diagnostics-config.json',cfg)
+             d.save(root/'runtime.json',dict(run_id='run', inventory=str(inventory), control_hosts=['alpha'],
+                 network_hosts=[],compute_hosts=[],ovn_cli_host='alpha'))
 diff --git a/tests/test_ns_icmp_reconcile.py b/tests/test_ns_icmp_reconcile.py
 index ef3b81a..656e8ab 100644
 --- a/tests/test_ns_icmp_reconcile.py
@@ -1992,6 +2339,162 @@ index fc65274..df98fc1 100644
          for name in ('Snapshot ProviderResourceAssociation before authoritative migrate mode',
                       'Apply Caracal L3 provider-association compatibility migration',
                       'Snapshot ProviderResourceAssociation after compatibility conversion commits'):
+diff --git a/tests/test_reset_host_observers.py b/tests/test_reset_host_observers.py
+new file mode 100644
+index 0000000..15e2568
+--- /dev/null
++++ b/tests/test_reset_host_observers.py
+@@ -0,0 +1,150 @@
++"""Reset acts on live processes, independently of old reports and Jinja configs."""
++import json
++import os
++from pathlib import Path
++import shutil
++import subprocess
++import sys
++import tempfile
++import time
++import unittest
++from unittest.mock import patch
++import yaml
++
++from test_validation import ROOT
++import reset_host_observers as r
++
++
++class LiveResetTests(unittest.TestCase):
++    def setUp(self):
++        self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
++        self.base=Path(self.temp.name)/'observers'; self.base.mkdir()
++        self.children=[]; self.addCleanup(self.cleanup)
++
++    def cleanup(self):
++        for proc in self.children:
++            if proc.poll() is None: proc.kill()
++            proc.wait(timeout=3)
++
++    def child(self,run,*,base=None,ignore=False):
++        root=(base or self.base)/run/'controller-core'; root.mkdir(parents=True)
++        script=root/'migration_diagnostics.py'
++        script.write_text('import signal,time,sys\nfrom pathlib import Path\n'
++            +'signal.signal(signal.SIGTERM,'+('signal.SIG_IGN' if ignore else 'lambda *_:sys.exit(0)')+')\n'
++            +'Path(sys.argv[2],"ready").touch()\nwhile True:time.sleep(.01)\n')
++        proc=subprocess.Popen([sys.executable,str(script),'run',str(root)])
++        self.children.append(proc)
++        deadline=time.monotonic()+3
++        while not (root/'ready').exists() and time.monotonic()<deadline:time.sleep(.01)
++        self.assertTrue((root/'ready').exists())
++        return proc,root
++
++    def mapped_stop(self,timeout=1):
++        # This executor exposes host /proc inside its child PID namespace.
++        # Adapt only the pidfd boundary; production matching/identity/signal/wait run unchanged.
++        real_open=os.pidfd_open
++        def mapped(pid):
++            line=next(line for line in Path(f'/proc/{pid}/status').read_text().splitlines() if line.startswith('NSpid:'))
++            return real_open(int(line.split()[-1]))
++        with patch.object(r.os,'pidfd_open',side_effect=mapped):
++            return r.stop_observers(self.base,timeout)
++
++    def test_old_run_results_and_archives_are_not_read_or_rewritten(self):
++        old=self.base/'old-run/controller-core'; old.mkdir(parents=True)
++        files={old/'state.json':'not valid JSON',old/'config.json':'unrendered {{ Jinja }}',
++               old/'migration-report.txt':'historical failure'}
++        for path,text in files.items():path.write_text(text)
++        value=self.mapped_stop()
++        self.assertEqual(value['status'],'PASS'); self.assertEqual(value['signaled'],[])
++        self.assertEqual({p:p.read_text() for p in files},files)
++
++    def test_stops_both_live_runs_in_one_pass_and_preserves_foreign_prefix(self):
++        one,_=self.child('old-live-run'); two,_=self.child('new-live-run')
++        foreign,_=self.child('foreign-run',base=Path(str(self.base)+'-foreign'))
++        value=self.mapped_stop()
++        self.assertEqual(value['status'],'PASS',value)
++        self.assertEqual({x['run'] for x in value['stopped']},{'old-live-run','new-live-run'})
++        one.wait(timeout=2); two.wait(timeout=2); self.assertIsNone(foreign.poll())
++        self.assertEqual(self.mapped_stop()['signaled'],[])
++
++    def test_live_observer_ignoring_term_blocks_with_exact_remaining_identity(self):
++        proc,_=self.child('stuck',ignore=True)
++        value=self.mapped_stop(timeout=.05)
++        self.assertEqual(value['status'],'FAIL'); self.assertEqual(len(value['remaining']),1)
++        self.assertEqual(value['remaining'][0]['run'],'stuck')
++        self.assertEqual(value['stopped'],[]); self.assertIsNone(proc.poll())
++
++    def test_changed_command_is_never_signaled(self):
++        proc,_=self.child('changed')
++        original=r.invocation; counts={}
++        def changing(pid,base):
++            value=original(pid,base)
++            if value:
++                counts[pid]=counts.get(pid,0)+1
++                if counts[pid]>=3:return None
++            return value
++        with patch.object(r,'invocation',side_effect=changing):value=self.mapped_stop()
++        self.assertEqual(value['status'],'FAIL'); self.assertEqual(value['signaled'],[])
++        self.assertEqual(len(value['remaining']),1); self.assertIsNone(proc.poll())
++
++    def test_rejects_relative_or_overbroad_directory(self):
++        for root in ('/','relative','/var/lib/../'):
++            with self.subTest(root=root),self.assertRaises(ValueError):r.stop_observers(Path(root))
++
++
++class ResetAnsibleTests(unittest.TestCase):
++    def test_real_parent_reset_tasks_record_nested_success_and_failure_before_destroy(self):
++        plays=yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
++        production=next(p for p in plays if p['name']=='Destroy the current Kolla deployment from the deployment host')
++        names=[t['name'] for t in production['tasks']]
++        rows=production['tasks'][names.index('Stop live host observers before Kolla destroy'):
++            names.index('Require current observer shutdown before Kolla destroy')+1]
++        for valid in (True,False):
++            with self.subTest(valid=valid),tempfile.TemporaryDirectory() as folder:
++                root=Path(folder); evidence=root/'evidence'; evidence.mkdir()
++                for name in ('playbooks','scripts','group_vars'):(root/name).symlink_to(ROOT/name,target_is_directory=True)
++                inventory=root/'inventory.ini'
++                inventory.write_text('[control]\ncontroller ansible_connection=local ansible_python_interpreter='+sys.executable+'\n')
++                harness=root/'reset-test.yml'
++                harness.write_text(yaml.safe_dump([dict(hosts='localhost',gather_facts=False,
++                    vars=dict(reset_kolla_inventory=str(inventory),reset_run_dir=str(evidence),
++                        reset_diagnostics_directory=str(root/'observers') if valid else 'relative-not-allowed'),tasks=rows)],sort_keys=False))
++                result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i',str(inventory),str(harness)],
++                    capture_output=True,text=True,timeout=40)
++                self.assertEqual(result.returncode==0,valid,result.stdout+result.stderr)
++                self.assertTrue((evidence/'host-observers-stop.log').exists())
++                self.assertTrue((evidence/'host-observers-controller.json').exists())
++                if not valid:self.assertIn('Require current observer shutdown before Kolla destroy',result.stdout)
++
++    def test_production_helper_play_needs_no_migration_run_or_archive(self):
++        with tempfile.TemporaryDirectory() as folder:
++            root=Path(folder); evidence=root/'reset'; evidence.mkdir()
++            base=root/'observers'
++            inventory=root/'inventory.ini'
++            inventory.write_text('[control]\ncontroller ansible_connection=local ansible_python_interpreter='+sys.executable+'\n')
++            extra=root/'vars.json'
++            extra.write_text(json.dumps(dict(reset_observer_evidence_dir=str(evidence),reset_diagnostics_directory=str(base))))
++            result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i',str(inventory),
++                str(ROOT/'playbooks/reset-host-observers.yml'),'-e','@'+str(extra)],capture_output=True,text=True,timeout=30)
++            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
++            value=json.loads((evidence/'host-observers-controller.json').read_text())
++            state=json.loads(value['stdout'])
++            self.assertEqual(state['status'],'PASS'); self.assertEqual(state['signaled'],[])
++            self.assertFalse(base.exists())
++
++    def test_reset_uses_live_inventory_cleanup_before_destroy_and_preserves_transport_errors(self):
++        plays=yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
++        play=next(p for p in plays if p['name']=='Destroy the current Kolla deployment from the deployment host')
++        tasks=play['tasks']; names=[t['name'] for t in tasks]
++        stop=names.index('Stop live host observers before Kolla destroy')
++        gate=names.index('Require current observer shutdown before Kolla destroy')
++        destroy=names.index('Run kolla-ansible destroy')
++        self.assertLess(stop,gate); self.assertLess(gate,destroy)
++        self.assertNotIn('diagnostics_control.py',str(tasks[stop]))
++        self.assertNotIn('reset_backup_root_runtime',str(tasks[stop]))
++        self.assertIn('reset_kolla_inventory',str(tasks[stop]))
++        self.assertEqual(tasks[gate]['ansible.builtin.assert']['that'],'reset_host_observers.rc == 0')
++        self.assertIn('host-observers-stop.log',str(tasks[gate]))
++
++
++if __name__=='__main__':unittest.main()
 diff --git a/tests/test_three_pairs.py b/tests/test_three_pairs.py
 index 019e0f0..2eda3ae 100644
 --- a/tests/test_three_pairs.py
