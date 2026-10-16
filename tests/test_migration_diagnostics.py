@@ -253,7 +253,7 @@ class AnsibleCollectorTests(unittest.TestCase):
             self.assertEqual(current['status'],'STOPPED')
             state = json.loads((root/'diagnostics/alpha/core/state.json').read_text())
             self.assertEqual(state['status'],'STOPPED',state)
-            self.assertTrue((root/'diagnostics/alpha-core.tar.gz').exists())
+            self.assertFalse(list((root/'diagnostics').glob('*.tar.gz')))
             self.assertTrue((root/'diagnostics/alpha/core/events.jsonl').exists())
 
 

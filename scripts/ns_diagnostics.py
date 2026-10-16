@@ -2,6 +2,7 @@
 """Independent TCP captures and read-only NAT snapshots; never reconnect probes."""
 import argparse
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
@@ -283,15 +284,69 @@ class Diagnostics:
     def transport(self, action, cp):
         dest = self.root/'ns-diagnostics'/cp['kind']
         dest.mkdir(parents=True, exist_ok=True, mode=0o700)
-        extra = dest/'transport.json'
-        save(extra, dict(ns_diag_action=action, ns_diag_checkpoint=cp, ns_diag_local_directory=str(dest)))
+        transport_dir = self.root/'ns-diagnostics'/'transport'/cp['kind']
+        transport_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        extra = transport_dir/'transport.json'
+        operation_file = transport_dir/'operation.json'
+        save(extra, dict(ns_diag_action=action, ns_diag_checkpoint=cp, ns_diag_local_directory=str(dest),
+                         ns_diag_operation_file=str(operation_file)))
         helper = Path(__file__).resolve().parents[1]/'playbooks/ns-diagnostics-tasks.yml'
         proc = subprocess.run(['ansible-playbook', '-i', self.cfg['inventory'], str(helper), '-e', '@'+str(extra)],
                               capture_output=True, text=True, timeout=max(60, self.cfg.get('timeout', 300)))
-        (dest/('transport-'+action+'.log')).write_text(proc.stdout+'\n'+proc.stderr)
+        (transport_dir/('transport-'+action+'.log')).write_text(proc.stdout+'\n'+proc.stderr)
         if proc.returncode:
-            raise RuntimeError('N-S diagnostic '+action+' failed on '+cp['host']+'; see '+str(dest))
-        return json.loads((dest/'operation.json').read_text())
+            raise RuntimeError('N-S diagnostic '+action+' failed on '+cp['host']+'; see '+str(transport_dir))
+        result = json.loads(operation_file.read_text())
+        if action == 'stop' and cp['kind'] == 'endpoint':
+            self.archive_endpoint(cp, result)
+        return result
+
+    def archive_endpoint(self, cp, state):
+        """Keep one local PCAP; old checkpoint directories remain readable."""
+        dest = self.root/'ns-diagnostics'/'endpoint'
+        source = Path(cp['config']['directory'])
+        allowed = [dest.resolve(), (self.root/'ns-diagnostics'/'endpoint-agent').resolve()]
+        if cp['host'] != 'localhost' or source.resolve() not in allowed:
+            raise RuntimeError('Endpoint archive directory identity changed')
+        if cp.get('remote') and any(cp['remote'].get(k) != state.get(k)
+                for k in ('supervisor', 'tcpdump', 'started_at', 'interface')):
+            raise RuntimeError('Original endpoint capture identity changed')
+        deadline = time.monotonic()+2
+        while state.get('status') == 'STOPPED' and any(alive(state.get(k)) for k in ('supervisor', 'tcpdump')) and time.monotonic() < deadline:
+            time.sleep(.05)
+        if (state.get('config') != cp['config'] or state.get('status') not in ('STOPPED', 'FAILED')
+                or any(alive(state.get(k)) for k in ('supervisor', 'tcpdump'))):
+            raise RuntimeError('Endpoint capture must be stopped before archiving')
+        dest.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if source.resolve() != dest.resolve():
+            files = ('tcp.pcap', 'tcpdump.log', 'tcp-capture-state.json', 'supervisor.log')
+            # Check every conflict before moving anything. Failed/retried archive
+            # operations must never overwrite another evidence file.
+            for name in files:
+                old, new = source/name, dest/name
+                if old.is_symlink() or new.is_symlink():
+                    raise RuntimeError('Endpoint evidence must be a regular file')
+                if old.exists() and new.exists():
+                    with old.open('rb') as a, new.open('rb') as b:
+                        if hashlib.file_digest(a, 'sha256').digest() != hashlib.file_digest(b, 'sha256').digest():
+                            raise RuntimeError('Endpoint archive content mismatch: '+name)
+                elif not old.exists() and not new.is_file():
+                    raise RuntimeError('Endpoint evidence missing: '+name)
+            for name in files:
+                old, new = source/name, dest/name
+                if old.exists():
+                    if new.exists():
+                        old.unlink()  # Hash-verified duplicate from the old fetch path.
+                    else:
+                        old.replace(new)  # Same run filesystem; no second PCAP copy.
+            # Keep the original journal/helpers for idempotent stop/resume. Its
+            # immutable config/path describes the source, not the archive location.
+            save(source/'tcp-capture-state.json', state)
+        for name in ('tcp.pcap', 'tcpdump.log', 'tcp-capture-state.json', 'supervisor.log'):
+            if not (dest/name).is_file():
+                raise RuntimeError('Endpoint archive missing: '+name)
+        cp.update(archive_directory='ns-diagnostics/endpoint', pcap_path='ns-diagnostics/endpoint/tcp.pcap')
+
 
     def start(self, kind):
         if not self.enabled:
@@ -306,7 +361,7 @@ class Diagnostics:
             host = 'localhost'
             if kind == 'endpoint':
                 cfg['interface'] = ns['capture_interface']
-                directory = self.root/'ns-diagnostics'/'endpoint-agent'
+                directory = self.root/'ns-diagnostics'/'endpoint'
             else:
                 vm = self.x.state['ns']['vms']['0' if kind == 'guest-snat' else '1']
                 self.x.audit(vm)
@@ -315,7 +370,8 @@ class Diagnostics:
                 directory = Path(self.cfg['capture_directory'])/self.cfg['run']/('ns-'+kind)
             cfg['directory'] = str(directory)
             checked_config(cfg)
-            self.state['captures'][kind] = dict(kind=kind, host=host, config=cfg, status='START_INTENT')
+            self.state['captures'][kind] = dict(kind=kind, host=host, config=cfg, status='START_INTENT',
+                archive_directory='ns-diagnostics/'+kind, pcap_path='ns-diagnostics/'+kind+'/tcp.pcap')
             save(self.path, self.state)
         cp = self.state['captures'][kind]
         if cp['status'] == 'START_INTENT' and cp.get('launch_attempted'):
@@ -336,8 +392,8 @@ class Diagnostics:
         cp = self.state['captures']['endpoint']
         if cp['status'] != 'START_INTENT' or cp.get('remote') or cp['host'] != 'localhost':
             raise RuntimeError('Retry cannot replace any launched TCP capture')
-        expected = self.root/'ns-diagnostics'/'endpoint-agent'
-        if Path(cp['config']['directory']).resolve() != expected.resolve():
+        expected = [self.root/'ns-diagnostics'/name for name in ('endpoint', 'endpoint-agent')]
+        if Path(cp['config']['directory']).resolve() not in [p.resolve() for p in expected]:
             raise RuntimeError('Retry endpoint directory identity changed')
         row = self.transport('inspect', cp)
         if row.get('status') != 'NOT_STARTED' or row.get('config') != cp['config']:

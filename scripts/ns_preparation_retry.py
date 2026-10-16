@@ -50,10 +50,15 @@ def retry_check(root, inventory):
     cp = diagnostic['captures']['endpoint']
     if cp.get('status') != 'START_INTENT' or cp.get('remote') or cp.get('host') != 'localhost':
         raise ValueError('N-S retry cannot replace a previously launched capture')
+    directory = cp.get('config', {}).get('directory')
+    if directory not in [str(root/'ns-diagnostics'/name) for name in ('endpoint', 'endpoint-agent')]:
+        raise ValueError('N-S endpoint directory identity changed')
     expected = dict(run=root.name, kind='endpoint', endpoint_ip=ns['endpoint_ip'], snat_ip=ns['snat_ip'],
                     fip_ip=ns['fip_ip'], guest_ip=ns['outbound_ip'], tcp_port=ns['port'],
                     lifetime=cfg['lifetime'], allow_create=True, interface=ns['capture_interface'],
-                    directory=str(root/'ns-diagnostics'/'endpoint-agent'))
+                    directory=directory)
+    if ns.get('new_port'):
+        expected.update(new_tcp_port=ns['new_port'], icmp_enabled=ns.get('icmp_enabled', False))
     if cp.get('config') != expected:
         raise ValueError('N-S endpoint intent differs from original configuration')
 

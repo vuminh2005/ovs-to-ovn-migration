@@ -61,9 +61,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertGreater(of,cleanup)
         self.assertLess(of,names.index('Verify neutron_openvswitch_agent is running'))
 
-    def test_txt_renderer_is_byte_identical_to_supplied_final_zip(self):
-        self.assertEqual(hashlib.sha256((ROOT/'scripts/report_format.py').read_bytes()).hexdigest(),
-            'f3b52253be6a06b9fcc46dae99f90770c4ef6e92ad4b14ac9f12893219655c39')
+    def test_txt_renderer_and_helpers_are_byte_identical_to_supplied_final_zip(self):
+        self.assertEqual(hashlib.sha256((ROOT/'scripts/report_format.py').read_text().partition('\ndef terminal_summary(')[0].encode()).hexdigest(),
+            '3ca3e49f1507dfdf18bcfbfed48139051d98b194580be06be16344e588a62157')
 
 
 if __name__=='__main__': unittest.main()

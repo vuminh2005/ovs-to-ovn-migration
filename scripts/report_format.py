@@ -220,6 +220,6 @@ def render_text(report, root, *, modern):
 
 
 def terminal_summary(report, root):
-    return '\n'.join([f"RESULT: {report['result']}", f"Run: {report['run_id']}",
+    return '\n'.join([f"Run: {report['run_id']}",
                       f'Text report: {root}/migration-report.txt',
                       f'JSON report: {root}/migration-report.json'])

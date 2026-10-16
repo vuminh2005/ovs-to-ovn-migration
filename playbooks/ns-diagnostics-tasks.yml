@@ -43,7 +43,7 @@
 
     - name: Persist diagnostic operation result
       ansible.builtin.copy:
-        dest: "{{ ns_diag_local_directory }}/operation.json"
+        dest: "{{ ns_diag_operation_file }}"
         content: "{{ ns_diag_conntrack.stdout if ns_diag_action == 'conntrack' else ns_diag_operation.stdout }}"
         mode: '0600'
 
@@ -54,4 +54,4 @@
         flat: true
       loop: [tcp.pcap, tcpdump.log, tcp-capture-state.json, supervisor.log]
       delegate_to: "{{ ns_diag_checkpoint.host }}"
-      when: ns_diag_action == 'stop'
+      when: ns_diag_action == 'stop' and ns_diag_checkpoint.kind != 'endpoint'

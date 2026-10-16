@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Coordinate run-owned host observers and archive even failed collection attempts."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -73,6 +74,7 @@ def operate(root, action, role=None, label='checkpoint'):
                     raise RuntimeError('Diagnostics checkpoint configuration changed')
                 entry = old
                 if archived_stopped(root, old):
+                    prune_archive(root, old)
                     if (root/'metrics/phase08.start').exists():
                         raise RuntimeError('A diagnostics gap during/after cutover cannot be hidden by restarting collectors')
                     segment = uuid.uuid4().hex[:12]
@@ -93,6 +95,9 @@ def operate(root, action, role=None, label='checkpoint'):
             rows = {p.stem.rsplit('-', 1)[0]: json.loads(p.read_text())
                     for p in checkpoints.glob('*-'+selected+'.json')}
             if action == 'stop':
+                for row in rows.values():
+                    if archived_stopped(root, row):
+                        prune_archive(root, row)
                 rows = {host: row for host, row in rows.items() if not archived_stopped(root, row)}
             if rows:
                 results.update(transport(root, action, rows, label))
@@ -109,6 +114,29 @@ def archived_stopped(root, entry):
     value = json.loads(path.read_text())
     return (value.get('stopped') is True and value.get('cleanup_complete', True) is True
             and effective_config(value.get('config', {})) == effective_config(entry['config']))
+
+
+def prune_archive(root, entry):
+    """Discard only a transport bundle whose files are all retained verbatim."""
+    archive = root/'diagnostics'/entry.get('archive_name', entry['host']+'-'+entry['role']+'.tar.gz')
+    if not archive.exists():
+        return
+    dest = root/entry.get('archive_directory', 'diagnostics/'+entry['host']+'/'+entry['role'])
+    with tarfile.open(archive) as bundle:
+        for member in bundle:
+            target = dest/member.name
+            if not target.resolve().is_relative_to(dest.resolve()):
+                raise RuntimeError('Diagnostic archive path escapes evidence directory')
+            if member.isdir():
+                if not target.is_dir():
+                    raise RuntimeError('Diagnostic archive directory missing: '+member.name)
+            elif member.isfile() and target.is_file() and not target.is_symlink():
+                with bundle.extractfile(member) as original, target.open('rb') as retained:
+                    if hashlib.file_digest(original, 'sha256').digest() != hashlib.file_digest(retained, 'sha256').digest():
+                        raise RuntimeError('Diagnostic archive content mismatch: '+member.name)
+            else:
+                raise RuntimeError('Diagnostic archive entry not retained: '+member.name)
+    archive.unlink()
 
 
 def transport(root, action, entries, label):
@@ -133,6 +161,7 @@ def transport(root, action, entries, label):
                 dest.mkdir(parents=True, exist_ok=True, mode=0o700)
                 with tarfile.open(archive) as bundle:
                     bundle.extractall(dest, filter='data')
+                prune_archive(root, entry)
     return {host+'-'+entry['role']: entry for host, entry in entries.items()}
 
 

@@ -155,10 +155,10 @@ class PresentationTests(unittest.TestCase):
         self.assertIn('\nDataplane downtime:\n', text)
         self.assertNotIn('2.500 s', text)
 
-    def test_terminal_summary_contains_only_result_run_and_paths(self):
+    def test_terminal_summary_contains_only_run_and_paths(self):
         report = self.report()
         self.assertEqual(terminal_summary(report, pathlib.Path('/run')).splitlines(), [
-            'RESULT: MIGRATED_VALIDATION_INCOMPLETE', 'Run: test-run',
+            'Run: test-run',
             'Text report: /run/migration-report.txt', 'JSON report: /run/migration-report.json'])
 
     def test_end_to_end_json_keeps_precise_evidence_hidden_from_text(self):
@@ -184,7 +184,7 @@ class PresentationTests(unittest.TestCase):
             self.assertEqual(report['dataplane_probe'], probe)
             self.assertEqual(len(report['phase_timings']), 14)
             self.assertIsNone(report['total_duration_seconds'])
-            self.assertEqual(len(result.stdout.splitlines()), 4)
+            self.assertEqual(len(result.stdout.splitlines()), 3)
             self.assertNotIn('1791699764', text)
             self.assertNotIn('Individual check fields', text)
             self.assertNotIn('Canonical phase timings', text)

@@ -41,6 +41,26 @@ class NSPreparationRetryTests(unittest.TestCase):
         retry_check(self.root,'/inventory')
         self.assertEqual(before,{p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
 
+    def test_canonical_endpoint_intent_is_eligible(self):
+        self.diag['captures']['endpoint']['config']['directory'] = str(self.root/'ns-diagnostics/endpoint')
+        self.write()
+        retry_check(self.root, '/inventory')
+
+    def test_expanded_capture_retry_checks_ports_and_icmp_in_both_layouts(self):
+        self.cfg['ns'].update(new_port=18181, icmp_enabled=True)
+        config = self.diag['captures']['endpoint']['config']
+        config.update(new_tcp_port=18181, icmp_enabled=True)
+        for directory in ('endpoint', 'endpoint-agent'):
+            with self.subTest(directory=directory):
+                config['directory'] = str(self.root/'ns-diagnostics'/directory)
+                self.write()
+                retry_check(self.root, '/inventory')
+                config['new_tcp_port'] = 18183
+                self.write()
+                with self.assertRaisesRegex(ValueError, 'differs'):
+                    retry_check(self.root, '/inventory')
+                config['new_tcp_port'] = 18181
+
     def test_any_later_marker_blocks_retry(self):
         for name in ('phase04.end','phase05.start','phase06.end','phase07.start','phase08.start',
                      'db_migration.start','control_plane_downtime.start','total.end'):

@@ -8,6 +8,11 @@ Reset kiểm tra/dừng observer đang sống trên host, không phụ thuộc v
 PASS hay archive/config lịch sử khớp. Lỗi so sánh công thức Jinja của tunnel
 interface với giá trị đã render được xử lý theo đúng host.
 
+Report giữ một bản host diagnostics đã giải nén và một PCAP endpoint N-S;
+console cuối chỉ in run/đường dẫn report, kết quả chi tiết vẫn ở JSON.
+Xem [lưu evidence](docs/report-evidence.md) và [mục lục tài liệu](docs/README.md).
+Patch và ghi chú kiểm tra cũ đã chuyển vào `docs/history/`.
+
 ## Bản mở rộng N-S và ma trận EW (13/10/2026)
 
 Hướng dẫn hiện hành: [docs/ns-ew-matrix.md](docs/ns-ew-matrix.md).

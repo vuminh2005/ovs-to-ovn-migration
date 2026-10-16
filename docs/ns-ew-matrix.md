@@ -178,7 +178,7 @@ Unit/integration offline dùng OpenStackSDK 4.21.0 và Ansible-core 2.17.14.
 Có TCP thật localhost cho normal, timeout-phục hồi cùng socket, socket đóng
 không reconnect và sai nguồn; có kiểm tra bằng resource SDK cho provisioning
 N-S, retry mất reply, mapping/MTU/ownership, ma trận compute/subnet và quota.
-Kết quả kiểm tra cụ thể nằm trong `VALIDATION.txt` ở thư mục gốc ZIP.
+Kết quả kiểm tra cụ thể nằm trong [lịch sử kiểm tra](history/VALIDATION.txt).
 
 **Chưa chạy reset/deploy/migration trên lab thật.** Bản code này cung cấp workflow
 và kiểm tra offline; không phải bằng chứng N-S đã giữ phiên qua migration.
