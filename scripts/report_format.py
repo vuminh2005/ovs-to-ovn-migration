@@ -215,13 +215,7 @@ def render_text(report, root, *, modern):
         if ns.get('new_listener_enabled') or 'new_listener' in value.get('streams', {}):
             names.append(('new_listener', 'New listener / new connection every probe'))
         tcp(name, value, names, direction=direction)
-    diagnostics = report.get('diagnostic_coverage') or {}
-    if diagnostics.get('status') not in (None, 'PASS', 'DISABLED'):
-        heading('Diagnostics coverage')
-        field('Status', diagnostics['status'], 2)
-        field('Scope', 'Traffic validation is evaluated separately', 2)
-        for warning in diagnostics.get('warnings', []):
-            lines.append('  '+warning)
+
     return '\n'.join(lines) + '\n'
 
 
