@@ -1,5 +1,5 @@
 ---
-- name: Phase 07 - Start control-plane downtime metric
+- name: "Phase 07 - Prepare Neutron API freeze and database migration"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -7,7 +7,7 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark phase 07 entry before the pre-freeze readiness gate
+    - name: "[07] [TIMER] Start phase 07 before readiness checks"
       ansible.builtin.command:
         argv:
           - python3
@@ -18,7 +18,7 @@
       run_once: true
       changed_when: false
 
-- name: Phase 07 - Stage immutable cutover inputs before Neutron freeze
+- name: "Phase 07 - Prepare database migration inputs before API freeze"
   hosts: control
   any_errors_fatal: true
   gather_facts: false
@@ -26,14 +26,14 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Discover neutron-server image on DB sync host
+    - name: "[07] Resolve neutron-server image"
       ansible.builtin.command:
         argv: [docker, inspect, neutron_server, --format, '{% raw %}{{.Config.Image}}{% endraw %}']
       register: neutron_server_image
       run_once: true
       changed_when: false
 
-    - name: Persist run-scoped preparation inputs before freeze
+    - name: "[07] [SAVE] Save cutover inputs and timeouts"
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/../scripts/cutover_preparation.py", prepare,
                "{{ hostvars['localhost']['migration_run_dir'] }}", --image, "{{ neutron_server_image.stdout }}",
@@ -44,35 +44,35 @@
       run_once: true
       changed_when: false
 
-    - name: Publish prepared cutover values on the deployment host
+    - name: "[07] Load prepared cutover settings"
       ansible.builtin.set_fact:
         cutover_preparation_runtime: "{{ cutover_preparation_result.stdout | from_json }}"
       delegate_to: localhost
       delegate_facts: true
       run_once: true
 
-    - name: Create private run-owned provider helper directory
+    - name: "[07] Create run-owned provider helper directory"
       ansible.builtin.file:
         path: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}"
         state: directory
         mode: '0700'
       run_once: true
 
-    - name: Persist preparation directory ownership before staging files
+    - name: "[07] [SAVE] Save provider helper ownership"
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}/owner.json"
         content: "{{ hostvars['localhost']['cutover_preparation_runtime'] | to_nice_json }}"
         mode: '0600'
       run_once: true
 
-    - name: Stage provider association helper on the DB sync host
+    - name: "[07] Stage provider association helper"
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}/provider_associations.py"
         content: "{{ lookup('file', playbook_dir + '/../scripts/provider_associations.py') }}"
         mode: '0600'
       run_once: true
 
-- name: Phase 07 - Prepare VM port checkpoint on the selected OVN CLI host
+- name: "Phase 07 - Prepare existing VM port checkpoint"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -80,26 +80,26 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Create private run-owned OVN CLI preparation directory
+    - name: "[07] Create run-owned OVN CLI directory"
       ansible.builtin.file:
         path: "{{ cutover_preparation_runtime.directory }}"
         state: directory
         mode: '0700'
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: Preserve OVN CLI preparation ownership
+    - name: "[07] [SAVE] Save OVN CLI directory ownership"
       ansible.builtin.copy:
         dest: "{{ cutover_preparation_runtime.directory }}/owner.json"
         content: "{{ cutover_preparation_runtime | to_nice_json }}"
         mode: '0600'
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: Copy pre-existing VM port IDs before freeze
+    - name: "[07] Copy existing VM port IDs to OVN CLI host"
       ansible.builtin.copy:
         src: "{{ migration_run_dir }}/compute-port-ids.txt"
         dest: "{{ cutover_preparation_runtime.ports_path }}"
         mode: '0600'
       delegate_to: "{{ ovn_cli_host_runtime }}"
 
-- name: Phase 07 - Prepare OpenFlow support while legacy agents and API are running
+- name: "Phase 07 - Prepare OpenFlow support before API freeze"
   hosts: network:compute
   any_errors_fatal: true
   gather_facts: false
@@ -107,13 +107,13 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Add OpenFlow15 before the final pre-freeze readiness checks
+    - name: "[07] Enable OpenFlow15 on br-int"
       ansible.builtin.include_tasks: openflow-preparation-tasks.yml
       vars:
         openflow_protocols: "{{ br_int_protocols }}"
         openflow_evidence_directory: "{{ hostvars['localhost']['migration_run_dir'] }}"
 
-- name: Phase 07 - Complete readiness before starting the freeze timer
+- name: "Phase 07 - Check workloads before stopping Neutron API"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -121,7 +121,7 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Require authoritative Pair B MTU and workload readiness before any Neutron freeze
+    - name: "[07] Check Pair B MTU and workload readiness"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -130,7 +130,7 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: Check the original Pair A capture and anchor without resetting measurement
+    - name: "[07] Check original Pair A capture and measurement anchor"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -139,7 +139,7 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: Mark phase 07 and control-plane downtime start
+    - name: "[07] [TIMER] Start Neutron API downtime"
       ansible.builtin.command:
         argv:
           - python3
@@ -152,21 +152,21 @@
       run_once: true
       changed_when: false
 
-- name: Phase 07 - Freeze all Neutron API workers
+- name: "Phase 07 - Stop Neutron API workers"
   hosts: control
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Stop and disable neutron-server through Kolla systemd
+    - name: "[07] Stop and disable neutron-server"
       ansible.builtin.systemd_service:
         name: "{{ neutron_server_unit }}"
         state: stopped
         enabled: false
         daemon_reload: true
 
-    - name: Assert neutron-server container is stopped where present
+    - name: "[07] Check neutron-server containers are stopped"
       ansible.builtin.shell: |
         set -euo pipefail
         if docker inspect neutron_server >/dev/null 2>&1; then
@@ -176,7 +176,7 @@
         executable: /bin/bash
       changed_when: false
 
-- name: Phase 07 - Arm TCP probes after API freeze and before dataplane cutover
+- name: "Phase 07 - Arm Pair D TCP probes after API freeze"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -184,7 +184,7 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Open the additional Pair D listener and retain its original TCP session
+    - name: "[07] Open additional Pair D listener and establish its session"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -193,7 +193,7 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-- name: Phase 07 - Open additional N-S listeners after API freeze
+- name: "Phase 07 - Arm N-S TCP probes after API freeze"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -201,7 +201,7 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Open additional SNAT and FIP listeners while retaining held sessions
+    - name: "[07] Open additional SNAT and FIP listeners"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -210,7 +210,7 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-- name: Phase 07 - Run Neutron to OVN DB migration exactly once
+- name: "Phase 07 - Migrate Neutron database to OVN"
   hosts: control
   any_errors_fatal: true  # a failed DB sync/compatibility gate must block later plays on every host
   gather_facts: false
@@ -232,7 +232,7 @@
       --entrypoint /bin/bash {{ hostvars['localhost']['cutover_preparation_runtime'].neutron_image | quote }}
       -lc {{ provider_association_entrypoint | quote }} provider-associations
   tasks:
-    - name: Snapshot ProviderResourceAssociation before authoritative migrate mode
+    - name: "[07] Read router provider associations before migration"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ provider_association_container_command }} snapshot
@@ -242,7 +242,7 @@
       run_once: true
       changed_when: false
 
-    - name: Persist provider associations BEFORE on the deployment host
+    - name: "[07] [SAVE] Save router provider associations before migration"
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['migration_run_dir'] }}/provider-associations.before.json"
         content: "{{ provider_associations_before.stdout }}\n"
@@ -250,7 +250,7 @@
       delegate_to: localhost
       run_once: true
 
-    - name: Mark DB migration start
+    - name: "[07] [TIMER] Start database migration measurement"
       ansible.builtin.shell: |
         set -euo pipefail
         date +%s.%N > {{ (hostvars['localhost']['migration_run_dir'] + '/metrics/db_migration.start') | quote }}
@@ -260,7 +260,7 @@
       run_once: true
       changed_when: false
 
-    - name: Run neutron-ovn-db-sync-util migrate
+    - name: "[07] Run neutron-ovn-db-sync-util migrate"
       ansible.builtin.shell: |
         set -euo pipefail
         docker run --rm \
@@ -285,7 +285,7 @@
       failed_when: false  # persist both streams and return code, then fail before any compatibility update
       run_once: true
 
-    - name: Persist authoritative migrate stdout stderr and return code
+    - name: "[07] [SAVE] Save database migration output and return code"
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['migration_run_dir'] }}/db-sync-migrate.log"
         content: |
@@ -298,7 +298,7 @@
       delegate_to: localhost
       run_once: true
 
-    - name: Stop Phase 07 immediately after a failed authoritative migration
+    - name: "[07] Check database migration succeeded"
       ansible.builtin.assert:
         that: db_sync_migrate.rc == 0
         fail_msg: "neutron-ovn-db-sync-util migrate failed (rc={{ db_sync_migrate.rc }}); see db-sync-migrate.log. Cutover is prohibited."
@@ -306,7 +306,7 @@
 
     # Neutron 24.2.x migrate mode does not convert legacy L3 service provider
     # associations. Use the same in-place model UPDATE as newer upstream Neutron.
-    - name: Apply Caracal L3 provider-association compatibility migration
+    - name: "[07] Convert legacy router provider associations for Caracal"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ provider_association_container_command }} migrate
@@ -316,7 +316,7 @@
       changed_when: provider_associations_migration.rc == 0 and (provider_associations_migration.stdout | from_json).changed_count | int > 0
       run_once: true
 
-    - name: Persist provider compatibility changed count on the deployment host
+    - name: "[07] [SAVE] Save provider conversion result"
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['migration_run_dir'] }}/provider-associations-compatibility.json"
         content: "{{ provider_associations_migration.stdout }}\n"
@@ -324,7 +324,7 @@
       delegate_to: localhost
       run_once: true
 
-    - name: Snapshot ProviderResourceAssociation after compatibility conversion commits
+    - name: "[07] Read router provider associations after conversion"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ provider_association_container_command }} snapshot
@@ -334,7 +334,7 @@
       run_once: true
       changed_when: false
 
-    - name: Persist provider associations AFTER on the deployment host
+    - name: "[07] [SAVE] Save router provider associations after conversion"
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['migration_run_dir'] }}/provider-associations.after.json"
         content: "{{ provider_associations_after.stdout }}\n"
@@ -342,7 +342,7 @@
       delegate_to: localhost
       run_once: true
 
-    - name: Persist and enforce fail-closed verification of legacy provider associations
+    - name: "[07] Verify router provider conversion and save result"
       ansible.builtin.command:
         argv:
           - python3
@@ -353,7 +353,7 @@
       delegate_to: localhost
       run_once: true
 
-    - name: Mark DB migration end
+    - name: "[07] [TIMER] End database migration measurement"
       ansible.builtin.shell: |
         set -euo pipefail
         date +%s.%N > {{ (hostvars['localhost']['migration_run_dir'] + '/metrics/db_migration.end') | quote }}
@@ -363,14 +363,14 @@
       run_once: true
       changed_when: false
 
-- name: Phase 07 - Verify migrated OVN topology exists
+- name: "Phase 07 - Check migrated OVN topology"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Verify NB logical topology and SB datapaths
+    - name: "[07] Check OVN logical topology and datapaths"
       ansible.builtin.shell: |
         set -euo pipefail
         docker exec ovn_northd ovn-nbctl --db='{{ hostvars['localhost']['ovn_nb_connection_runtime'] }}' show | grep -E 'switch|router' >/dev/null
@@ -380,7 +380,7 @@
       run_once: true
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: Mark phase 07 end
+    - name: "[07] [TIMER] End phase 07"
       ansible.builtin.command:
         argv:
           - python3

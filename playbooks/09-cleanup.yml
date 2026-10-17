@@ -1,12 +1,12 @@
 ---
-- name: Phase 09 - Mark legacy cleanup start
+- name: "Phase 09 - Begin legacy ML2/OVS network cleanup"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark phase 09 start
+    - name: "[09] [TIMER] Start phase 09"
       ansible.builtin.command:
         argv:
           - python3
@@ -18,14 +18,14 @@
       run_once: true
       changed_when: false
 
-- name: Phase 09 - Remove legacy ML2/OVS tunnel dataplane
+- name: "Phase 09 - Remove legacy OVS tunnel bridges"
   hosts: network:compute
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Delete br-tun and patch-tun
+    - name: "[09] Delete br-tun and patch-tun"
       ansible.builtin.shell: |
         set -euo pipefail
         docker exec openvswitch_vswitchd ovs-vsctl --if-exists del-br br-tun
@@ -33,14 +33,14 @@
       args:
         executable: /bin/bash
 
-- name: Phase 09 - Remove legacy network namespaces and namespace-owned OVS ports
+- name: "Phase 09 - Remove legacy namespaces and OVS ports"
   hosts: network
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Delete only qrouter/qdhcp namespaces and their ports
+    - name: "[09] Delete qrouter/qdhcp namespaces and their ports"
       ansible.builtin.shell: |
         set -euo pipefail
         tmp=$(mktemp)
@@ -59,7 +59,7 @@
       args:
         executable: /bin/bash
 
-    - name: Remove old OVS-agent br-int/br-ex patch pair in provider-disabled supported scope
+    - name: "[09] Remove legacy br-int/br-ex patch ports"
       ansible.builtin.shell: |
         set -euo pipefail
         docker exec openvswitch_vswitchd ovs-vsctl --if-exists del-port br-int int-br-ex
@@ -67,7 +67,7 @@
       args:
         executable: /bin/bash
 
-    - name: Verify legacy namespaces are gone without requiring local OVN metadata namespaces
+    - name: "[09] Check legacy namespaces are removed"
       ansible.builtin.shell: |
         set -euo pipefail
         ! ip netns list | grep -E '^(qrouter-|qdhcp-)' >/dev/null
@@ -78,7 +78,7 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Mark phase 09 end
+    - name: "[09] [TIMER] End phase 09"
       ansible.builtin.command:
         argv:
           - python3

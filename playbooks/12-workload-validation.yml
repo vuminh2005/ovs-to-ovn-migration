@@ -1,12 +1,12 @@
 ---
-- name: Phase 12 - Collect OVN logical-switch and chassis encapsulation evidence
+- name: "Phase 12 - Collect OVN network evidence"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark phase 12 start
+    - name: "[12] [TIMER] Start phase 12"
       ansible.builtin.command:
         argv:
           - python3
@@ -18,7 +18,7 @@
       run_once: true
       changed_when: false
 
-    - name: Read OVN logical switch names
+    - name: "[12] Read OVN logical switch names"
       ansible.builtin.shell: |
         set -euo pipefail
         docker exec ovn_northd ovn-nbctl --db={{ hostvars['localhost']['ovn_nb_connection_runtime'] | quote }} --format=json --columns=name list Logical_Switch
@@ -27,7 +27,7 @@
       register: validation_switches
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: Read registered chassis encapsulation types
+    - name: "[12] Read OVN host encapsulation types"
       ansible.builtin.shell: |
         set -euo pipefail
         docker exec ovn_northd ovn-sbctl --db={{ hostvars['localhost']['ovn_sb_connection_runtime'] | quote }} --format=json --columns=type list Encap
@@ -36,7 +36,7 @@
       register: validation_encaps
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: Persist OVN evidence on deployment host
+    - name: "[12] [SAVE] Save OVN network evidence"
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['migration_run_dir'] }}/{{ item.name }}"
         content: "{{ item.content }}"
@@ -45,14 +45,14 @@
         - {name: ovn-logical-switches.json, content: "{{ validation_switches.stdout }}"}
         - {name: ovn-encaps.json, content: "{{ validation_encaps.stdout }}"}
 
-- name: Phase 12 - Validate surviving and fresh workloads without automatic rollback
+- name: "Phase 12 - Validate existing and newly created workloads"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Audit existing VXLAN to Geneve segment conversion
+    - name: "[12] Check VXLAN-to-Geneve segment conversion"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -62,7 +62,7 @@
       register: semantics_result
       failed_when: false
 
-    - name: Apply independent post-cutover remediation opt-in to persisted configuration
+    - name: "[12] Load post-cutover remediation policy"
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - {{ migration_run_dir | quote }} {{ (validation_allow_post_cutover_guest_reboot | bool | string) | quote }} {{ validation_post_cutover_dhcp_timeout_seconds | int }} {{ {'ovn_nb': ovn_nb_connection_runtime, 'ovn_sb': ovn_sb_connection_runtime, 'ovn_cli_host': ovn_cli_host_runtime, 'inventory': kolla_inventory_runtime} | to_json | quote }} <<'PYCODE'
@@ -78,7 +78,7 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: Validate surviving EW and NS workloads and provision fresh OVN workloads
+    - name: "[12] Validate existing EW/N-S traffic and create fresh workloads"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -89,26 +89,26 @@
       failed_when: false
       when: validation_workloads_enabled | bool
 
-    - name: Record orchestration failures for final report
+    - name: "[12] [SAVE] Record workload validation failures"
       ansible.builtin.copy:
         dest: "{{ migration_run_dir }}/validation-orchestration.json"
         mode: '0600'
         content: "{{ {'semantics_rc': semantics_result.rc, 'semantics_error': semantics_result.stderr, 'workload_rc': workload_result.rc | default(none), 'workload_error': workload_result.stderr | default('disabled')} | to_nice_json }}"
 
-- name: Phase 12 - Verify fresh VM OVN Southbound bindings before cleanup
+- name: "Phase 12 - Check fresh VM port bindings before cleanup"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Load fresh workload UUID checkpoint from deployment host
+    - name: "[12] Load fresh workload checkpoint"
       ansible.builtin.set_fact:
         fresh_state: "{{ lookup('file', hostvars['localhost']['migration_run_dir'] + '/validation-resources.json', errors='ignore') | default('{}', true) | from_json }}"
-    - name: Resolve fresh Pair C checkpoint with historical fallback
+    - name: "[12] Resolve Pair C resources with legacy checkpoint support"
       ansible.builtin.set_fact:
         fresh_pair_checkpoint: "{{ fresh_state.get('post', {}).get('fresh', fresh_state.get('post', {})) }}"
-    - name: Check each fresh port has an OVN chassis and up true
+    - name: "[12] Check fresh VM ports are bound and up in OVN"
       ansible.builtin.shell: |
         set -euo pipefail
         docker exec ovn_northd ovn-sbctl --db={{ hostvars['localhost']['ovn_sb_connection_runtime'] | quote }} --format=json --columns=chassis,up find Port_Binding logical_port={{ item | quote }} | python3 -c 'import json,sys; rows=json.load(sys.stdin)["data"]; assert len(rows)==1 and rows[0][0][0]=="uuid" and rows[0][1] is True'
@@ -119,35 +119,35 @@
       failed_when: false
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: Persist fresh binding evidence
+    - name: "[12] [SAVE] Save fresh VM binding evidence"
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['migration_run_dir'] }}/post-ovn-bindings.json"
         mode: '0600'
         content: "{{ {'status': ('PASS' if (fresh_bindings.results | default([]) | length == 2 and fresh_bindings.results | map(attribute='rc') | select('equalto', 0) | list | length == 2) else 'UNAVAILABLE'), 'results': fresh_bindings.results | default([])} | to_nice_json }}"
 
 
-- name: Phase 12 - Stop and archive host observers before cleanup
+- name: "Phase 12 - Stop host observers and collect diagnostics"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Stop and fetch all diagnostic observers even after workload validation failure
+    - name: "[12] Stop observers and collect evidence on success or failure"
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", stop, "{{ migration_run_dir }}"]
       changed_when: false
       failed_when: false
       when: migration_diagnostics_enabled | bool
 
-- name: Phase 12 - Stop owned console collector after validation
+- name: "Phase 12 - Stop VM console health collection"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Stop only this run's Nova console collector after all validation evidence is collected
+    - name: "[12] Stop this run's VM console collector"
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - {{ migration_run_dir | quote }} <<'PYCODE'
@@ -167,14 +167,14 @@
       when: validation_workloads_enabled | bool
 
 
-- name: Phase 12 - Finalize authoritative Pair A capture after all validation
+- name: "Phase 12 - Finish packet captures and calculate traffic metrics"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Archive post-validation N-S conntrack even after workload failure
+    - name: "[12] [SAVE] Collect post-validation N-S connection state"
       ansible.builtin.command:
         argv:
           - python3
@@ -186,7 +186,7 @@
       failed_when: false
       when: validation_workloads_enabled | bool
 
-    - name: Stop and archive N-S TCP captures on both PASS and FAIL
+    - name: "[12] Stop and collect N-S TCP captures"
       ansible.builtin.command:
         argv:
           - python3
@@ -198,7 +198,7 @@
       failed_when: false
       when: validation_workloads_enabled | bool
 
-    - name: Stop owned compute capture fetch raw PCAP and calculate strict metrics
+    - name: "[12] Stop Pair A capture, fetch PCAP and calculate metrics"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -208,7 +208,7 @@
       register: capture_finish_result
       failed_when: false
       when: validation_workloads_enabled | bool
-    - name: Preserve capture finalization failure as unavailable evidence
+    - name: "[12] [SAVE] Record capture finalization failure"
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - {{ migration_run_dir | quote }} {{ (capture_finish_result.stderr | default('')) | quote }} <<'PYCODE'
@@ -227,7 +227,7 @@
         - validation_workloads_enabled | bool
         - capture_finish_result.rc | default(0) != 0
 
-    - name: Mark phase 12 end
+    - name: "[12] [TIMER] End phase 12"
       ansible.builtin.command:
         argv:
           - python3

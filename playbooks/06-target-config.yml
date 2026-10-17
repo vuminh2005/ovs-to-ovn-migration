@@ -1,12 +1,12 @@
 ---
-- name: Phase 06 - Prepare target ML2/OVN configuration and MTU
+- name: "Phase 06 - Prepare OVN configuration and network MTU"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark phase 06 start
+    - name: "[06] [TIMER] Start phase 06"
       ansible.builtin.command:
         argv:
           - python3
@@ -18,7 +18,7 @@
       run_once: true
       changed_when: false
 
-    - name: Write target ML2/OVN globals
+    - name: "[06] Write target ML2/OVN settings"
       ansible.builtin.lineinfile:
         path: "{{ kolla_globals_path }}"
         regexp: "^{{ item.key }}:"
@@ -36,7 +36,7 @@
         - { key: enable_neutron_dvr, value: 'no' }
         - { key: enable_neutron_agent_ha, value: 'no' }
 
-    - name: Reduce each existing VXLAN network MTU by VXLAN-to-Geneve delta
+    - name: "[06] Reduce VXLAN network MTU for Geneve"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -60,7 +60,7 @@
       args:
         executable: /bin/bash
 
-    - name: Require owned guest DHCP MTU convergence before DB freeze
+    - name: "[06] Check validation VM MTU convergence before API freeze"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -69,21 +69,21 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: Generate target Neutron config without restarting services
+    - name: "[06] Generate target Neutron configuration without restart"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} genconfig --tags neutron
       args:
         executable: /bin/bash
 
-- name: Phase 06 - Discover generated OVN DB endpoints from authoritative target config
+- name: "Phase 06 - Resolve generated OVN database endpoints"
   hosts: control
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Read generated target Neutron settings
+    - name: "[06] Read generated Neutron settings"
       ansible.builtin.shell: |
         set -euo pipefail
         ml2=/etc/kolla/neutron-server/ml2_conf.ini
@@ -101,7 +101,7 @@
       run_once: true
       changed_when: false
 
-    - name: Publish generated OVN endpoints to deployment host facts
+    - name: "[06] Load OVN database endpoints"
       ansible.builtin.set_fact:
         ovn_nb_connection_runtime: "{{ generated_ovn_connections.stdout_lines[0] }}"
         ovn_sb_connection_runtime: "{{ generated_ovn_connections.stdout_lines[1] }}"
@@ -109,7 +109,7 @@
       delegate_facts: true
       run_once: true
 
-    - name: Save generated target configs in migration checkpoint
+    - name: "[06] [SAVE] Save generated target configuration"
       ansible.builtin.fetch:
         src: "{{ item.src }}"
         dest: "{{ hostvars['localhost']['migration_run_dir'] }}/{{ item.dest }}"
@@ -119,7 +119,7 @@
         - { src: /etc/kolla/neutron-server/neutron.conf, dest: neutron.conf.target }
       run_once: true
 
-- name: Phase 06 - Monitor OVN central before DB migration
+- name: "Phase 06 - Start OVN database monitoring"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -127,17 +127,17 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Preserve rendered NB and SB endpoints for read-only monitors
+    - name: "[06] [SAVE] Save database monitor endpoints"
       ansible.builtin.copy:
         dest: "{{ migration_run_dir }}/diagnostics-central-config.json"
         content: "{{ {'nb': ovn_nb_connection_runtime, 'sb': ovn_sb_connection_runtime} | to_nice_json }}"
         mode: '0600'
-    - name: Start NB SB change monitors before phase 07 migration
+    - name: "[06] Start Northbound and Southbound change monitors"
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", start, "{{ migration_run_dir }}", --role, central]
       changed_when: false
       when: migration_diagnostics_enabled | bool
-    - name: Mark phase 06 end
+    - name: "[06] [TIMER] End phase 06"
       ansible.builtin.command:
         argv:
           - python3

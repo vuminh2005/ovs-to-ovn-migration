@@ -1,5 +1,5 @@
 ---
-- name: Phase 04 - Prepare routed guest validation before migration downtime
+- name: "Phase 04 - Create workloads and start traffic monitoring"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -8,7 +8,7 @@
     - ../group_vars/all.yml
     - ../group_vars/ns-lab.yml
   tasks:
-    - name: Mark phase 04 start
+    - name: "[04] [TIMER] Start phase 04"
       ansible.builtin.command:
         argv:
           - python3
@@ -20,7 +20,7 @@
       run_once: true
       changed_when: false
 
-    - name: Verify resolved prerequisites and validation topology settings
+    - name: "[04] Check validation prerequisites and topology"
       ansible.builtin.assert:
         that:
           - validation_prerequisites_runtime.image.id | length > 0
@@ -38,12 +38,12 @@
         fail_msg: Validation prerequisites must be resolved by 03-validation-prerequisites.yml; check topology settings.
       when: validation_workloads_enabled | bool
 
-    - name: Load authoritative compute placement resolved during precheck
+    - name: "[04] Load resolved compute placement"
       ansible.builtin.set_fact:
         validation_placement_runtime: "{{ lookup('file', migration_run_dir + '/validation-placement.json') | from_json }}"
       when: validation_workloads_enabled | bool
 
-    - name: Save non-secret guest validation configuration
+    - name: "[04] [SAVE] Save workload validation settings"
       ansible.builtin.copy:
         dest: "{{ migration_run_dir }}/validation-config.json"
         mode: '0600'
@@ -52,18 +52,18 @@
         - validation_workloads_enabled | bool
         - not (validation_retry_preparation_runtime | default(false) | bool)
 
-    - name: Persist host observer settings for this run
+    - name: "[04] [SAVE] Save host observer settings"
       ansible.builtin.copy:
         dest: "{{ migration_run_dir }}/diagnostics-config.json"
         mode: '0600'
         content: "{{ {'enabled': migration_diagnostics_enabled | bool, 'sampling_scope': 'outside-cutover', 'directory': migration_diagnostics_directory, 'lifetime': migration_diagnostics_lifetime_seconds | int, 'max_bytes': migration_diagnostics_max_bytes | int, 'reconnect_attempts': migration_diagnostics_reconnect_attempts | int, 'reconnect_window_seconds': migration_diagnostics_reconnect_window_seconds | int, 'tunnel_interface': hostvars['localhost'].get('source_kolla_globals', {}).get('tunnel_interface', 'eth1'), 'external_interface': migration_diagnostics_external_interface, 'ns_enabled': validation_ns_enabled | bool, 'endpoint_ip': ns_endpoint_ip, 'old_port': ns_tcp_port | int, 'new_port': ns_tcp_new_port | int} | to_nice_json }}"
-    - name: Start bounded host observers before workload creation
+    - name: "[04] Start host observers"
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", start, "{{ migration_run_dir }}", --role, core]
       changed_when: false
       when: migration_diagnostics_enabled | bool
 
-    - name: Start EW matrix and NS continuity probes prepare DHCP workload and EW TCP
+    - name: "[04] Create validation workloads and start EW/N-S probes"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -72,7 +72,7 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: Retain initial workload checks separately
+    - name: "[04] [SAVE] Preserve initial workload checks"
       ansible.builtin.copy:
         src: "{{ migration_run_dir }}/pre-workload-checks.json"
         dest: "{{ migration_run_dir }}/initial-workload-checks.json"
@@ -80,7 +80,7 @@
         mode: '0600'
       when: validation_workloads_enabled | bool
 
-    - name: Start secondary guest health console collection before downtime
+    - name: "[04] Start VM console health collection"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -90,11 +90,11 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: Refresh preservation baseline including pre-migration validation VMs
+    - name: "[04] [SAVE] Refresh resource baseline after workload creation"
       ansible.builtin.include_tasks: validation-snapshot-tasks.yml
       when: validation_workloads_enabled | bool
 
-    - name: Capture existing network segment semantics before authoritative migration
+    - name: "[04] [SAVE] Record source network segments"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -102,7 +102,7 @@
       args:
         executable: /bin/bash
 
-    - name: Mark phase 04 end
+    - name: "[04] [TIMER] End phase 04"
       ansible.builtin.command:
         argv:
           - python3

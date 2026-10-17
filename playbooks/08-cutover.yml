@@ -1,5 +1,5 @@
 ---
-- name: Phase 08 - Start dataplane convergence and tenant packet measurement
+- name: "Phase 08 - Begin network takeover by OVN"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -7,7 +7,7 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark phase 08 start
+    - name: "[08] [TIMER] Start phase 08 and OVN port takeover measurement"
       ansible.builtin.command:
         argv:
           - python3
@@ -20,24 +20,24 @@
           - dataplane_convergence.start
       run_once: true
       changed_when: false
-    - name: Verify immutable cutover preparation from the original run
+    - name: "[08] Verify original cutover checkpoint"
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/../scripts/cutover_preparation.py", verify,
                "{{ hostvars['localhost']['migration_run_dir'] }}"]
       register: prepared_cutover_checkpoint
       changed_when: false
-    - name: Load original timeout and run-owned VM port checkpoint for normal or resumed cutover
+    - name: "[08] Load original port checkpoint and timeout"
       ansible.builtin.set_fact:
         cutover_preparation_runtime: "{{ prepared_cutover_checkpoint.stdout | from_json }}"
 
-- name: Phase 08 - Stop legacy Neutron agents on network nodes
+- name: "Phase 08 - Stop legacy agents on network hosts"
   hosts: network
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Disable and stop legacy network-node agents when installed
+    - name: "[08] Stop and disable legacy network agents"
       ansible.builtin.shell: |
         set -euo pipefail
         if systemctl cat {{ item }} >/dev/null 2>&1; then
@@ -48,14 +48,14 @@
         executable: /bin/bash
       loop: "{{ legacy_network_units }}"
 
-- name: Phase 08 - Stop legacy OVS agent on compute nodes
+- name: "Phase 08 - Stop legacy OVS agents on compute hosts"
   hosts: compute
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Disable and stop legacy compute agents when installed
+    - name: "[08] Stop and disable legacy compute agents"
       ansible.builtin.shell: |
         set -euo pipefail
         if systemctl cat {{ item }} >/dev/null 2>&1; then
@@ -66,7 +66,7 @@
         executable: /bin/bash
       loop: "{{ legacy_compute_units }}"
 
-- name: Phase 08 - Normalize br-int for OVN takeover
+- name: "Phase 08 - Check br-int readiness for OVN takeover"
   hosts: network:compute
   any_errors_fatal: true
   gather_facts: false
@@ -74,7 +74,7 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Verify prepared OpenFlow support without reconfiguring br-int during cutover
+    - name: "[08] Verify prepared OpenFlow support on br-int"
       ansible.builtin.include_tasks: openflow-preparation-tasks.yml
       vars:
         openflow_protocols: "{{ br_int_protocols }}"
@@ -82,35 +82,35 @@
         openflow_evidence_stage: cutover-check
         openflow_evidence_directory: "{{ hostvars['localhost']['migration_run_dir'] }}"
 
-- name: Phase 08 - Deploy OVN controller and metadata through Kolla
+- name: "Phase 08 - Deploy OVN controller and metadata agents"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Deploy OVN controller
+    - name: "[08] Deploy OVN controller"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} deploy --tags ovn-controller
       args:
         executable: /bin/bash
 
-    - name: Deploy OVN metadata agents only
+    - name: "[08] Deploy OVN metadata agents"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} deploy --tags neutron --limit neutron-ovn-metadata-agent
       args:
         executable: /bin/bash
 
-- name: Phase 08 - Wait for OVN workload takeover using SB Port_Binding
+- name: "Phase 08 - Wait for OVN to take over existing VM ports"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Verify expected unique OVN chassis registered in Southbound DB
+    - name: "[08] Check expected hosts are registered in OVN"
       ansible.builtin.shell: |
         set -euo pipefail
         actual=$(docker exec ovn_northd ovn-sbctl --db='{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}' list Chassis | grep -c '^_uuid')
@@ -120,7 +120,7 @@
       run_once: true
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: Wait until every pre-existing VM port has chassis and up=true
+    - name: "[08] Wait for all existing VM ports to bind and become up"
       ansible.builtin.shell: |
         set -euo pipefail
         ports={{ hostvars['localhost']['cutover_preparation_runtime'].ports_path | quote }}
@@ -144,12 +144,12 @@
       run_once: true
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: Mark dataplane convergence end
+    - name: "[08] [TIMER] End OVN port takeover measurement"
       ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/dataplane_convergence.end
       run_once: true
       changed_when: false
 
-- name: Phase 08 - Verify chassis-side services and finish cutover
+- name: "Phase 08 - Check OVN services after network takeover"
   hosts: network:compute
   any_errors_fatal: true
   gather_facts: false
@@ -157,12 +157,12 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Verify ovn-controller container is running
+    - name: "[08] Check ovn-controller containers are running"
       ansible.builtin.shell: |
         docker inspect ovn_controller | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
       changed_when: false
 
-    - name: Archive read-only N-S conntrack after OVN takeover before legacy cleanup
+    - name: "[08] [SAVE] Collect N-S connection state before legacy cleanup"
       ansible.builtin.command:
         argv:
           - python3
@@ -175,7 +175,7 @@
       failed_when: false
       when: validation_workloads_enabled | bool
 
-    - name: Mark phase 08 end
+    - name: "[08] [TIMER] End phase 08"
       ansible.builtin.command:
         argv:
           - python3

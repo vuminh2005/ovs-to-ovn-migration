@@ -1,5 +1,5 @@
 ---
-- name: Request asynchronous read-only diagnostics checkpoint
+- name: "[DIAGNOSTICS] Request asynchronous diagnostic checkpoint"
   ansible.builtin.command:
     argv:
       - python3

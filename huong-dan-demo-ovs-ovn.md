@@ -1,364 +1,574 @@
-# Demo ML2/OVS → ML2/OVN với tài nguyên do reset chuẩn bị
+# B. Demo — File 1: dùng bộ reset đã tạo sẵn
 
-Bản cập nhật 17/10/2026. Dùng toàn bộ `final.zip` mới trên controller. Các
-lệnh dưới đây chưa được chạy trên lab khi soạn tài liệu.
+Bắt đầu sau khi reset báo `OVS_4NODE_BASELINE_READY`; bộ external và demo đã có sẵn.
 
-Reset dựng sẵn external và bộ demo. Migration tiếp tục chạy đầy đủ A/B/C/D,
-EW matrix và N-S tự động; chúng dùng chung external nhưng có private topology,
-router và FIP riêng. Migration không tạo probe, reboot hay cleanup VM demo.
-Network demo vẫn được migrate VXLAN → Geneve và giảm MTU 1400 → 1392 theo
-quy trình chung. Snapshot và kiểm tra bảo toàn bao gồm cả bộ demo.
+Tài liệu dùng bộ tên trung tính dưới đây. Khi reset tạo bộ demo với tên mới,
+các biến cấu hình cần khớp bảng này:
 
-## 1. Cấu hình và reset
+| File trong `/root/ovs-to-ovn-migration/` | Biến | Giá trị dùng trong hướng dẫn |
+|---|---|---|
+| `group_vars/reset.yml` | `reset_demo_prefix` | `demo` |
+| `group_vars/all.yml` | `validation_name_prefix` | `validation` |
+| `group_vars/ns-lab.yml` | `ns_shared_external_name` | `shared-external` |
+| `group_vars/ns-lab.yml` | `ns_shared_external_subnet_name` | `shared-external-subnet` |
 
-Mặc định trong `group_vars/ns-lab.yml` và `group_vars/reset.yml`:
+Nếu lab đã được reset với tên cũ, đặt `PREFIX=ovn-demo`,
+`EXT_NET=ovn-shared-external`, `EXT_SUBNET=ovn-shared-external-subnet`
+ở mục 1 để dùng tài nguyên đang có. Đổi biến trong terminal không đổi tên
+tài nguyên. Image/flavor dùng đúng tên đã được reset chuẩn bị.
 
-| Thành phần | Mặc định |
+Chạy từng lệnh theo thứ tự và xem output trước khi sang lệnh tiếp theo.
+Dùng cùng terminal controller A, trừ các lệnh ghi rõ console VM hoặc
+terminal controller B. IP dưới đây là cấu hình lab hiện tại; thay tương ứng
+nếu bạn đã đổi IP khi reset.
+
+| Thành phần | Giá trị |
 |---|---|
-| External dùng chung | `ovn-shared-external`, flat `physnet1`, MTU 1450 |
-| Subnet external | `10.1.0.0/24`, gateway `10.1.0.1`, DHCP tắt |
-| Pool external | `10.1.0.4`–`10.1.0.10` trong dải lab được phép sử dụng |
-| N-S tự động | Router `.4`, FIP `.5` |
-| Bộ demo | Router `.6`, FIP `.7` → VM1 |
-| Demo private | `10.234.0.0/24`, `10.234.1.0/24` |
-| VM1 / VM2 | `ovn-demo-vm1` / `ovn-demo-vm2`, mỗi VM ở một compute/subnet |
-| Console | User `demo`; mật khẩu sinh trong snapshot reset, mode 0600 |
+| External dùng chung | `shared-external`, flat `physnet1`, MTU `1450` |
+| External subnet | `shared-external-subnet`, `10.1.0.0/24`, gateway `10.1.0.1` |
+| Pool external | `10.1.0.4`–`10.1.0.10` |
+| Network/subnet demo 1 | `demo-net1` / `demo-subnet1`, `10.234.0.0/24` |
+| Network/subnet demo 2 | `demo-net2` / `demo-subnet2`, `10.234.1.0/24` |
+| Router demo | `demo-router`, external IP `10.1.0.6` |
+| VM1 / VM2 | `demo-vm1` / `demo-vm2`, IP `10.234.0.11` / `10.234.1.11` |
+| Compute | VM1 trên compute1, VM2 trên compute2 |
+| FIP → VM1 | `10.1.0.7` |
+| Controller eth1 | `10.1.0.187` |
+| Image / flavor | `ovn-validation-ubuntu-24.04` / `ovn-validation.small` |
 
-Các IP/pool này thuộc lab on-link hiện có; không dùng cho một subnet khác
-chưa được cấp. Nếu cấu hình lab thay đổi, sửa biến trước reset. Helper kiểm
-tra pool, bốn IP riêng biệt và CIDR không trùng workload trước khi dừng guest.
+Workload tự động của playbook vẫn chạy đầy đủ, dùng chung external nhưng có
+router, private network, VM và FIP riêng. Các lệnh dưới đây dùng bộ demo riêng.
 
-**Reset xóa deployment/workload hiện tại và dựng lại bộ demo.** Chạy từ đầu
-trước mỗi lần muốn quay một chu kỳ OVS → OVN mới:
-
-```bash
-source /root/venvs/kolla-2024.1/bin/activate
-cd /root/ovs-to-ovn-migration
-ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
-  -e reset_lab_confirm=true
-```
-
-Chỉ tiếp tục khi có `OVS_4NODE_BASELINE_READY`. Marker này chỉ được ghi sau
-khi image/flavor được kiểm tra, hai VM ACTIVE đúng compute, cloud-init đã
-chuẩn bị tài khoản console, gateway port và FIP ACTIVE, và tập tài nguyên
-khớp bộ demo. Nó chưa chứng nhận ba luồng traffic bạn sẽ ping thủ công.
-
-## 2. Nạp đúng tài nguyên của lần reset vừa hoàn tất
-
-Không lấy UUID từ lần reset cũ. Đoạn sau kiểm tra snapshot mới nhất; nếu
-snapshot đó chưa hoàn tất, nó dừng thay vì chọn lùi về một bộ cũ.
+## 1. Controller A — nạp môi trường và tên tài nguyên
 
 ```bash
 source /root/venvs/kolla-2024.1/bin/activate
 source /etc/kolla/admin-openrc.sh
-umask 077
-init_demo_session() {
-RESET_DIR=$(python3 - <<'PY'
-import json
-from pathlib import Path
-root = max(p for p in Path('/root/kolla-reset-snapshots').iterdir() if p.is_dir())
-data = json.loads((root/'reset-complete.json').read_text())
-assert data['status'] == 'OVS_4NODE_BASELINE_READY'
-assert data['demo']['status'] == 'READY'
-print(root)
-PY
-) || return
-DEMO_ROOT="/root/ovn-demo-session-$(basename "$RESET_DIR")"
-mkdir -p "$DEMO_ROOT"
-printf 'RESET_DIR=%q\nDEMO_ROOT=%q\n' "$RESET_DIR" "$DEMO_ROOT" \
-  > /root/ovn-demo-current.env
-
-python3 - "$RESET_DIR" "$DEMO_ROOT" <<'PY' || return
-import json, shlex, sys
-from pathlib import Path
-reset, output = map(Path, sys.argv[1:])
-demo = json.loads((reset/'demo-resources.json').read_text())
-done = json.loads((reset/'reset-complete.json').read_text())
-config = json.loads((reset/'reset-demo-config.json').read_text())
-a, b = demo['vms']
-settings = dict(EXT_NET=demo['external']['network']['id'], ROUTER=demo['router_id'],
-    NET_A=a['network_id'], NET_B=b['network_id'], SUBNET_A=a['subnet_id'], SUBNET_B=b['subnet_id'],
-    VM1=a['id'], VM2=b['id'], VM1_IP=a['ip'], VM2_IP=b['ip'],
-    FIP_ID=demo['floating_ip_id'], FIP_VM1=demo['floating_ip'],
-    COMPUTE1=a['compute'], COMPUTE2=b['compute'], CONTROLLER_ETH1_IP=config['endpoint_ip'],
-    IMAGE=done['image']['name'], FLAVOR=done['flavor']['name'])
-(output/'settings.env').write_text(''.join(f'{k}={shlex.quote(str(v))}\n' for k,v in settings.items()))
-print(json.dumps(demo, indent=2))
-PY
-source "$DEMO_ROOT/settings.env"
-}
-init_demo_session
-```
-
-Nếu dùng `reset_snapshot_root` khác mặc định, thay thư mục trong đoạn chọn
-snapshot. Mọi terminal controller mới đều nạp lại:
-
-```bash
-source /root/venvs/kolla-2024.1/bin/activate
-source /etc/kolla/admin-openrc.sh
-source /root/ovn-demo-current.env
-source "$DEMO_ROOT/settings.env"
-```
-
-## 3. Mở console và kiểm tra baseline trước khi quay
-
-Đọc mật khẩu trên terminal riêng trước khi quay; không đưa file này vào video
-hoặc log migration. Có thể đặt mật khẩu riêng qua extra-vars file của reset
-với biến `reset_demo_console_password`; không truyền mật khẩu trên command line.
-
-```bash
-python3 - "$RESET_DIR/demo-console-credentials.json" <<'PY'
-import json, sys
-data = json.load(open(sys.argv[1]))
-print('Username:', data['username'])
-print('Password:', data['password'])
-PY
-openstack console url show --novnc "$VM1"
-openstack console url show --novnc "$VM2"
-printf 'VM1: ping -D -O -n -i 0.2 -W 1 %s\n' "$VM2_IP"
-printf 'VM2: ping -D -O -n -i 0.2 -W 1 %s\n' "$CONTROLLER_ETH1_IP"
-printf 'Controller: ping -D -O -n -i 0.2 -W 1 %s\n' "$FIP_VM1"
-```
-
-Đăng nhập hai console bằng user/mật khẩu vừa đọc. Thử cả ba hướng trước khi
-quay: VM1 → VM2 (EW), VM2 → controller eth1 (SNAT), controller → FIP VM1.
-MAC/IP gateway demo nằm trong `demo-resources.json` nếu cần đối chiếu uplink.
-Chỉ bắt đầu migration sau khi baseline của cả ba luồng đã thông.
-
-## 4. Show ML2/OVS và lưu UUID/IP
-
-```bash
 cd /root/ovs-to-ovn-migration
+
+EXT_NET=shared-external
+EXT_SUBNET=shared-external-subnet
+IMAGE=ovn-validation-ubuntu-24.04
+FLAVOR=ovn-validation.small
+PREFIX=demo
+NET_A=$PREFIX-net1
+NET_B=$PREFIX-net2
+SUBNET_A=$PREFIX-subnet1
+SUBNET_B=$PREFIX-subnet2
+ROUTER=$PREFIX-router
+VM1=$PREFIX-vm1
+VM2=$PREFIX-vm2
+```
+
+## 2. Trước migration — show ML2/OVS và tài nguyên demo
+
+**Controller A:** show driver và các container trên controller/network/compute.
+
+```bash
 docker exec neutron_server sh -c \
   "grep -E '^[[:space:]]*(mechanism_drivers|tenant_network_types)[[:space:]]*=' /etc/neutron/plugins/ml2/ml2_conf.ini"
 ansible -i /root/multinode control:network:compute -b -m shell \
   -a "docker ps -a | grep -E 'NAMES|neutron_|ovn_|openvswitch'"
-openstack server list --all-projects --long
-openstack network list --long
-openstack subnet list
-openstack router list
-openstack floating ip list
-openstack network show "$EXT_NET" -c id -c router:external \
-  -c provider:network_type -c provider:physical_network -c mtu
 ```
 
-Lưu hàm snapshot chọn trường nhận dạng; MTU/type tenant được xem riêng vì dự
-kiến thay đổi. Không tạo bộ mới khi đang lấy snapshot before/after.
+Kỳ vọng `mechanism_drivers` có `openvswitch`, tenant network type có `vxlan`;
+các agent `neutron_openvswitch_agent`, `neutron_l3_agent`, `neutron_dhcp_agent`
+chạy trên các node tương ứng.
+
+**Network — liệt kê tên/UUID và loại network:**
 
 ```bash
-cat > "$DEMO_ROOT/snapshot-demo.sh" <<'BASH'
-snapshot_demo() {
-  local stage="$1" target="$DEMO_ROOT/$1"
-  mkdir -p "$target"
-  openstack server show "$VM1" -f json -c id -c status -c addresses \
-    -c OS-EXT-SRV-ATTR:host > "$target/vm1.json"
-  openstack server show "$VM2" -f json -c id -c status -c addresses \
-    -c OS-EXT-SRV-ATTR:host > "$target/vm2.json"
-  openstack router show "$ROUTER" -f json -c id -c interfaces_info \
-    -c external_gateway_info > "$target/router.json"
-  openstack floating ip show "$FIP_ID" -f json -c id -c floating_network_id \
-    -c floating_ip_address -c port_id -c fixed_ip_address > "$target/fip.json"
-  openstack network show "$NET_A" -f json -c id -c subnets > "$target/net-a.json"
-  openstack network show "$NET_B" -f json -c id -c subnets > "$target/net-b.json"
-  python3 - "$target" <<'PY'
-import json, sys
-from pathlib import Path
-def canonical(value):
-    if isinstance(value, dict): return {k: canonical(v) for k,v in value.items()}
-    if isinstance(value, list): return sorted((canonical(v) for v in value), key=lambda v: json.dumps(v, sort_keys=True))
-    return value
-for path in Path(sys.argv[1]).glob('*.json'):
-    path.write_text(json.dumps(canonical(json.loads(path.read_text())), sort_keys=True, indent=2)+'\n')
-PY
-}
-BASH
-source "$DEMO_ROOT/snapshot-demo.sh"
-snapshot_demo before
+openstack network list --long
 ```
 
-## 5. Ba luồng ping và terminal migration
+**External network dùng chung — xem tên, UUID, loại và MTU:**
 
-Mở bốn cửa sổ: console VM1, console VM2, terminal controller cho FIP và
-terminal controller để chạy migration. Lấy lệnh/IP thực tế từ bước 3.
+```bash
+openstack network show "$EXT_NET" -c id -c name -c provider:network_type -c mtu
+```
 
-Trong console VM1, với cấu hình mặc định:
+**Private network của VM1:**
+
+```bash
+openstack network show "$NET_A" -c id -c name -c subnets -c provider:network_type -c mtu
+```
+
+**Private network của VM2:**
+
+```bash
+openstack network show "$NET_B" -c id -c name -c subnets -c provider:network_type -c mtu
+```
+
+**Subnet — liệt kê tên/UUID, network và CIDR:**
+
+```bash
+openstack subnet list --long
+```
+
+**Router — liệt kê tên/UUID và trạng thái:**
+
+```bash
+openstack router list --long
+```
+
+**Router demo — xem hai subnet kết nối và external gateway:**
+
+```bash
+openstack router show "$ROUTER" -c id -c name -c interfaces_info -c external_gateway_info
+```
+
+**Instance — liệt kê tên/UUID, trạng thái và IP:**
+
+```bash
+openstack server list --all-projects --long
+```
+
+**VM1 — xem UUID, trạng thái, IP và compute đang chạy:**
+
+```bash
+openstack server show "$VM1" -c id -c name -c status -c addresses -c OS-EXT-SRV-ATTR:host
+```
+
+**VM2 — xem UUID, trạng thái, IP và compute đang chạy:**
+
+```bash
+openstack server show "$VM2" -c id -c name -c status -c addresses -c OS-EXT-SRV-ATTR:host
+```
+
+**FIP — liệt kê UUID, floating IP, fixed IP và port được gán:**
+
+```bash
+openstack floating ip list --long
+```
+
+**FIP của VM1 — lấy ID từ port VM1 rồi xem đúng FIP đó:**
+
+```bash
+PORT_VM1=$(openstack port show "$PREFIX-port1" -f value -c id)
+FIP_ID=$(openstack floating ip list --port "$PORT_VM1" -f value -c ID)
+openstack floating ip show "$FIP_ID" -c id -c status -c floating_ip_address \
+  -c floating_network_id -c fixed_ip_address -c port_id
+```
+
+**Lấy địa chỉ FIP VM1 để dùng khi ping từ controller:**
+
+```bash
+FIP_VM1=$(openstack floating ip show "$FIP_ID" -f value -c floating_ip_address)
+printf 'FIP VM1: %s\n' "$FIP_VM1"
+```
+
+Ghi nhận trên màn hình UUID của network/subnet/router/VM/FIP, private IP,
+FIP và compute của hai VM. Hai VM phải ở hai compute và hai subnet khác nhau.
+
+## 3. Trước migration — mở console và chạy ba luồng ping
+
+**Controller A:** lấy hai URL noVNC.
+
+```bash
+openstack console url show --novnc "$VM1"
+openstack console url show --novnc "$VM2"
+printf 'Controller → FIP VM1: ping -D -O -n -i 0.2 -W 1 %s\n' "$FIP_VM1"
+```
+
+Mở hai URL trong trình duyệt, đăng nhập user `demo`. Dùng mật khẩu đã đặt
+khi tạo VM; nếu VM do reset tạo, đọc mật khẩu từ `credentials_file` mà reset
+đã in ra (`demo-console-credentials.json`) trước khi quay demo.
+
+**Console VM1 — EW, khác compute/subnet:**
 
 ```bash
 ping -D -O -n -i 0.2 -W 1 10.234.1.11
 ```
 
-Trong console VM2:
+**Console VM2 — NS outbound tới eth1 controller:**
 
 ```bash
 ping -D -O -n -i 0.2 -W 1 10.1.0.187
 ```
 
-Terminal controller dành cho FIP:
+**Controller B — NS inbound tới FIP của VM1:**
 
 ```bash
-ping -D -O -n -i 0.2 -W 1 "$FIP_VM1" 2>&1 | tee "$DEMO_ROOT/demo-fip-ping.log"
+ping -D -O -n -i 0.2 -W 1 10.1.0.7
 ```
 
-`-D` in timestamp; `-O` thông báo request trước chưa có phản hồi, không phải
-kết luận cuối cùng rằng gói đã mất. Ctrl+C mới có thống kê tổng kết. Giữ ba
-ping chạy suốt migration và dùng timer ngoài như bố cục demo đã chọn.
+Cả ba luồng phải có phản hồi trước khi bắt đầu. Giữ chúng chạy suốt migration.
+`-D` in timestamp Unix; `-O` báo request trước chưa nhận được phản hồi,
+chưa phải kết luận packet loss cuối cùng. Ctrl+C mới hiện thống kê tổng kết.
 
-Ở terminal migration, nạp môi trường theo bước 2 rồi chạy lệnh bình thường;
-không có biến tắt workload tự động:
+## 4. Bật timer ngoài và chạy migration
+
+1. Mở stopwatch trên điện thoại hoặc trình duyệt, đặt về `00:00`.
+2. Bấm Start ngay trước khi chạy lệnh migration ở controller A.
+3. Quan sát đồng thời ba cửa sổ ping và task Ansible đang chạy.
+
+**Controller A:**
 
 ```bash
-cd /root/ovs-to-ovn-migration
-set -o pipefail
-ansible-playbook -i /root/multinode migrate-to-ovn.yml \
-  2>&1 | tee "$DEMO_ROOT/migration.log"
-migration_rc=${PIPESTATUS[0]}
+date -Ins
+ansible-playbook -i /root/multinode migrate-to-ovn.yml
+migration_rc=$?
 printf 'Migration exit code: %s\n' "$migration_rc"
+date -Ins
 ```
 
-## 6. Sau migration: show OVN và đối chiếu
+Trong migration, ghi thời điểm bắt đầu thiếu phản hồi và thời điểm phản hồi
+trở lại ổn định cho từng luồng. Ghi cả timestamp ping, số giây trên stopwatch
+và tên `TASK [...]` đang hiển thị. Nếu mất nhiều đợt, ghi thêm từng đợt.
 
-Chờ ba luồng demo thông ổn định rồi Ctrl+C để hiện thống kê. Tiếp tục dùng
-đúng UUID/IP cũ trong `settings.env`:
+| Luồng | Gián đoạn: timestamp / timer ngoài / task | Phục hồi: timestamp / timer ngoài / task | Gián đoạn quan sát được (s) |
+|---|---|---|---|
+| VM1 → VM2 (EW) | … | … | … |
+| VM2 → controller eth1 (NS outbound) | … | … | … |
+| Controller eth1 → FIP VM1 (NS inbound) | … | … | … |
+
+Để ghi downtime thực tế, đánh dấu reply cuối trước đợt mất và reply đầu sau
+đợt mất; lấy chênh lệch timestamp hai reply này làm khoảng gián đoạn quan sát.
+Stopwatch đối chiếu hai mốc đó; độ phân giải ping là `0.2 s` và thao tác ghi
+tay có sai số. Tên task là task quan sát cùng thời điểm, chưa kết luận nguyên nhân.
+
+Các mốc để nhận biết trên terminal migration:
+
+- `Mark phase 07 and control-plane downtime start`: bắt đầu timer control-plane.
+- Phase 08: dừng legacy agents, `Deploy OVN controller`, chờ OVN takeover.
+- Phase 09: dọn dataplane legacy.
+- `Mark control-plane downtime end` ở phase 10: API Neutron dùng được trở lại.
+
+Control-plane downtime và khoảng mất ping là hai phép đo riêng. Giữ ping
+chạy cho tới khi cả ba luồng phục hồi ổn định; dừng stopwatch khi playbook kết thúc.
+
+## 5. Sau migration — show ML2/OVN và đối chiếu bộ cũ
+
+Chỉ làm phần này khi migration hoàn tất thành công. **Controller A:**
 
 ```bash
 docker exec neutron_server sh -c \
   "grep -E '^[[:space:]]*(mechanism_drivers|tenant_network_types)[[:space:]]*=' /etc/neutron/plugins/ml2/ml2_conf.ini"
 ansible -i /root/multinode control:network:compute -b -m shell \
   -a "docker ps -a | grep -E 'NAMES|neutron_|ovn_|openvswitch'"
-source "$DEMO_ROOT/snapshot-demo.sh"
-snapshot_demo after
-diff -ru "$DEMO_ROOT/before" "$DEMO_ROOT/after"
-openstack network show "$NET_A" -c id -c provider:network_type -c mtu
-openstack network show "$NET_B" -c id -c provider:network_type -c mtu
-openstack network show "$EXT_NET" -c id -c provider:network_type -c mtu
 ```
 
-Tenant phải là Geneve/1392, external vẫn flat/1450. Legacy agents có thể còn
-container trạng thái Exited; OVS daemon vẫn chạy. Không cần trình bày timer
-Port_Binding trong phần demo.
-
-## 7. Report và bằng chứng giữ tài nguyên
-
-Lấy run mới nhất, không lấy lùi về report của run thành công cũ:
+**Network — liệt kê tên/UUID và loại network:**
 
 ```bash
-RUN_DIR=$(python3 - <<'PY'
-from pathlib import Path
-print(max(p.parent for p in Path('/root/ovs-to-ovn-backup').glob('*/runtime.json')))
-PY
-)
-cat "$RUN_DIR/migration-report.txt"
-python3 - "$RUN_DIR/migration-report.json" <<'PY'
-import json, sys
-data = json.load(open(sys.argv[1]))
-print(json.dumps(data['preexisting_resources_preservation'], indent=2))
-PY
+openstack network list --long
 ```
 
-Kỳ vọng `preexisting_resources_preservation.status=PASS`, scope
-`after-workload-cleanup`, với UUID demo còn nguyên. TXT vẫn là các phép đo
-của workload tự động; các ping bạn mở thủ công không được gán thành metric
-trong report. Gián đoạn demo được xem trực tiếp qua ba cửa sổ/timer và log.
-
-Nếu migration lỗi, giữ run và log để điều tra; không chạy lại từ phase 00
-sau cutover. Các entrypoint resume tiếp tục dùng shared external/checkpoint
-của run gốc. Reset tiếp theo sẽ dựng lại cả demo và đổi UUID.
-
-## 8. Tạo bộ mới trên OVN
-
-Giữ bộ demo cũ để đối chiếu. Dùng prefix/subnet khác và external có sẵn;
-chỉ tạo bộ mới sau khi migration hoàn tất. Phần dưới là thao tác demo thủ
-công, không được migration nhận ownership.
-
-Tạo user-data cho VM mới bằng cùng tài khoản console, chỉ lưu hash:
+**External network dùng chung — xem tên, UUID, loại và MTU:**
 
 ```bash
-python3 - "$RESET_DIR/demo-console-credentials.json" "$DEMO_ROOT/cloud-init.yaml" <<'PY'
-import json, os, subprocess, sys, yaml
-data = json.load(open(sys.argv[1]))
-digest = subprocess.run(['openssl','passwd','-6','-stdin'], input=data['password']+'\n',
-    text=True, capture_output=True, check=True).stdout.strip()
-config = dict(users=['default', dict(name=data['username'], groups=['sudo'], shell='/bin/bash',
-    lock_passwd=False, hashed_passwd=digest, sudo='ALL=(ALL) NOPASSWD:ALL')],
-    ssh_pwauth=False, chpasswd=dict(expire=False))
-with open(sys.argv[2], 'w') as stream: stream.write('#cloud-config\n'+yaml.safe_dump(config))
-os.chmod(sys.argv[2], 0o600)
-PY
+openstack network show "$EXT_NET" -c id -c name -c provider:network_type -c mtu
+```
+
+**Private network của VM1:**
+
+```bash
+openstack network show "$NET_A" -c id -c name -c subnets -c provider:network_type -c mtu
+```
+
+**Private network của VM2:**
+
+```bash
+openstack network show "$NET_B" -c id -c name -c subnets -c provider:network_type -c mtu
+```
+
+**Subnet — liệt kê tên/UUID, network và CIDR:**
+
+```bash
+openstack subnet list --long
+```
+
+**Router — liệt kê tên/UUID và trạng thái:**
+
+```bash
+openstack router list --long
+```
+
+**Router demo — xem hai subnet kết nối và external gateway:**
+
+```bash
+openstack router show "$ROUTER" -c id -c name -c interfaces_info -c external_gateway_info
+```
+
+**Instance — liệt kê tên/UUID, trạng thái và IP:**
+
+```bash
+openstack server list --all-projects --long
+```
+
+**VM1 — xem UUID, trạng thái, IP và compute đang chạy:**
+
+```bash
+openstack server show "$VM1" -c id -c name -c status -c addresses -c OS-EXT-SRV-ATTR:host
+```
+
+**VM2 — xem UUID, trạng thái, IP và compute đang chạy:**
+
+```bash
+openstack server show "$VM2" -c id -c name -c status -c addresses -c OS-EXT-SRV-ATTR:host
+```
+
+**FIP — liệt kê UUID, floating IP, fixed IP và port được gán:**
+
+```bash
+openstack floating ip list --long
+```
+
+**FIP của VM1 — lấy ID từ port VM1 rồi xem đúng FIP đó:**
+
+```bash
+PORT_VM1=$(openstack port show "$PREFIX-port1" -f value -c id)
+FIP_ID=$(openstack floating ip list --port "$PORT_VM1" -f value -c ID)
+openstack floating ip show "$FIP_ID" -c id -c status -c floating_ip_address \
+  -c floating_network_id -c fixed_ip_address -c port_id
+```
+
+**Lấy địa chỉ FIP VM1 để dùng khi ping từ controller:**
+
+```bash
+FIP_VM1=$(openstack floating ip show "$FIP_ID" -f value -c floating_ip_address)
+printf 'FIP VM1: %s\n' "$FIP_VM1"
+```
+
+Đối chiếu với phần trước migration ngay trên màn hình:
+
+- Driver có `ovn`; tenant network type có `geneve`; OVN controller/metadata
+  và OVN DB/northd chạy trên các node tương ứng. Legacy agents có thể còn ở
+  trạng thái `Exited`; `openvswitch_db`/`openvswitch_vswitchd` vẫn chạy.
+- UUID network/subnet/router/VM/FIP giữ nguyên; private IP, FIP, compute,
+  router interfaces và gán FIP tới VM1 giữ nguyên. Hai VM `ACTIVE`.
+- Private network đổi VXLAN/MTU `1400` → Geneve/MTU `1392`.
+  External giữ flat/MTU `1450`.
+
+Khi ba luồng đã có phản hồi ổn định, Ctrl+C ở từng cửa sổ ping để show thống kê.
+
+## 6. Show downtime và đối chiếu timer
+
+**Controller A:** dán đường dẫn `Text report` mà playbook vừa in cuối run,
+rồi đọc report đó:
+
+```bash
+read -rp 'Đường dẫn Text report: ' REPORT_TXT
+cat "$REPORT_TXT"
+```
+
+- `Total run duration`: đối chiếu thời gian chạy trên stopwatch, có sai lệch
+  do thời điểm bấm Start/Stop thủ công.
+- `Control-plane downtime`: đối chiếu hai task bắt đầu/kết thúc ở phase 07/10.
+- `Dataplane downtime`: xem ICMP EW khác compute/subnet, ICMP NS outbound
+  và ICMP NS inbound; đối chiếu khoảng mất/phục hồi đã ghi trên ba console.
+
+Report đo các VM/probe tự động; ba ping demo là luồng riêng, nên số giây
+có thể khác. Dùng số đo ICMP để đối chiếu ICMP; các mục TCP là phép đo khác.
+
+## 7. Sau migration — tạo bộ mới trên OVN và kiểm tra EW/NS
+
+Giữ bộ cũ để trình diễn tài nguyên trước migration còn hoạt động. Tạo bộ
+`demo-new-*` với hai subnet mới và dùng lại external đã có.
+**Controller A:** lấy đúng tên host Nova của hai compute từ hai VM cũ,
+rồi đổi biến sang bộ mới.
+
+```bash
+COMPUTE1=$(openstack server show "$VM1" -f value -c OS-EXT-SRV-ATTR:host)
+COMPUTE2=$(openstack server show "$VM2" -f value -c OS-EXT-SRV-ATTR:host)
+PREFIX=demo-new
+NET_A=$PREFIX-net1
+NET_B=$PREFIX-net2
+SUBNET_A=$PREFIX-subnet1
+SUBNET_B=$PREFIX-subnet2
+ROUTER=$PREFIX-router
+VM1=$PREFIX-vm1
+VM2=$PREFIX-vm2
+NET_TYPE=geneve
+NET_MTU=1392
+CIDR_A=10.235.0.0/24
+CIDR_B=10.235.1.0/24
+VM1_IP=10.235.0.11
+VM2_IP=10.235.1.11
+```
+
+Đặt mật khẩu console cho hai VM sẽ tạo ở bước này. Nhớ mật khẩu để đăng
+nhập user `demo`; user-data chỉ chứa hash mật khẩu.
+
+```bash
+umask 077
+read -rsp 'Mật khẩu console cho hai VM: ' DEMO_PASSWORD
+printf '\n'
+PASSWORD_HASH=$(printf '%s\n' "$DEMO_PASSWORD" | openssl passwd -6 -stdin)
+unset DEMO_PASSWORD
+CLOUD_INIT=/root/demo-after-cloud-init.yaml
+cat > "$CLOUD_INIT" <<EOF
+#cloud-config
+users:
+  - default
+  - name: demo
+    groups: [sudo]
+    shell: /bin/bash
+    lock_passwd: false
+    hashed_passwd: '$PASSWORD_HASH'
+    sudo: 'ALL=(ALL) NOPASSWD:ALL'
+ssh_pwauth: false
+chpasswd:
+  expire: false
+EOF
+unset PASSWORD_HASH
 ```
 
 ```bash
-cat > "$DEMO_ROOT/create-demo-pair.sh" <<'BASH'
-create_demo_pair() {
-  local prefix="$1" cidr_a="$2" cidr_b="$3"
-  local ip_a="$4" ip_b="$5" net_type="$6" net_mtu="$7"
+openstack network create --provider-network-type "$NET_TYPE" --mtu "$NET_MTU" "$NET_A"
+openstack network create --provider-network-type "$NET_TYPE" --mtu "$NET_MTU" "$NET_B"
+openstack subnet create --network "$NET_A" --subnet-range "$CIDR_A" --dhcp "$SUBNET_A"
+openstack subnet create --network "$NET_B" --subnet-range "$CIDR_B" --dhcp "$SUBNET_B"
 
-  NET_A="$prefix-net-a"
-  NET_B="$prefix-net-b"
-  SUBNET_A="$prefix-subnet-a"
-  SUBNET_B="$prefix-subnet-b"
-  ROUTER="$prefix-router"
-  SG="$prefix-sg"
-  VM1="$prefix-vm1"
-  VM2="$prefix-vm2"
+openstack security group create "$PREFIX-security"
+openstack security group rule create --ingress --ethertype IPv4 \
+  --protocol icmp --remote-ip 0.0.0.0/0 "$PREFIX-security"
 
-  openstack network create --provider-network-type "$net_type" \
-    --mtu "$net_mtu" "$NET_A" || return
-  openstack network create --provider-network-type "$net_type" \
-    --mtu "$net_mtu" "$NET_B" || return
-  openstack subnet create --network "$NET_A" --subnet-range "$cidr_a" \
-    --dhcp "$SUBNET_A" || return
-  openstack subnet create --network "$NET_B" --subnet-range "$cidr_b" \
-    --dhcp "$SUBNET_B" || return
+openstack router create "$ROUTER"
+openstack router add subnet "$ROUTER" "$SUBNET_A"
+openstack router add subnet "$ROUTER" "$SUBNET_B"
+openstack router set --external-gateway "$EXT_NET" --enable-snat \
+  "$ROUTER"
 
-  openstack security group create "$SG" || return
-  openstack security group rule create --ingress --ethertype IPv4 \
-    --protocol icmp --remote-ip 0.0.0.0/0 "$SG" || return
-  openstack security group rule list "$SG" || return
+openstack port create --network "$NET_A" \
+  --fixed-ip subnet="$SUBNET_A",ip-address="$VM1_IP" \
+  --security-group "$PREFIX-security" "$PREFIX-port1"
+openstack port create --network "$NET_B" \
+  --fixed-ip subnet="$SUBNET_B",ip-address="$VM2_IP" \
+  --security-group "$PREFIX-security" "$PREFIX-port2"
 
-  openstack router create "$ROUTER" || return
-  openstack router add subnet "$ROUTER" "$SUBNET_A" || return
-  openstack router add subnet "$ROUTER" "$SUBNET_B" || return
-  openstack router set --external-gateway "$EXT_NET" --enable-snat "$ROUTER" || return
+openstack --os-compute-api-version 2.74 server create \
+  --image "$IMAGE" --flavor "$FLAVOR" --host "$COMPUTE1" \
+  --port "$PREFIX-port1" --user-data "$CLOUD_INIT" --wait "$VM1"
+openstack --os-compute-api-version 2.74 server create \
+  --image "$IMAGE" --flavor "$FLAVOR" --host "$COMPUTE2" \
+  --port "$PREFIX-port2" --user-data "$CLOUD_INIT" --wait "$VM2"
 
-  openstack port create --network "$NET_A" \
-    --fixed-ip subnet="$SUBNET_A",ip-address="$ip_a" \
-    --security-group "$SG" "$prefix-port1" || return
-  openstack port create --network "$NET_B" \
-    --fixed-ip subnet="$SUBNET_B",ip-address="$ip_b" \
-    --security-group "$SG" "$prefix-port2" || return
+PORT_VM1=$(openstack port show "$PREFIX-port1" -f value -c id)
+openstack floating ip create --port "$PORT_VM1" "$EXT_NET"
+```
 
-  openstack --os-compute-api-version 2.74 server create \
-    --image "$IMAGE" --flavor "$FLAVOR" --host "$COMPUTE1" \
-    --port "$prefix-port1" --user-data "$DEMO_ROOT/cloud-init.yaml" \
-    --wait "$VM1" || return
-  openstack --os-compute-api-version 2.74 server create \
-    --image "$IMAGE" --flavor "$FLAVOR" --host "$COMPUTE2" \
-    --port "$prefix-port2" --user-data "$DEMO_ROOT/cloud-init.yaml" \
-    --wait "$VM2" || return
+Tiếp tục khi cả hai VM `ACTIVE`; chờ cloud-init hoàn tất để đăng nhập
+console. Nếu một lệnh tạo báo lỗi, xử lý lỗi đó trước khi chạy lệnh tiếp theo.
 
-  PORT_VM1=$(openstack port show "$prefix-port1" -f value -c id) || return
-  openstack floating ip create --port "$PORT_VM1" "$EXT_NET" || return
-  FIP_ID=$(openstack floating ip list --port "$PORT_VM1" -f value -c ID) || return
-  FIP_VM1=$(openstack floating ip show "$FIP_ID" -f value -c floating_ip_address) || return
-  VM1_IP="$ip_a"
-  VM2_IP="$ip_b"
-}
-BASH
+External IP của router mới và FIP mới được Neutron cấp từ pool dùng chung.
+Các biến hiện đang trỏ tới bộ `demo-new-*`. **Controller A:** chạy các lệnh
+sau để show bộ mới:
 
-source "$DEMO_ROOT/create-demo-pair.sh"
-create_demo_pair ovn-demo-new 10.235.0.0/24 10.235.1.0/24 \
-  10.235.0.11 10.235.1.11 geneve 1392
-declare -p VM1 VM2 VM1_IP VM2_IP ROUTER NET_A NET_B FIP_ID FIP_VM1 \
-  > "$DEMO_ROOT/new.env"
+**Network — liệt kê tên/UUID và loại network:**
+
+```bash
+openstack network list --long
+```
+
+**External network dùng chung — xem tên, UUID, loại và MTU:**
+
+```bash
+openstack network show "$EXT_NET" -c id -c name -c provider:network_type -c mtu
+```
+
+**Private network của VM1:**
+
+```bash
+openstack network show "$NET_A" -c id -c name -c subnets -c provider:network_type -c mtu
+```
+
+**Private network của VM2:**
+
+```bash
+openstack network show "$NET_B" -c id -c name -c subnets -c provider:network_type -c mtu
+```
+
+**Subnet — liệt kê tên/UUID, network và CIDR:**
+
+```bash
+openstack subnet list --long
+```
+
+**Router — liệt kê tên/UUID và trạng thái:**
+
+```bash
+openstack router list --long
+```
+
+**Router demo — xem hai subnet kết nối và external gateway:**
+
+```bash
+openstack router show "$ROUTER" -c id -c name -c interfaces_info -c external_gateway_info
+```
+
+**Instance — liệt kê tên/UUID, trạng thái và IP:**
+
+```bash
+openstack server list --all-projects --long
+```
+
+**VM1 — xem UUID, trạng thái, IP và compute đang chạy:**
+
+```bash
+openstack server show "$VM1" -c id -c name -c status -c addresses -c OS-EXT-SRV-ATTR:host
+```
+
+**VM2 — xem UUID, trạng thái, IP và compute đang chạy:**
+
+```bash
+openstack server show "$VM2" -c id -c name -c status -c addresses -c OS-EXT-SRV-ATTR:host
+```
+
+**FIP — liệt kê UUID, floating IP, fixed IP và port được gán:**
+
+```bash
+openstack floating ip list --long
+```
+
+**FIP của VM1 — lấy ID từ port VM1 rồi xem đúng FIP đó:**
+
+```bash
+PORT_VM1=$(openstack port show "$PREFIX-port1" -f value -c id)
+FIP_ID=$(openstack floating ip list --port "$PORT_VM1" -f value -c ID)
+openstack floating ip show "$FIP_ID" -c id -c status -c floating_ip_address \
+  -c floating_network_id -c fixed_ip_address -c port_id
+```
+
+**Lấy địa chỉ FIP VM1 để dùng khi ping từ controller:**
+
+```bash
+FIP_VM1=$(openstack floating ip show "$FIP_ID" -f value -c floating_ip_address)
+printf 'FIP VM1: %s\n' "$FIP_VM1"
+```
+
+**Mở console VM1 mới:**
+
+```bash
 openstack console url show --novnc "$VM1"
-openstack console url show --novnc "$VM2"
-printf 'New VM1 → new VM2: ping -D -O -n -i 0.2 -W 1 %s\n' "$VM2_IP"
-printf 'New VM2 → controller: ping -D -O -n -i 0.2 -W 1 %s\n' "$CONTROLLER_ETH1_IP"
-printf 'Controller → new FIP: ping -D -O -n -i 0.2 -W 1 %s\n' "$FIP_VM1"
 ```
 
-Hàm tạo mới; không chạy lại trên cùng prefix nếu đã tạo một phần. Các IP
-external được Neutron cấp từ pool dùng chung. Sau khi automatic cleanup kết
-thúc, `.4/.5` được trả lại pool; `.6/.7` của bộ demo cũ vẫn được giữ. Nếu cần
-quay lại bộ cũ, source lại `"$DEMO_ROOT/settings.env"`; bộ mới nằm trong
-`new.env`. Không tạo external flat thứ hai trên cùng physnet.
+**Mở console VM2 mới:**
+
+```bash
+openstack console url show --novnc "$VM2"
+```
+
+**In lệnh ping FIP mới để nhập ở controller B:**
+
+```bash
+printf 'ping -D -O -n -i 0.2 -W 1 %s\n' "$FIP_VM1"
+```
+
+Đăng nhập hai console mới bằng user `demo` và mật khẩu vừa đặt.
+
+**Console VM1 mới — EW:**
+
+```bash
+ping -D -O -n -i 0.2 -W 1 10.235.1.11
+```
+
+**Console VM2 mới — NS outbound:**
+
+```bash
+ping -D -O -n -i 0.2 -W 1 10.1.0.187
+```
+
+**Controller B — NS inbound:** chạy đúng lệnh chứa FIP mà controller A vừa in.
+Cả ba luồng phải có phản hồi. Ctrl+C để show thống kê và kết thúc demo.
+

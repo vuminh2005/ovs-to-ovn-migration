@@ -1,10 +1,10 @@
 ---
-- name: Operate checkpointed N-S TCP diagnostics without changing network state
+- name: "[N-S] Manage N-S TCP captures and connection evidence"
   hosts: localhost
   gather_facts: false
   become: true
   tasks:
-    - name: Prepare owned diagnostic capture directory
+    - name: "[N-S] Create run-owned N-S capture directory"
       ansible.builtin.file:
         path: "{{ ns_diag_checkpoint.config.directory }}"
         state: directory
@@ -12,7 +12,7 @@
       delegate_to: "{{ ns_diag_checkpoint.host }}"
       when: ns_diag_action in ['start', 'inspect']
 
-    - name: Stage diagnostic helpers
+    - name: "[N-S] Stage N-S diagnostic helpers"
       ansible.builtin.copy:
         src: "../scripts/{{ item }}"
         dest: "{{ ns_diag_checkpoint.config.directory }}/{{ item }}"
@@ -21,7 +21,7 @@
       delegate_to: "{{ ns_diag_checkpoint.host }}"
       when: ns_diag_action in ['start', 'inspect']
 
-    - name: Operate the original TCP capture only
+    - name: "[N-S] Run N-S capture control operation"
       ansible.builtin.command:
         argv:
           - python3
@@ -33,7 +33,7 @@
       delegate_to: "{{ ns_diag_checkpoint.host }}"
       when: ns_diag_action != 'conntrack'
 
-    - name: Read legacy and OVN conntrack tuples without modifying either
+    - name: "[N-S] Read legacy and OVN connection tracking state"
       ansible.builtin.script:
         cmd: "../scripts/ns_diagnostics.py conntrack /tmp {{ ns_diag_checkpoint.config | to_json | quote }}"
         executable: python3
@@ -41,13 +41,13 @@
       delegate_to: "{{ ns_diag_checkpoint.host }}"
       when: ns_diag_action == 'conntrack'
 
-    - name: Persist diagnostic operation result
+    - name: "[N-S] [SAVE] Save N-S diagnostic result"
       ansible.builtin.copy:
         dest: "{{ ns_diag_operation_file }}"
         content: "{{ ns_diag_conntrack.stdout if ns_diag_action == 'conntrack' else ns_diag_operation.stdout }}"
         mode: '0600'
 
-    - name: Archive stopped TCP PCAP and capture logs on deployment host
+    - name: "[N-S] Fetch stopped N-S captures and logs"
       ansible.builtin.fetch:
         src: "{{ ns_diag_checkpoint.config.directory }}/{{ item }}"
         dest: "{{ ns_diag_local_directory }}/{{ item }}"

@@ -1,5 +1,5 @@
 ---
-- name: Phase 05 - Stage OVN central while Neutron remains ML2/OVS
+- name: "Phase 05 - Deploy OVN central services alongside ML2/OVS"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -7,7 +7,7 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark phase 05 start
+    - name: "[05] [TIMER] Start phase 05"
       ansible.builtin.command:
         argv:
           - python3
@@ -19,7 +19,7 @@
       run_once: true
       changed_when: false
 
-    - name: Enable OVN infrastructure but keep Neutron on OVS
+    - name: "[05] Enable OVN services while keeping ML2/OVS active"
       ansible.builtin.lineinfile:
         path: "{{ kolla_globals_path }}"
         regexp: "^{{ item.key }}:"
@@ -29,7 +29,7 @@
         - { key: enable_ovn, value: 'yes' }
         - { key: neutron_plugin_agent, value: 'openvswitch' }
 
-    - name: Ensure all target images before MTU changes or downtime using local images first
+    - name: "[05] Prepare target container images before downtime"
       ansible.builtin.command:
         argv:
           - python3
@@ -42,14 +42,14 @@
           - --globals
           - "{{ kolla_globals_path }}"
 
-    - name: Deploy OVN NB/SB DB and northd only
+    - name: "[05] Deploy OVN databases and northd"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} deploy --tags ovn-db
       args:
         executable: /bin/bash
 
-- name: Phase 05 - Verify OVN central process is present
+- name: "Phase 05 - Check OVN central service"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -57,14 +57,14 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Verify northd container is running
+    - name: "[05] Check northd container is running"
       ansible.builtin.shell: |
         docker inspect ovn_northd | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
       run_once: true
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
 
-    - name: Mark phase 05 end
+    - name: "[05] [TIMER] End phase 05"
       ansible.builtin.command:
         argv:
           - python3

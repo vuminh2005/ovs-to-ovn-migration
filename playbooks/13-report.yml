@@ -1,12 +1,12 @@
 ---
-- name: Phase 13 - Build migration metrics report
+- name: "Phase 13 - Finalize workloads and publish migration report"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark phase 13 start
+    - name: "[13] [TIMER] Start phase 13"
       ansible.builtin.command:
         argv:
           - python3
@@ -16,7 +16,7 @@
       run_once: true
       changed_when: false
 
-    - name: Build JSON and human-readable migration report
+    - name: "[13] Build initial JSON and text reports"
       ansible.builtin.shell: |
         set -euo pipefail
         python3 {{ (playbook_dir + '/../scripts/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }}
@@ -25,7 +25,7 @@
       register: migration_report_output
       changed_when: false
 
-    - name: Finalize owned pairs only after all guest binding semantics and probe evidence passes
+    - name: "[13] Finalize and clean up owned workloads when checks pass"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -36,7 +36,7 @@
       failed_when: false
       when: validation_workloads_enabled | bool
 
-    - name: Verify pre-existing demo and shared external survive workload cleanup
+    - name: "[13] Check demo and shared external resources survive cleanup"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -47,7 +47,7 @@
       failed_when: false
       when: (lookup('file', migration_run_dir + '/runtime.json', errors='ignore') | default('{}', true) | from_json).get('preexisting_preservation_enabled', false) or lookup('fileglob', migration_run_dir + '/source-topology-before.json') | length > 0
 
-    - name: Rebuild final report including all enabled pairs cleanup evidence
+    - name: "[13] Update reports with workload cleanup results"
       ansible.builtin.shell: |
         set -euo pipefail
         python3 {{ (playbook_dir + '/../scripts/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }}
@@ -56,7 +56,7 @@
       register: migration_report_output
       changed_when: false
 
-    - name: Remove compute copy only after successful final reports are persisted
+    - name: "[13] Remove compute capture copy after reports are saved"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -65,7 +65,7 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: Mark phase 13 and total end after finalization and capture cleanup
+    - name: "[13] [TIMER] End phase 13 and total migration measurement"
       ansible.builtin.command:
         argv:
           - python3
@@ -75,7 +75,7 @@
       run_once: true
       changed_when: false
 
-    - name: Publish final timing metadata without repeating finalization or cleanup
+    - name: "[13] Update reports with final timing results"
       ansible.builtin.shell: |
         set -euo pipefail
         python3 {{ (playbook_dir + '/../scripts/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }}
@@ -84,11 +84,11 @@
       register: migration_report_output
       changed_when: false
 
-    - name: Show final report locations
+    - name: "[13] Show final report paths"
       ansible.builtin.debug:
         msg: "{{ migration_report_output.stdout_lines }}"
 
-    - name: Return an honest failure after persisting validation report without rollback
+    - name: "[13] Return exit status from final report"
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - {{ migration_run_dir | quote }} <<'PYCODE'

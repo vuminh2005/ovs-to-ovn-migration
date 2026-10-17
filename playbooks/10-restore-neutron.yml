@@ -1,12 +1,12 @@
 ---
-- name: Phase 10 - Mark Neutron restore start
+- name: "Phase 10 - Begin Neutron API restart with ML2/OVN"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark phase 10 start
+    - name: "[10] [TIMER] Start phase 10"
       ansible.builtin.command:
         argv:
           - python3
@@ -18,21 +18,21 @@
       run_once: true
       changed_when: false
 
-- name: Phase 10 - Restore all neutron-server API workers with ML2/OVN target config
+- name: "Phase 10 - Start Neutron API workers with OVN configuration"
   hosts: control
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Enable and start neutron-server Kolla unit
+    - name: "[10] Enable and start neutron-server"
       ansible.builtin.systemd_service:
         name: "{{ neutron_server_unit }}"
         state: started
         enabled: true
         daemon_reload: true
 
-    - name: Wait for local neutron-server health where container exists
+    - name: "[10] Wait for neutron-server container health"
       ansible.builtin.shell: |
         set -euo pipefail
         if ! docker inspect neutron_server >/dev/null 2>&1; then exit 0; fi
@@ -47,7 +47,7 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Verify running neutron-server uses OVN target configuration
+    - name: "[10] Check neutron-server uses ML2/OVN"
       ansible.builtin.shell: |
         set -euo pipefail
         if docker inspect neutron_server >/dev/null 2>&1; then
@@ -58,14 +58,14 @@
         executable: /bin/bash
       changed_when: false
 
-- name: Phase 10 - Measure first usable Neutron API response
+- name: "Phase 10 - Wait for usable Neutron API"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Wait for Neutron API to become usable
+    - name: "[10] Wait for a successful Neutron network list"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path }}
@@ -78,12 +78,12 @@
       until: neutron_api_ready.rc == 0
       changed_when: false
 
-    - name: Mark control-plane downtime end
+    - name: "[10] [TIMER] End Neutron API downtime"
       ansible.builtin.shell: |
         date +%s.%N > {{ migration_run_dir }}/metrics/control_plane_downtime.end
       changed_when: false
 
-    - name: Mark phase 10 end
+    - name: "[10] [TIMER] End phase 10"
       ansible.builtin.command:
         argv:
           - python3

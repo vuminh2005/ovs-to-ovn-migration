@@ -1,5 +1,5 @@
 ---
-- name: Phase 11 - Validate state consistency and ML2/OVN control plane
+- name: "Phase 11 - Check traffic recovery and resource preservation"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -7,7 +7,7 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark phase 11 start
+    - name: "[11] [TIMER] Start phase 11"
       ansible.builtin.command:
         argv:
           - python3
@@ -19,7 +19,7 @@
       run_once: true
       changed_when: false
 
-    - name: Observe recovery of original continuity traffic before AFTER snapshots or new resources
+    - name: "[11] Observe original traffic recovery before further checks"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -31,7 +31,7 @@
         - validation_workloads_enabled | bool
         - lookup('fileglob', migration_run_dir + '/metrics/phase11.end') | length == 0
 
-    - name: Resume supplementary diagnostic sampling only after traffic recovery
+    - name: "[11] Resume diagnostic sampling after traffic recovery"
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", snapshot,
                "{{ migration_run_dir }}", --label, post-traffic-recovery]
@@ -39,7 +39,7 @@
       failed_when: false
       when: migration_diagnostics_enabled | bool
 
-    - name: Snapshot post-migration resources before creating any smoke-test resource
+    - name: "[11] [SAVE] Record resources before creating smoke tests"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path }}
@@ -54,7 +54,7 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Compare critical resource identity sets before and after migration
+    - name: "[11] Compare resource identities before and after migration"
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - <<'PY'
@@ -105,7 +105,7 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Verify pre-existing demo VMs ports routers and FIP mappings remain intact
+    - name: "[11] Check existing demo resources and FIP mappings"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -115,7 +115,7 @@
       changed_when: false
       when: (lookup('file', migration_run_dir + '/runtime.json', errors='ignore') | default('{}', true) | from_json).get('preexisting_preservation_enabled', false) or lookup('fileglob', migration_run_dir + '/source-topology-before.json') | length > 0
 
-    - name: Automatically create and delete a temporary network to prove new tenant type is Geneve
+    - name: "[11] Create and delete a test network to verify Geneve"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path }}
@@ -130,14 +130,14 @@
         executable: /bin/bash
       when: validation_ephemeral_network | bool
 
-- name: Phase 11 - Validate legacy dataplane is gone and OVN dataplane exists
+- name: "Phase 11 - Check OVN replaces the legacy tunnel dataplane"
   hosts: network:compute
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Assert br-tun is absent and an OVN Geneve interface exists
+    - name: "[11] Check br-tun is absent and Geneve exists"
       ansible.builtin.shell: |
         set -euo pipefail
         ! docker exec openvswitch_vswitchd ovs-vsctl br-exists br-tun
@@ -149,7 +149,7 @@
       changed_when: false
 
 
-- name: Phase 11 - Validate gateway role and legacy-agent shutdown
+- name: "Phase 11 - Check gateway host and external connectivity settings"
   hosts: network
   gather_facts: false
   become: true
@@ -157,7 +157,7 @@
     - ../group_vars/all.yml
     - ../group_vars/ns-lab.yml
   tasks:
-    - name: Assert network chassis has gateway CMS option and no old namespaces
+    - name: "[11] Check gateway role and legacy namespace removal"
       ansible.builtin.shell: |
         set -euo pipefail
         docker exec openvswitch_vswitchd ovs-vsctl get Open_vSwitch . external_ids:ovn-cms-options | grep -F enable-chassis-as-gw >/dev/null
@@ -166,25 +166,25 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Verify shared underlay and target OVN physnet gateway mapping
+    - name: "[11] Check underlay and OVN external bridge mapping"
       ansible.builtin.command:
         argv: [python3, /root/ns-underlay-check.py, deployed, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int, 'physnet': ns_physnet, 'ovn': true} | to_json }}"]
       changed_when: false
       when: validation_ns_enabled | bool
 
-- name: Phase 11 - Validate OVN metadata agents
+- name: "Phase 11 - Check OVN metadata agents"
   hosts: neutron-ovn-metadata-agent
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Assert OVN metadata container is running
+    - name: "[11] Check OVN metadata containers are running"
       ansible.builtin.shell: |
         docker inspect neutron_ovn_metadata_agent | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
       changed_when: false
 
-    - name: Mark phase 11 end
+    - name: "[11] [TIMER] End phase 11"
       ansible.builtin.command:
         argv:
           - python3

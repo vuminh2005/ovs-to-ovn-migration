@@ -1,12 +1,12 @@
 ---
-- name: Phase 01 - Backup source configuration and resource identity
+- name: "Phase 01 - Back up source configuration and resource identities"
   hosts: localhost
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: Mark phase 01 start
+    - name: "[01] [TIMER] Start phase 01"
       ansible.builtin.command:
         argv:
           - python3
@@ -18,7 +18,7 @@
       run_once: true
       changed_when: false
 
-    - name: Backup Kolla globals and actual inventory source
+    - name: "[01] Back up Kolla configuration and inventory"
       ansible.builtin.copy:
         src: "{{ item.src }}"
         dest: "{{ item.dest }}"
@@ -28,7 +28,7 @@
         - { src: "{{ kolla_globals_path }}", dest: "{{ migration_run_dir }}/globals.yml.before" }
         - { src: "{{ kolla_inventory_runtime }}", dest: "{{ migration_run_dir }}/inventory.before" }
 
-    - name: Snapshot source OpenStack resources in machine-readable form
+    - name: "[01] [SAVE] Record source resource identities"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path }}
@@ -44,7 +44,7 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Save compact source resource counts
+    - name: "[01] [SAVE] Save source resource counts"
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - <<'PY'
@@ -65,11 +65,11 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Publish source network count for remote validation guards
+    - name: "[01] Load source network count"
       ansible.builtin.set_fact:
         source_network_count_runtime: "{{ (lookup('file', migration_run_dir + '/resource-counts.before.json') | from_json).networks | int }}"
 
-    - name: Run Kolla MariaDB backup
+    - name: "[01] Back up MariaDB through Kolla"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} mariadb_backup
@@ -77,7 +77,7 @@
         executable: /bin/bash
       when: run_mariadb_backup | bool
 
-    - name: Mark phase 01 end
+    - name: "[01] [TIMER] End phase 01"
       ansible.builtin.command:
         argv:
           - python3

@@ -1,18 +1,18 @@
 ---
 # Invoked by the validation helper using the checkpointed inventory/delegate.
-- name: Operate exact Pair A compute-local capture
+- name: "[PAIR A] Manage Pair A capture on compute"
   hosts: localhost
   gather_facts: false
   become: true
   tasks:
-    - name: Prepare persistent owned capture directory
+    - name: "[PAIR A] Create run-owned capture directory"
       ansible.builtin.file:
         path: "{{ capture_checkpoint.directory }}"
         state: directory
         mode: '0700'
       delegate_to: "{{ capture_checkpoint.compute_host }}"
       when: capture_action in ['resolve', 'start']
-    - name: Refresh capture agent identity checks without restarting the supervisor
+    - name: "[PAIR A] Refresh capture identity helper"
       ansible.builtin.copy:
         src: ../scripts/dataplane_capture.py
         dest: "{{ capture_checkpoint.directory }}/dataplane_capture.py"
@@ -20,7 +20,7 @@
         force: true
       delegate_to: "{{ capture_checkpoint.compute_host }}"
       when: capture_action != 'remove'
-    - name: Start reuse inspect or stop the exact capture process
+    - name: "[PAIR A] Start, reuse, inspect or stop Pair A capture"
       ansible.builtin.command:
         argv:
           - python3
@@ -31,13 +31,13 @@
       delegate_to: "{{ capture_checkpoint.compute_host }}"
       register: capture_operation
       when: capture_action != 'remove'
-    - name: Persist compute capture process and observation evidence locally
+    - name: "[PAIR A] [SAVE] Save capture process state"
       ansible.builtin.copy:
         dest: "{{ capture_root }}/capture-remote-state.json"
         content: "{{ capture_operation.stdout }}"
         mode: '0600'
       when: capture_action != 'remove'
-    - name: Fetch unmodified PCAP and tcpdump completion diagnostics
+    - name: "[PAIR A] Fetch original PCAP and capture logs"
       ansible.builtin.fetch:
         src: "{{ capture_checkpoint.directory }}/{{ item }}"
         dest: "{{ capture_root }}/{{ item }}"
@@ -45,7 +45,7 @@
       loop: [measure0.pcap, tcpdump.log, capture-state.json, supervisor.log]
       delegate_to: "{{ capture_checkpoint.compute_host }}"
       when: capture_action == 'stop'
-    - name: Remove only successful stopped capture evidence after final report persistence
+    - name: "[PAIR A] Remove stopped capture copy after successful reporting"
       ansible.builtin.file:
         path: "{{ capture_checkpoint.directory }}"
         state: absent

@@ -1,5 +1,5 @@
 ---
-- name: Read effective source SNAT option using Neutron's own configuration parser
+- name: "[N-S] Read effective Neutron SNAT settings"
   ansible.builtin.shell: |
     set -euo pipefail
     docker exec -i neutron_l3_agent /var/lib/kolla/venv/bin/python3 - <<'PYCODE'
@@ -19,14 +19,14 @@
   register: ns_source_profile
   changed_when: false
 
-- name: Persist effective source profile evidence before workload creation
+- name: "[N-S] [SAVE] Save source SNAT profile"
   ansible.builtin.copy:
     dest: "{{ ns_profile_evidence_directory }}/source-snat-profile-{{ inventory_hostname }}.json"
     content: "{{ ns_source_profile.stdout }}\n"
     mode: '0600'
   delegate_to: localhost
 
-- name: Require the source-port experiment configuration to be active
+- name: "[N-S] Check SNAT source-port experiment is active"
   ansible.builtin.assert:
     that:
       - (ns_source_profile.stdout | from_json).use_random_fully == false
