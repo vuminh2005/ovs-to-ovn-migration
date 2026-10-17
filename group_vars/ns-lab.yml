@@ -10,8 +10,8 @@ ns_router_ip: 10.1.0.4
 ns_floating_ip: 10.1.0.5
 # One reset-owned external network is shared with console demos. The four
 # explicit addresses .4/.5 (automatic probes) and .6/.7 (demo) never overlap.
-ns_shared_external_name: ovn-shared-external
-ns_shared_external_subnet_name: ovn-shared-external-subnet
+ns_shared_external_name: shared-external
+ns_shared_external_subnet_name: shared-external-subnet
 ns_shared_pool_start: 10.1.0.4
 ns_shared_pool_end: 10.1.0.10
 ns_physnet: physnet1
