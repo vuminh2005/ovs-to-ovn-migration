@@ -49,6 +49,7 @@
         content: >-
           {{ {
               'phase_marker_schema_version': 2,
+              'preexisting_preservation_enabled': true,
               'run_id': migration_run_id,
               'inventory': kolla_inventory_runtime,
               'kolla_ansible': kolla_ansible_bin_runtime,

@@ -56,10 +56,14 @@ def cloud_json(*args):
     return json.loads(run(['openstack', *args, '-f', 'json']))
 
 
-def validate_cloud():
+def validate_cloud(expected=None):
     for noun, extra in (('server', ['--all-projects']), ('network', []), ('subnet', []), ('router', [])):
-        if cloud_json(noun, 'list', *extra):
-            raise RuntimeError(f'Cloud must have no workload {noun} resources after reset')
+        rows = cloud_json(noun, 'list', *extra)
+        if expected is None:
+            if rows:
+                raise RuntimeError(f'Cloud must have no workload {noun} resources after reset')
+        elif {r.get('ID') or r.get('id') for r in rows} != set(expected[noun]):
+            raise RuntimeError(f'Reset resource set differs from the reset-owned demo: {noun}')
     services = [r for r in cloud_json('compute', 'service', 'list') if r.get('Binary') == 'nova-compute']
     if len(services) != 2 or {r.get('Host') for r in services} != EXPECTED['compute']:
         raise RuntimeError('Expected exactly compute1 and compute2 Nova services')
@@ -99,7 +103,15 @@ def finish(root, cloud):
     marker = root / 'reset-complete.json'
     if marker.exists():
         raise RuntimeError('This reset snapshot already completed; start a new reset for a new cycle')
-    validate_cloud()
+    demo_path = root/'reset-demo-config.json'
+    demo_cfg = json.loads(demo_path.read_text()) if demo_path.exists() else {}
+    demo = None
+    if demo_cfg.get('enabled'):
+        from reset_demo import Demo, existing_ids
+        cloud.compute.default_microversion = '2.74'
+        validate_cloud(existing_ids(cloud, root))
+    else:
+        validate_cloud()
     cfg = json.loads((root / 'validation-prerequisites-config.json').read_text())
     prior_path = root / 'validation-prerequisites.json'
     prior = json.loads(prior_path.read_text()) if prior_path.exists() else {}
@@ -111,7 +123,11 @@ def finish(root, cloud):
     if provenance.get('id') == image['id']:
         result['image'].update({k: v for k, v in provenance.items() if k not in ('status', 'created')})
     save(prior_path, result)
-    validate_cloud()
+    if demo_cfg.get('enabled'):
+        demo = Demo(cloud, root, demo_cfg, result).prepare()
+        validate_cloud(demo['expected_resources'])
+    else:
+        validate_cloud()
     vars_path = root / 'migration-lab.yml'
     save(vars_path, {'validation_image': image['id'],
                     'validation_flavor': result['flavor']['id'],
@@ -120,9 +136,10 @@ def finish(root, cloud):
                  'completed_at': datetime.now(timezone.utc).isoformat(),
                  'source_mtu': cfg['source_mtu'], 'target_mtu': cfg['target_geneve_mtu'],
                  'image': result['image'], 'flavor': result['flavor'],
-                 'variables': str(vars_path)})
+                 'variables': str(vars_path), 'demo': demo})
     print(json.dumps({'status': 'OVS_4NODE_BASELINE_READY', 'variables': str(vars_path),
-                      'image': result['image']['name'], 'flavor': result['flavor']['name']}))
+                      'image': result['image']['name'], 'flavor': result['flavor']['name'],
+                      'demo': demo}))
 
 
 def main():

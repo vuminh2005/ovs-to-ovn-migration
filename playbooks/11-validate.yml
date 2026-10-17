@@ -105,6 +105,16 @@
         executable: /bin/bash
       changed_when: false
 
+    - name: Verify pre-existing demo VMs ports routers and FIP mappings remain intact
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/source_topology.py') | quote }} verify {{ migration_run_dir | quote }} --scope after-migration
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: (lookup('file', migration_run_dir + '/runtime.json', errors='ignore') | default('{}', true) | from_json).get('preexisting_preservation_enabled', false) or lookup('fileglob', migration_run_dir + '/source-topology-before.json') | length > 0
+
     - name: Automatically create and delete a temporary network to prove new tenant type is Geneve
       ansible.builtin.shell: |
         set -euo pipefail

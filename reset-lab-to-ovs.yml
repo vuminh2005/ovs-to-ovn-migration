@@ -104,6 +104,9 @@
         reset_run_dir: "{{ reset_snapshot_root }}/{{ reset_snapshot_id }}"
         reset_backup_root_runtime: "{{ reset_backup_root }}"
 
+    - name: Check shared external and console demo settings before destructive work
+      ansible.builtin.include_tasks: playbooks/reset-demo-preflight-tasks.yml
+
     - name: Preserve the full four-node Kolla inventory
       ansible.builtin.copy:
         src: "{{ reset_kolla_inventory }}"
@@ -1132,7 +1135,7 @@
         mode: '0600'
         content: "{{ {'image': '', 'flavor': '', 'managed_image_name': reset_managed_image_name, 'managed_flavor_name': reset_managed_flavor_name, 'image_url': reset_managed_image_url, 'cache_dir': reset_image_cache_dir, 'download_timeout': reset_image_download_timeout | int, 'image_active_timeout': reset_image_active_timeout | int, 'source_mtu': reset_source_mtu | int, 'target_geneve_mtu': reset_target_mtu | int} | to_nice_json }}"
 
-    - name: Prepare Ubuntu image flavor and validate the empty four-node OVS baseline
+    - name: Prepare Ubuntu image flavor shared external and console demo baseline
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ (reset_kolla_venv + '/bin/activate') | quote }}
@@ -1147,4 +1150,5 @@
       ansible.builtin.debug:
         msg:
           - "{{ reset_completion.stdout_lines }}"
+          - "Demo resources and manual ping targets: {{ reset_run_dir }}/demo-resources.json. Console login: {{ reset_run_dir }}/demo-console-credentials.json (root only)."
           - "Run ansible-playbook -i {{ ansible_inventory_sources[0] }} migrate-to-ovn.yml; the EW/NS defaults discover managed image/flavor names. Fresh UUID evidence is in {{ reset_run_dir }}/migration-lab.yml."

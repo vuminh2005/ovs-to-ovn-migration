@@ -106,3 +106,17 @@ ansible-playbook -i /root/multinode migrate-to-ovn.yml
 Giữ nguyên điều kiện xác nhận reset hiện có trong `group_vars/reset.yml`.
 Metadata deploy, thứ tự cleanup → restart Neutron, MTU/DHCP remediation, NAT
 profile, source-port preservation và các tiêu chí chứng nhận traffic không đổi.
+
+## External dùng chung và bộ demo (17/10/2026)
+
+Reset dựng external và cặp demo riêng; migration vẫn tạo toàn bộ workload tự
+động. Phase 02 lưu baseline chỉ đọc trong `source-topology-before.json`, kiểm
+tra flat physnet/subnet/pool và hai IP dành cho N-S. Chỉ khi không có external
+mới dùng luồng tạo external thuộc run như trước để tương thích baseline cũ.
+
+`validation-config.json` lưu UUID/fingerprint external mượn dùng; checkpoint
+N-S ghi `external_owned=false`. Retry/resume dùng nguyên checkpoint đó.
+Cleanup xác minh fingerprint trước khi xóa workload, giữ external/subnet và
+không nhận UUID demo vào `validation-resources.json` hay `extended-resources.json`.
+Phase 11 và phase 13 kiểm tra tài nguyên có sẵn; JSON thêm
+`preexisting_resources_preservation`, TXT và metric không đổi.

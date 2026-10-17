@@ -3,6 +3,7 @@
 | Nội dung | Hướng dẫn |
 |---|---|
 | Cài đặt và chạy | [README chính](../README.md) |
+| Demo sau reset | [demo.md](demo.md) |
 | Reset bốn node | [reset-four-nodes.md](reset-four-nodes.md) |
 | Thứ tự chuẩn bị, cutover và phục hồi | [cutover-workflow.md](cutover-workflow.md) |
 | Workload EW/N-S và cấu hình lab | [ns-ew-matrix.md](ns-ew-matrix.md) |

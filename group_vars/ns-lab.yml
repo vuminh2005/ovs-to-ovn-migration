@@ -8,6 +8,12 @@ ns_external_cidr: 10.1.0.0/24
 ns_external_gateway: 10.1.0.1
 ns_router_ip: 10.1.0.4
 ns_floating_ip: 10.1.0.5
+# One reset-owned external network is shared with console demos. The four
+# explicit addresses .4/.5 (automatic probes) and .6/.7 (demo) never overlap.
+ns_shared_external_name: ovn-shared-external
+ns_shared_external_subnet_name: ovn-shared-external-subnet
+ns_shared_pool_start: 10.1.0.4
+ns_shared_pool_end: 10.1.0.10
 ns_physnet: physnet1
 ns_tenant_cidr: 10.233.0.0/24
 ns_outbound_ip: 10.233.0.11

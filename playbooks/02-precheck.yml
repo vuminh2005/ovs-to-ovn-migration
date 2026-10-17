@@ -62,31 +62,17 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Require fresh source topology before creating owned N-S validation resources
-      ansible.builtin.shell: |
-        set -euo pipefail
-        source {{ openrc_path }}
-        for id in $(openstack network list -f value -c ID); do
-          ext=$(openstack network show "$id" -f value -c router:external)
-          case "${ext,,}" in true|yes|1) echo "Existing external network $id detected; reset before owned N-S test" >&2; exit 1;; esac
-        done
-        test "$(openstack floating ip list -f value -c ID | wc -l)" -eq 0
-        for id in $(openstack router list -f value -c ID); do
-          ext=$(openstack router show "$id" -f value -c external_gateway_info)
-          case "$ext" in ""|None|null|'{}') ;; *) echo "Router $id has external gateway: $ext" >&2; exit 1;; esac
-        done
-      args:
-        executable: /bin/bash
-      changed_when: false
+    - name: Save read-only shared external scope and automatic N-S IP reservations
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir }}/source-topology-config.json"
+        mode: '0600'
+        content: "{{ {'network': ns_shared_external_name, 'cidr': ns_external_cidr, 'gateway_ip': ns_external_gateway, 'physnet': ns_physnet, 'mtu': ns_underlay_mtu | int, 'snat_ip': ns_router_ip, 'fip_ip': ns_floating_ip, 'mtu_delta': mtu_delta_vxlan_to_geneve | int, 'reserve_ns_ips': (validation_workloads_enabled | bool) and (validation_ns_enabled | bool)} | to_nice_json }}"
 
-    - name: Verify all existing tenant overlay networks are VXLAN in supported scope
+    - name: Validate existing VXLAN tenants shared flat external gateways and FIP allocations
       ansible.builtin.shell: |
         set -euo pipefail
-        source {{ openrc_path }}
-        for id in $(openstack network list -f value -c ID); do
-          t=$(openstack network show "$id" -f value -c provider:network_type)
-          test "$t" = "{{ source_tenant_network_type }}"
-        done
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/source_topology.py') | quote }} before {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       changed_when: false

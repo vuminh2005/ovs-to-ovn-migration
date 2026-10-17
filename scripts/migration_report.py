@@ -35,7 +35,7 @@ report={
   'new_network_smoke':smoke,
   'limitations':[
      'Tenant packet evidence is required; PortBinding convergence is separate.',
-     'Supported N-S scope is the owned flat physnet1 uplink with centralized SNAT/FIP to the on-link controller endpoint. DVR, HA, arbitrary provider workloads and Internet are outside this test.',
+     'Supported N-S scope uses the flat physnet1 uplink with owned test router/VM/FIP and centralized SNAT/FIP to the on-link controller endpoint; a checkpointed shared external network is preserved. DVR, HA, arbitrary provider workloads and Internet are outside this test.',
      'Guest static MTU cannot be changed automatically; existing VXLAN network MTUs are reduced by the configured VXLAN-to-Geneve delta.'
   ]
 }
@@ -202,6 +202,12 @@ if report['result'] in ('SUCCESS', 'SUCCESS_WITH_REMEDIATION') and report['north
 
 if report['result'] in ('SUCCESS', 'SUCCESS_WITH_REMEDIATION') and report['extended_cleanup'] not in ('PASS', 'DISABLED'):
     report['result']='MIGRATED_VALIDATION_INCOMPLETE'
+if (evidence('runtime.json') or {}).get('preexisting_preservation_enabled') or (root/'source-topology-before.json').exists():
+    report['preexisting_resources_preservation'] = evidence('preexisting-resource-preservation.json') or {'status':'UNAVAILABLE'}
+    if not (root/'source-topology-before.json').exists():
+        report['preexisting_resources_preservation'] = {'status':'UNAVAILABLE', 'reason':'Missing pre-existing resource baseline'}
+    if report['preexisting_resources_preservation'].get('status') != 'PASS':
+        report['result'] = 'MIGRATED_VALIDATION_INCOMPLETE'
 report = ordered_report(report)
 (root/'migration-report.json').write_text(json.dumps(report, indent=2) + '\n')
 (root/'migration-report.txt').write_text(render_text(report, root, modern=modern))

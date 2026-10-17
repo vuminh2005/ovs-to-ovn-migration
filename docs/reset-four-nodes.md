@@ -1,3 +1,10 @@
+> Cập nhật 17/10/2026: baseline READY mặc định có external dùng chung và hai
+> VM demo, không còn là cloud rỗng. Xem [hướng dẫn demo](demo.md). Reset kiểm
+> tra cloud sạch hoặc tài nguyên đúng generation của chính reset trước khi
+> chuẩn bị demo; final gate đối chiếu đúng tập UUID demo. Workload migration
+> vẫn được tạo sau đó và không cleanup bộ demo. Các ghi chú lịch sử về baseline
+> rỗng bên dưới mô tả kiểm tra trước khi tạo bộ demo.
+
 # Reset lặp lại cụm 4 node về ML2/OVS
 
 Cập nhật 16/10/2026: reset dọn thư mục preparation có ownership sau destroy

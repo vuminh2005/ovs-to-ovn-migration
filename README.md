@@ -13,11 +13,26 @@ console cuối chỉ in run/đường dẫn report, kết quả chi tiết vẫn
 Xem [lưu evidence](docs/report-evidence.md) và [mục lục tài liệu](docs/README.md).
 Patch và ghi chú kiểm tra cũ đã chuyển vào `docs/history/`.
 
+## Reset chuẩn bị demo và external dùng chung — 17/10/2026
+
+Reset hiện tạo `ovn-shared-external` và bộ `ovn-demo`: hai VM khác compute,
+khác subnet, một router và FIP. Thông tin ở `demo-resources.json`; mật khẩu
+console chỉ nằm trong `demo-console-credentials.json` (root, mode 0600).
+Migration vẫn chạy toàn bộ workload tự động, dùng external chung, và giữ
+nguyên bộ demo sau cleanup. Không có chế độ tắt A/B/C/D trong thay đổi này.
+
+Xem [hướng dẫn mở console/ping và chạy demo](docs/demo.md). Mặc định các IP
+external `.4/.5` dành cho N-S tự động; `.6/.7` dành cho demo. Precheck đối
+chiếu subnet/pool và từ chối IP xung đột, HA/DVR hoặc provider VM trực tiếp.
+Reset tiếp theo xóa deployment và dựng lại bộ demo; UUID có thể thay đổi.
+Format TXT và cách đo traffic tự động giữ nguyên; kết quả giữ tài nguyên có
+sẵn được bổ sung trong JSON.
+
 ## Bản mở rộng N-S và ma trận EW (13/10/2026)
 
 Hướng dẫn hiện hành: [docs/ns-ew-matrix.md](docs/ns-ew-matrix.md).
 Bản này bổ sung reset uplink bền vững, quota instance 20, hai VM cho ba luồng
-ICMP bổ sung và hai VM cho TCP SNAT/FIP. Mặc định tối đa **12 VM, 6 mỗi compute**.
+ICMP bổ sung và hai VM cho TCP SNAT/FIP. Workload tự động tối đa **12 VM, 6 mỗi compute**; cộng hai VM demo do reset tạo là **14 VM, 7 mỗi compute**.
 Tên VM mới và tiêu đề báo cáo mô tả phép đo; các khóa evidence A/B/C/D cũ được
 để lại làm alias kỹ thuật nhằm giữ tương thích với report/checkpoint cũ.
 Không có thao tác lab nào được chạy khi tạo bản cập nhật này.
@@ -75,7 +90,7 @@ tế sau deploy và lưu đầy đủ stdout/stderr của Kolla deploy. Failed d
 chặn baseline; recovery scheduler không được dùng cho lỗi conductor.
 
 `reset-lab-to-ovs.yml` now resets the lab with `controller`, `network1`,
-`compute1`, and `compute2` repeatedly. It rebuilds an empty ML2/OVS source cloud
+`compute1`, and `compute2` repeatedly. It rebuilds an ML2/OVS source cloud with a reset-owned shared external and console demo pair
 with VXLAN MTU 1400 and prepares the standard Ubuntu validation image/flavor.
 See [four-node reset instructions](docs/reset-four-nodes.md) for destructive
 scope, commands, new UUIDs and retry. The latest extension also persists the NS uplink and instance quota during reset.

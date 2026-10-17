@@ -38,3 +38,15 @@ reset_nova_scheduler_workers: 1
 # Kolla 18.8.0 renders this through nova_cell_conductor_workers.
 reset_nova_conductor_workers: 1
 reset_rabbitmq_recovery_enabled: true
+
+# A console-only demo pair is built by reset, independently of migration probes.
+reset_demo_enabled: true
+reset_demo_prefix: ovn-demo
+reset_demo_cidrs: ['10.234.0.0/24', '10.234.1.0/24']
+reset_demo_compute_hosts: ['compute1', 'compute2']
+reset_demo_router_ip: 10.1.0.6
+reset_demo_floating_ip: 10.1.0.7
+reset_demo_console_user: demo
+# Empty generates a password in the reset snapshot, mode 0600. It is never printed.
+reset_demo_console_password: ''
+reset_demo_timeout_seconds: 300

@@ -1,47 +1,46 @@
-# Audit bản sửa 16/10/2026
+# Audit thay đổi reset/demo và external dùng chung — 17/10/2026
 
-Cơ sở: `final.zip` hiện hành, SHA-256
-`254e1635da61a6b652c1228af223d1005f15ec92ef6392c08679729cabc1d963`.
-ZIP nguồn đính kèm từ commit cũ chưa có diagnostics/N-S nên không được dùng
-để thay thế các sửa đổi reset và cutover đã hoàn tất.
+Bản nền: `final.zip` version 3, SHA-256
+`310ea8e12272818e6b7826becc8472cb002f083c9db2aae6a5cc1996b05bf4de`.
 
-## Kết quả rà soát
+- Reset giữ các guard trước destroy, dựng uplink như cũ, xác minh image/flavor,
+  tạo shared external và hai VM demo khác compute/subnet với console account.
+- Demo journal tách khỏi migration workload. Marker metadata/description,
+  explicit ports và UUID giúp retry khôi phục reply bị mất mà không tạo bản thứ hai.
+- Pool `.4`–`.10` thuộc profile lab; bốn IP `.4/.5/.6/.7` phải khác nhau và
+  nằm trong pool. CIDR demo không đụng A/B/C/D/EW/N-S. Mật khẩu không vào stdout,
+  cloud-init chỉ nhận hash; config/credential file có quyền 0600.
+- Precheck chỉ nhận một external flat được cấu hình trên đúng physnet/MTU,
+  một subnet IPv4 đúng CIDR/gateway/DHCP/pool; vẫn từ chối provider VM trực tiếp,
+  HA/DVR hoặc external khác. Các IP dành cho N-S phải chưa bị chủ khác cấp phát.
+- N-S ghi `external_owned=false` trước provisioning; cleanup đối chiếu UUID và
+  fingerprint trước mọi thao tác xóa. Shared external không được chuyển thành
+  run-owned khi resume. Luồng owned-per-run cũ vẫn hoạt động khi cloud chưa có external.
+- Baseline demo/pre-existing chỉ dùng để đối chiếu. Phase 11 và sau cleanup
+  xác minh identity, fixed IP/MAC/compute, router gateway, FIP association và
+  chuyển đổi MTU/type dự kiến. Thiếu/sai evidence làm JSON validation incomplete.
+- Toàn bộ workload và timer/PCAP/probe vẫn giữ. TXT renderer/helpers giữ nguyên
+  từng byte so với bản nền; không gán kết quả ping demo thủ công vào metric tự động.
 
-| Phần | Kết luận và xử lý |
-|---|---|
-| Host diagnostics | Tar là bản truyền trùng với thư mục đã giải nén; bỏ tar sau khi kiểm tra hash toàn bộ nội dung. Lỗi thì giữ tar. |
-| Endpoint PCAP | Nguồn capture local trước đây được fetch thành bản thứ hai; run mới ghi thẳng đường dẫn chuẩn, không fetch lại chính file đó. |
-| Checkpoint cũ | Giữ config/identity nguồn và journal; chuyển hoặc đối chiếu bản archive trước khi bỏ PCAP nguồn. Stop lặp lại được hỗ trợ. |
-| Retry preparation | Nhận cả hai vị trí endpoint hợp lệ; đối chiếu cả cổng listener mới và ICMP, từ chối cấu hình đã đổi. |
-| Console cuối | Chỉ in run và đường dẫn TXT/JSON; bỏ dòng RESULT. Không sửa kết quả hay điều kiện exit code trong JSON. |
-| TXT | Toàn bộ phần định dạng và helper trước `terminal_summary()` giữ nguyên từng byte so với bản nền. |
-| Reset/resume | Giữ logic dừng observer đang sống và thứ tự migration đã tối ưu. Không đưa điều kiện archive/remediation vào reset. |
-| Cấu trúc mã nguồn | Giữ entrypoint ở gốc; gom sáu patch/ghi chú lịch sử vào `docs/history/`, thêm mục lục và cập nhật liên kết. |
-| Tham chiếu | Không phát hiện path hỏng trong import/include/vars_files Ansible hoặc liên kết tài liệu hiện hành. |
-
-Mã tính metric, phase timer, probe và report engine giữ nguyên. Các segment
-diagnostics được giữ riêng vì không phải bản sao của cùng cửa sổ quan sát.
-Không có cơ chế tự quét/xóa evidence của mọi run lịch sử trong bản sửa này.
-
-Các kiểm tra dùng fixture, subprocess và Ansible local; Docker/OpenStack là
-giả lập khi cần. Không chạy reset, migration, restart container hay API cloud
-trên lab. Kết quả offline không xác nhận downtime thực tế của lần chạy sau.
+Chưa chạy reset, provisioning, migration, restart container hay API cloud trên
+lab. Kiểm tra offline dùng SDK resources, API-state fixtures và Ansible local.
+Xem lịch sử [audit 16/10](history/audit-20261016.md).
 
 ## Kiểm chứng cuối
 
-- 574 test và 417 subtest đạt; không có test bỏ qua. 140 cảnh báo deprecation
-  có sẵn từ OpenStackSDK; không có lỗi kiểm thử.
-- 12 entrypoint/helper Ansible qua kiểm tra cú pháp với ansible-core 2.16.19.
-- 89 file Python parse AST và 37 file YAML parse thành công.
-- 158 tham chiếu Ansible và 34 liên kết tài liệu hiện hành hợp lệ.
-- Kiểm tra whitespace/diff thành công. TXT renderer và các helper định dạng
-  có SHA-256 `3ca3e49f1507dfdf18bcfbfed48139051d98b194580be06be16344e588a62157`,
-  trùng bản nền. Thay đổi console chỉ nằm trong `terminal_summary()`.
+- 597 test và 430 subtest PASS, không có test bỏ qua; 561 cảnh báo deprecation
+  của OpenStackSDK khi dùng fixtures.
+- 12 entrypoint/helper Ansible qua kiểm tra cú pháp, ansible-core 2.16.19.
+- 93 file Python và 38 file YAML parse thành công.
+- 159 tham chiếu import/include/vars_files Ansible và 39 liên kết tài liệu
+  hiện hành hợp lệ. 14 khối Bash trong hướng dẫn và Python nhúng parse thành công.
+- Defaults workload, toàn bộ `workload_validation.py`, TXT renderer,
+  phase schema, capture/NS/TCP probe và diagnostics coordinator không đổi
+  từng byte so với bản nền; whitespace/diff kiểm tra thành công.
 
-Fixture kiểm tra tar được xóa sau đối chiếu, tar hỏng/thiếu giữ nguyên,
-PCAP canonical giữ nguyên inode, bản local cũ chuyển một lần, xung đột không
-xóa dữ liệu, và transport Ansible inspect/stop lặp lại ở cả hai layout.
-Bộ kiểm thử có sẵn tiếp tục kiểm tra lifecycle supervisor, signal/wait,
-reset, resume, các gate và dữ liệu report. Phần định danh PID cần mô phỏng
-ở một số test có sẵn do namespace của môi trường kiểm thử; mã runtime
-không được nới điều kiện nhận dạng tiến trình.
+Test mới bao gồm real-Ansible render cấu hình/password không lọt log, reset
+completion với exact UUID set, hai compute, cloud-init account, lost Nova/FIP
+reply, IP collision, external scope, shared ownership và cleanup giữ toàn bộ
+bộ demo. Report test kiểm tra FAIL/UNAVAILABLE và baseline bị thiếu không được
+biến thành PASS, đồng thời TXT vẫn giống nhau. Không có kiểm chứng traffic demo
+thực tế trong các test offline này.

@@ -1,3 +1,8 @@
+> Cập nhật 17/10/2026: external/subnet được reset tạo sẵn và dùng chung với
+> bộ demo console. Workload N-S giữ router/FIP/VM riêng với `.4/.5`; demo dùng
+> `.6/.7`. Automatic cleanup giữ external và toàn bộ bộ demo. Tổng tối đa 14 VM
+> khi có hai VM demo cộng 12 VM validation. Xem [hướng dẫn hiện hành](demo.md).
+
 # Mở rộng EW và N-S — hướng dẫn hiện hành
 
 Bản nền là `playbook(1).zip` người dùng gửi ngày 13/10/2026. Workspace không

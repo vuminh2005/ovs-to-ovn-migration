@@ -36,6 +36,17 @@
       failed_when: false
       when: validation_workloads_enabled | bool
 
+    - name: Verify pre-existing demo and shared external survive workload cleanup
+      ansible.builtin.shell: |
+        set -euo pipefail
+        source {{ openrc_path | quote }}
+        python3 {{ (playbook_dir + '/../scripts/source_topology.py') | quote }} verify {{ migration_run_dir | quote }} --scope after-workload-cleanup
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      when: (lookup('file', migration_run_dir + '/runtime.json', errors='ignore') | default('{}', true) | from_json).get('preexisting_preservation_enabled', false) or lookup('fileglob', migration_run_dir + '/source-topology-before.json') | length > 0
+
     - name: Rebuild final report including all enabled pairs cleanup evidence
       ansible.builtin.shell: |
         set -euo pipefail

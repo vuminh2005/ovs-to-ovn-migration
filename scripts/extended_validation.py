@@ -390,13 +390,30 @@ class Extended:
             s['control_token'] = uuid.uuid4().hex
             self.commit()
         prefix = self.cfg['prefix']+'-'+self.cfg['run']+'-ns'
-        ext = self.resource(s, 'external_network', 'network', prefix+'-external',
-            is_router_external=True, provider_network_type='flat', provider_physical_network=cfg['physnet'], mtu=cfg['mtu'])
-        if ext.provider_network_type != 'flat' or ext.provider_physical_network != cfg['physnet'] or ext.mtu != cfg['mtu']:
-            raise RuntimeError('N-S external network must retain configured flat physnet/MTU')
-        ext_sub = self.resource(s, 'external_subnet', 'subnet', prefix+'-external', network_id=ext.id,
-            cidr=cfg['external_cidr'], ip_version=4, gateway_ip=cfg['external_gateway'], is_dhcp_enabled=False,
-            allocation_pools=[dict(start=cfg['snat_ip'], end=cfg['fip_ip'])])
+        shared = cfg.get('shared_external')
+        if shared:
+            from shared_external import resolve, require_free_ips
+            ext, ext_sub = resolve(self.cloud.network, shared)
+            if (s.get('external_network', ext.id) != ext.id or s.get('external_subnet', ext_sub.id) != ext_sub.id
+                    or s.get('external_owned', False) is not False):
+                raise RuntimeError('Shared external workload checkpoint identity changed')
+            require_free_ips(self.cloud.network, shared, router=s.get('router'),
+                floating_ip=s.get('floating_ip'), port=s.get('vms', {}).get('1', {}).get('port'),
+                marker='ovn-migration-run='+self.cfg['run'])
+            s.update(external_network=ext.id, external_subnet=ext_sub.id, external_owned=False)
+            self.commit()
+        else:
+            if s.get('external_owned') is False:
+                raise RuntimeError('Shared external cannot become run-owned on resume')
+            ext = self.resource(s, 'external_network', 'network', prefix+'-external',
+                is_router_external=True, provider_network_type='flat', provider_physical_network=cfg['physnet'], mtu=cfg['mtu'])
+            if ext.provider_network_type != 'flat' or ext.provider_physical_network != cfg['physnet'] or ext.mtu != cfg['mtu']:
+                raise RuntimeError('N-S external network must retain configured flat physnet/MTU')
+            ext_sub = self.resource(s, 'external_subnet', 'subnet', prefix+'-external', network_id=ext.id,
+                cidr=cfg['external_cidr'], ip_version=4, gateway_ip=cfg['external_gateway'], is_dhcp_enabled=False,
+                allocation_pools=[dict(start=cfg['snat_ip'], end=cfg['fip_ip'])])
+            s['external_owned'] = True
+            self.commit()
         net = self.resource(s, 'network', 'network', prefix+'-tenant')
         sub = self.resource(s, 'subnet', 'subnet', prefix+'-tenant', network_id=net.id, cidr=cfg['tenant_cidr'],
                             ip_version=4, is_dhcp_enabled=True)
@@ -715,6 +732,15 @@ class Extended:
         """Delete only checkpointed UUIDs; matrix has no shared network ownership."""
         if self.state.get('cleaned'):
             return
+        ns = self.state.get('ns', {})
+        if ns.get('external_owned') is False:
+            from shared_external import resolve
+            shared = self.cfg['ns'].get('shared_external')
+            if not shared:
+                raise RuntimeError('Missing shared external ownership checkpoint during cleanup')
+            ext, sub = resolve(self.cloud.network, shared)
+            if (ns['external_network'], ns['external_subnet']) != (ext.id, sub.id):
+                raise RuntimeError('Shared external cleanup checkpoint identity changed')
         import os
         import signal
         for cp in self.state.get('processes', {}).values():
@@ -753,10 +779,14 @@ class Extended:
                 self.cloud.network.delete_router(r.id)
             for key, kind in [('subnet', 'subnet'), ('network', 'network'), ('external_subnet', 'subnet'),
                               ('external_network', 'network'), ('security_group', 'security_group')]:
+                if key in ('external_network', 'external_subnet') and ns.get('external_owned') is False:
+                    continue
                 obj = getattr(self.cloud.network, 'find_'+kind)(ns[key])
                 if obj and obj.description != 'ovn-migration-run='+self.cfg['run']:
                     raise RuntimeError(kind+' cleanup ownership changed')
                 getattr(self.cloud.network, 'delete_'+kind)(ns[key], ignore_missing=True)
         self.state['cleaned'] = True
         self.commit()
-        save(self.root/'extended-cleanup.json', dict(status='PASS'))
+        save(self.root/'extended-cleanup.json', dict(status='PASS',
+            retained_shared_external={k: ns[k] for k in ('external_network','external_subnet')}
+                if ns.get('external_owned') is False else {}))
