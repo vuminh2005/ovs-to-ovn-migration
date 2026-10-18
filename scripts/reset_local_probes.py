@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stop checkpointed controller N-S probes before a confirmed destructive reset."""
+"""Stop owned controller N-S probes before a confirmed destructive reset."""
 import argparse
 import json
 import math
@@ -10,27 +10,87 @@ import signal
 from signal import pidfd_send_signal
 import time
 
-from dataplane_capture import alive, save
+from dataplane_capture import alive, identity, save
 from run_layout import run_path
 
 
-def command_owned(pid, role, config_path):
+PROBE_SCRIPT = Path(__file__).with_name('ns_probe.py').resolve()
+
+
+def process_command(pid):
     args = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
-    args = [os.fsdecode(arg) for arg in args if arg]
+    return [os.fsdecode(arg) for arg in args if arg]
+
+
+def process_commands():
+    for proc in Path('/proc').iterdir():
+        if not proc.name.isdecimal():
+            continue
+        try:
+            yield int(proc.name), process_command(int(proc.name))
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+
+
+def command_owned(pid, role, config_path, *, exact_script=False):
+    args = process_command(pid)
     action = 'serve' if role == 'snat-server' else 'client'
     if (len(args) < 4 or Path(args[-3]).name != 'ns_probe.py' or
         args[-2] != action or Path(args[-1]).resolve() != config_path):
         raise RuntimeError('Live N-S command ownership mismatch for '+str(pid))
+    if exact_script and (len(args) != 4 or not Path(args[-3]).is_absolute() or
+                         Path(args[-3]).resolve() != PROBE_SCRIPT):
+        raise RuntimeError('Live N-S command ownership mismatch for '+str(pid))
+
+
+def orphan_config(args, backup_root):
+    """Recognize only this checkout's direct Python probe invocation."""
+    if (len(args) != 4 or Path(args[-3]).name != 'ns_probe.py' or not Path(args[-3]).is_absolute() or
+            Path(args[-3]).resolve() != PROBE_SCRIPT):
+        return None
+    role = {'serve': 'snat-server', 'client': 'fip-client'}.get(args[-2])
+    path = Path(args[-1])
+    if role is None or not path.is_absolute():
+        return None
+    config_path = path.resolve()
+    try:
+        parts = config_path.relative_to(backup_root).parts
+    except ValueError:
+        return None
+    if len(parts) != 3 or parts[1:] != ('ns', role+'.json'):
+        return None
+    if path != config_path:
+        raise RuntimeError('Non-canonical live N-S config path: '+str(path))
+    return backup_root/parts[0], role, config_path
 
 
 def stop_probes(backup_root, evidence_path, timeout=5, *, interrupt_legacy_client=False):
     backup_root = Path(backup_root).resolve()
     evidence_path = Path(evidence_path)
     result = dict(status='IN_PROGRESS', started_at=time.time(), timeout_seconds=timeout,
+                  backup_root=str(backup_root), discovered=[],
                   interrupt_legacy_client=interrupt_legacy_client,
                   signaled=[], stopped=[], remaining=[], skipped=[])
     owned = []
     handles = []
+    def register(saved, root, role, config_path, source):
+        pid = saved['pid']
+        try:
+            handle = pidfd_open(pid)
+        except ProcessLookupError:
+            result['skipped'].append(dict(run=root.name, role=role, reason='process ended during inspection'))
+            return
+        handles.append(handle)
+        if not alive(saved):
+            result['skipped'].append(dict(run=root.name, role=role, reason='process identity changed'))
+            return
+        command_owned(pid, role, config_path, exact_script=source != 'checkpoint')
+        item = dict(run=root.name, role=role, identity=saved, source=source, signals=[])
+        owned.append((handle, item, config_path))
+        if source != 'checkpoint':
+            result['discovered'].append(dict(item, config_path=str(config_path),
+                config_file_present=config_path.is_file()))
+
     def wait_for_exit():
         deadline = time.monotonic()+timeout
         while any(alive(item['identity']) for _, item, _ in owned):
@@ -77,18 +137,38 @@ def stop_probes(backup_root, evidence_path, timeout=5, *, interrupt_legacy_clien
                     cp.get('config') != process_cfg or process_cfg.get('console') is not False or
                     process_cfg.get('output') != str(root/'ns'/(role+'.jsonl'))):
                     raise RuntimeError('Live N-S config ownership mismatch: '+str(config_path))
-                pid = saved['pid']
-                try:
-                    handle = pidfd_open(pid)
-                except ProcessLookupError:
-                    result['skipped'].append(dict(run=root.name, role=role, reason='process ended during inspection'))
-                    continue
-                handles.append(handle)
-                if not alive(saved):
-                    result['skipped'].append(dict(run=root.name, role=role, reason='process identity changed'))
-                    continue
-                command_owned(pid, role, config_path)
-                owned.append((handle, dict(run=root.name, role=role, identity=saved, signals=[]), config_path))
+                register(saved, root, role, config_path, 'checkpoint')
+        # A deleted checkpoint must not leave this project's probe running
+        # forever. For reset only, current exact argv establishes scope and a
+        # fresh identity/pidfd binds the signal to that inspected process. This
+        # never repairs a checkpoint or authorizes migration resume.
+        for pid, args in process_commands():
+            candidate = orphan_config(args, backup_root)
+            if candidate is None:
+                continue
+            root, role, config_path = candidate
+            if any(path.exists() for path in {
+                    run_path(root, 'extended-resources.json'),
+                    root/'extended-resources.json',
+                    root/'checkpoints/extended-resources.json'}):
+                # A stale/reused identity in an existing checkpoint must not
+                # be reclassified as an orphan and bypass its identity guard.
+                continue
+            saved = identity(pid)
+            if not alive(saved):
+                continue
+            if config_path.exists():
+                cfg = json.loads(config_path.read_text())
+                if (cfg.get('run') != root.name or cfg.get('console') is not False or
+                        cfg.get('output') != str(root/'ns'/(role+'.jsonl'))):
+                    raise RuntimeError('Live orphan N-S config ownership mismatch: '+str(config_path))
+            validation = run_path(root, 'validation-config.json')
+            if validation.exists() and json.loads(validation.read_text()).get('run') != root.name:
+                raise RuntimeError('Live orphan N-S validation run mismatch: '+str(validation))
+            register(saved, root, role, config_path, 'live-command-without-checkpoint')
+        # Preserve discovery evidence before stopping a process whose original
+        # checkpoint has disappeared. Validate all candidates before any signal.
+        save(evidence_path, result)
         for handle, item, _ in owned:
             send(handle, item, signal.SIGTERM)
         wait_for_exit()
@@ -100,7 +180,8 @@ def stop_probes(backup_root, evidence_path, timeout=5, *, interrupt_legacy_clien
             pending = [(handle, item, config) for handle, item, config in owned
                        if item['role'] == 'fip-client' and alive(item['identity'])]
             for _, item, config in pending:
-                command_owned(item['identity']['pid'], item['role'], config)
+                command_owned(item['identity']['pid'], item['role'], config,
+                              exact_script=item['source'] != 'checkpoint')
             for handle, item, _ in pending:
                 send(handle, item, signal.SIGINT)
             if pending:
@@ -109,7 +190,7 @@ def stop_probes(backup_root, evidence_path, timeout=5, *, interrupt_legacy_clien
         if remaining:
             details = ', '.join(f"{item['run']}/{item['role']} PID {item['identity']['pid']}"
                                 for item in remaining)
-            raise RuntimeError('Checkpointed N-S probe did not stop: '+details+
+            raise RuntimeError('Owned N-S probe did not stop: '+details+
                                '; Kolla destroy must not proceed. Evidence: '+str(evidence_path))
         result['status'] = 'PASS'
     except Exception as exc:

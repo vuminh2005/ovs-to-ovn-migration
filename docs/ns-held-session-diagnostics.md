@@ -57,7 +57,8 @@ thử tiếp theo. Không chạy lại migration hoặc restart probe để đ�
 lịch sử của run này.
 
 Khi quyết định thử một run mới, dùng bản reset mới: nó dừng đúng probe N-S
-controller theo checkpoint trước Kolla destroy. Controller không reboot nên
+controller theo checkpoint hoặc xác minh lệnh đang chạy khi checkpoint đã mất,
+trước Kolla destroy. Controller không reboot nên
 run FAIL có thể để lại listener cũ chiếm cổng 18180. Reset giữ nguyên evidence
 migration cũ và lưu `local-probes-stop.json` trong snapshot reset mới.
 

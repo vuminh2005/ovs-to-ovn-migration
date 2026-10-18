@@ -249,7 +249,7 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: Stop only checkpointed controller N-S probes before Kolla destroy
+    - name: Stop owned controller N-S probes before Kolla destroy
       ansible.builtin.command:
         argv:
           - python3

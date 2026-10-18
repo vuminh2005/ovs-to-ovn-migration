@@ -69,6 +69,17 @@ Không gửi SIGKILL. Không xóa log/metrics run cũ. Evidence nằm trong snap
 reset ở `local-probes-stop.json`: `signaled` ghi signal đã gửi, `stopped` chỉ
 ghi process đã xác nhận thoát, `remaining` ghi process vẫn sống.
 
+Nếu checkpoint đã mất, reset còn tìm trực tiếp process chạy đúng file
+`scripts/ns_probe.py` trong bản dự án đang dùng, với action `serve`/`client`
+và đường dẫn tuyệt đối `<reset_backup_root>/<run>/ns/snat-server.json` hoặc
+`fip-client.json` tương ứng. Các file cấu hình còn tồn tại phải khớp run,
+output và chế độ controller. Cấu hình đã mất cùng thư mục run vẫn có thể
+được nhận diện qua lệnh đang chạy. Reset ghi identity hiện tại và đường dẫn
+đã xác minh vào `discovered` trước khi gửi signal qua pidfd; không tạo lại
+checkpoint hay thay đổi kết quả run cũ. Process của bản dự án khác, ngoài
+backup root, hoặc có checkpoint nhưng identity không khớp không được nhận
+qua nhánh này. Guard kiểm tra cổng vẫn chặn destroy nếu listener khác giữ cổng.
+
 ### Nếu reset lỗi tại bước dừng N-S probes
 
 Bản client cũ đặt cờ stop khi nhận SIGTERM nhưng vòng lặp summary chỉ kiểm tra
@@ -90,8 +101,9 @@ python3 scripts/reset_local_probes.py /root/ovs-to-ovn-backup \
     --interrupt-legacy-client
 ```
 
-Lệnh này dừng probe được checkpoint; không chạy Kolla destroy. Nếu vẫn FAIL,
-đọc `remaining`, `signaled` và `error` trong JSON mới để xác định đúng run/role/
+Lệnh này dừng probe có checkpoint hoặc probe mất checkpoint được xác minh
+qua lệnh đang chạy; không chạy Kolla destroy. Nếu vẫn FAIL,
+đọc `discovered`, `remaining`, `signaled` và `error` trong JSON mới để xác định đúng run/role/
 PID. Không bỏ qua gate hoặc dùng `pkill` theo tên chung.
 
 Network1 giữ IP `10.1.0.90/24` và MAC của eth1 trên `br-underlay`;

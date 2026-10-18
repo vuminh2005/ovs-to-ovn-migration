@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -60,6 +61,13 @@ class ResetLocalProbeTests(unittest.TestCase):
             self.children[handle-10000].send_signal(sig)
         for target, replacement in (
             ('reset_local_probes.alive', self.live),
+            ('reset_local_probes.identity', lambda pid: (
+                dict(self.identities[pid]) if pid in self.children and
+                self.children[pid].poll() is None else None)),
+            ('reset_local_probes.process_commands', lambda: (
+                (pid, list(args)) for pid, args in list(self.commands.items())
+                if self.children[pid].poll() is None)),
+            ('reset_local_probes.PROBE_SCRIPT', self.script),
             ('reset_local_probes.pidfd_open', lambda pid: pid+10000),
             ('reset_local_probes.pidfd_send_signal', send),
             ('reset_local_probes.close', lambda handle: None),
@@ -165,6 +173,117 @@ class ResetLocalProbeTests(unittest.TestCase):
         (root/'extended-resources.json').write_text(json.dumps(state))
         result = stop_probes(self.backups, self.evidence)
         self.assertEqual(result['stopped'], [])
+        self.assertIsNone(process.poll())
+
+    def test_missing_checkpoint_listener_is_discovered_stopped_and_not_recheckpointed(self):
+        for organized in (False, True):
+            with self.subTest(organized=organized):
+                process, root, _ = self.process(run='orphan-'+str(organized), organized=organized)
+                checkpoint = run_path(root, 'extended-resources.json')
+                checkpoint.unlink()
+                config = (root/'ns/snat-server.json').read_bytes()
+                port = int((root/'ns/snat-server.jsonl').read_text())
+                result = stop_probes(self.backups, self.evidence)
+                process.wait(2)
+                self.assertEqual(result['status'], 'PASS')
+                self.assertEqual(result['stopped'][0]['identity']['pid'], process.pid)
+                self.assertEqual(result['stopped'][0]['source'], 'live-command-without-checkpoint')
+                self.assertEqual(result['discovered'][0]['config_file_present'], True)
+                self.assertEqual(result['discovered'][0]['config_path'], str(root/'ns/snat-server.json'))
+                self.assertFalse(checkpoint.exists())
+                self.assertEqual((root/'ns/snat-server.json').read_bytes(), config)
+                with socket.socket() as sock:
+                    sock.bind(('127.0.0.1', port))
+
+    def test_deleted_entire_run_still_stops_its_exact_project_command(self):
+        process, root, _ = self.process()
+        shutil.rmtree(root)
+        result = stop_probes(self.backups, self.evidence)
+        process.wait(2)
+        self.assertEqual(result['discovered'][0]['config_file_present'], False)
+        self.assertEqual(len(result['stopped']), 1)
+        self.assertFalse(root.exists())
+        self.assertEqual(stop_probes(self.backups, self.evidence)['discovered'], [])
+
+    def test_orphan_discovery_is_recorded_before_the_first_signal(self):
+        process, root, _ = self.process()
+        run_path(root, 'extended-resources.json').unlink()
+        sender = probes.pidfd_send_signal
+        def send(handle, sig):
+            evidence = json.loads(self.evidence.read_text())
+            self.assertEqual(evidence['status'], 'IN_PROGRESS')
+            self.assertEqual(evidence['discovered'][0]['identity']['pid'], process.pid)
+            self.assertEqual(evidence['signaled'], [])
+            sender(handle, sig)
+        with patch.object(probes, 'pidfd_send_signal', side_effect=send):
+            stop_probes(self.backups, self.evidence)
+        process.wait(2)
+
+    def test_invalid_orphan_config_blocks_all_signals(self):
+        owned, _, _ = self.process(run='a-owned')
+        orphan, root, _ = self.process(run='z-orphan')
+        run_path(root, 'extended-resources.json').unlink()
+        path = root/'ns/snat-server.json'
+        cfg = json.loads(path.read_text())
+        cfg['run'] = 'foreign'
+        path.write_text(json.dumps(cfg))
+        with self.assertRaisesRegex(RuntimeError, 'orphan N-S config ownership'):
+            stop_probes(self.backups, self.evidence)
+        self.assertIsNone(owned.poll())
+        self.assertIsNone(orphan.poll())
+        self.assertEqual(json.loads(self.evidence.read_text())['signaled'], [])
+
+    def test_invalid_orphan_validation_run_blocks_signals(self):
+        process, root, _ = self.process()
+        run_path(root, 'extended-resources.json').unlink()
+        run_path(root, 'validation-config.json').write_text(json.dumps({'run': 'foreign'}))
+        with self.assertRaisesRegex(RuntimeError, 'orphan N-S validation run mismatch'):
+            stop_probes(self.backups, self.evidence)
+        self.assertIsNone(process.poll())
+
+    def test_existing_checkpoint_in_other_layout_never_authorizes_discovery(self):
+        process, root, state = self.process(organized=True)
+        run_path(root, 'extended-resources.json').unlink()
+        (root/'extended-resources.json').write_text(json.dumps(state))
+        result = stop_probes(self.backups, self.evidence)
+        self.assertEqual(result['discovered'], [])
+        self.assertEqual(result['signaled'], [])
+        self.assertIsNone(process.poll())
+
+    def test_other_checkout_with_the_same_probe_filename_is_ignored_without_checkpoint(self):
+        foreign = self.base/'foreign/ns_probe.py'
+        foreign.parent.mkdir()
+        foreign.write_text(PROGRAM)
+        process, root, _ = self.process(script=foreign)
+        run_path(root, 'extended-resources.json').unlink()
+        result = stop_probes(self.backups, self.evidence)
+        self.assertEqual(result['signaled'], [])
+        self.assertIsNone(process.poll())
+
+    def test_probe_config_outside_selected_backup_root_is_ignored(self):
+        process, _, _ = self.process()
+        result = stop_probes(self.base/'different-backup-root', self.evidence)
+        self.assertEqual(result['signaled'], [])
+        self.assertIsNone(process.poll())
+
+    def test_config_role_must_match_action_for_an_orphan(self):
+        process, root, _ = self.process()
+        run_path(root, 'extended-resources.json').unlink()
+        self.commands[process.pid][-2] = 'client'
+        result = stop_probes(self.backups, self.evidence)
+        self.assertEqual(result['signaled'], [])
+        self.assertIsNone(process.poll())
+
+    def test_identity_change_while_opening_orphan_pidfd_is_not_signaled(self):
+        process, root, _ = self.process()
+        run_path(root, 'extended-resources.json').unlink()
+        def opened(pid):
+            self.identities[pid]['start_ticks'] += '0'
+            return pid+10000
+        with patch.object(probes, 'pidfd_open', side_effect=opened):
+            result = stop_probes(self.backups, self.evidence)
+        self.assertEqual(result['signaled'], [])
+        self.assertEqual(result['skipped'][0]['reason'], 'process identity changed')
         self.assertIsNone(process.poll())
 
     def test_changed_config_cannot_authorize_a_signal(self):
@@ -292,6 +411,31 @@ Path(os.environ['PING_STOP_MARKER']).write_text('reaped by probe cleanup')
         self.assertEqual(result['remaining'], [])
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', cfg['control_port']))
+
+    def test_orphan_legacy_client_interrupt_still_reaps_its_ping(self):
+        process, root, cfg, marker = self.real_client(legacy=True)
+        run_path(root, 'extended-resources.json').unlink()
+        result = stop_probes(self.backups, self.evidence, timeout=.5, interrupt_legacy_client=True)
+        process.wait(2)
+        self.assertTrue(marker.exists())
+        self.assertEqual(result['stopped'][0]['source'], 'live-command-without-checkpoint')
+        self.assertEqual([s['signal'] for s in result['stopped'][0]['signals']], ['SIGTERM', 'SIGINT'])
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', cfg['control_port']))
+
+    def test_orphan_client_changed_to_another_checkout_is_never_interrupted(self):
+        process, root, _ = self.process(role='fip-client', ignore_term=True)
+        run_path(root, 'extended-resources.json').unlink()
+        sender = probes.pidfd_send_signal
+        def send(handle, sig):
+            sender(handle, sig)
+            self.commands[process.pid][-3] = str(self.base/'foreign/ns_probe.py')
+        with patch.object(probes, 'pidfd_send_signal', side_effect=send):
+            with self.assertRaisesRegex(RuntimeError, 'command ownership'):
+                stop_probes(self.backups, self.evidence, timeout=.1, interrupt_legacy_client=True)
+        self.assertIsNone(process.poll())
+        evidence = json.loads(self.evidence.read_text())
+        self.assertEqual([s['signal'] for s in evidence['signaled'][0]['signals']], ['SIGTERM'])
 
     def test_production_client_with_held_and_both_listeners_stops_without_restarting_ping(self):
         from ns_control import request

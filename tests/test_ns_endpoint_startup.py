@@ -52,7 +52,7 @@ class EndpointTests(unittest.TestCase):
         plays=yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
         tasks=next(p['tasks'] for p in plays if p['name']=='Destroy the current Kolla deployment from the deployment host')
         names=[t['name'] for t in tasks]
-        before=names.index('Stop only checkpointed controller N-S probes before Kolla destroy')
+        before=names.index('Stop owned controller N-S probes before Kolla destroy')
         guard=names.index('Verify the controller N-S listener port was released before Kolla destroy')
         self.assertLess(before,guard)
         self.assertLess(guard,names.index('Run kolla-ansible destroy'))

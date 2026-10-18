@@ -64,7 +64,7 @@ class ResetScopeTests(unittest.TestCase):
         plays = yaml.safe_load((ROOT / 'reset-lab-to-ovs.yml').read_text())
         destroy = next(p for p in plays if p['name'] == 'Destroy the current Kolla deployment from the deployment host')
         tasks = destroy['tasks']
-        stop_index = next(i for i, t in enumerate(tasks) if 'Stop only checkpointed controller N-S probes' in t['name'])
+        stop_index = next(i for i, t in enumerate(tasks) if 'Stop owned controller N-S probes' in t['name'])
         destroy_index = next(i for i, t in enumerate(tasks) if t['name'] == 'Run kolla-ansible destroy')
         self.assertLess(stop_index, destroy_index)
         self.assertIn('--interrupt-legacy-client', tasks[stop_index]['ansible.builtin.command']['argv'])
