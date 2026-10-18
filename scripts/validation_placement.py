@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Resolve exact inventory -> Nova -> Neutron identities before workload writes."""
 from run_layout import run_path
+import base64
+import binascii
+import gzip
 import json
 import pathlib
 import sys
@@ -46,6 +49,27 @@ def check(server, port, target):
                 hypervisor=server.hypervisor_hostname, neutron_host=port.binding_host_id)
 
 
+def bounded_user_data(encoded):
+    """Fit Nova's 65535-byte base64 field without changing cloud-init contents.
+
+    Cloud-init detects and decompresses gzip user data before processing it.
+    Small or already compressed payloads retain their original representation.
+    """
+    limit = 65535
+    if encoded is None or len(encoded) <= limit:
+        return encoded
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError('Oversized validation user_data is not valid base64; no Nova request sent') from exc
+    packed = (encoded if raw.startswith(b'\x1f\x8b') else
+              base64.b64encode(gzip.compress(raw, mtime=0)).decode('ascii'))
+    if len(packed) > limit:
+        raise RuntimeError(f'Validation user_data exceeds Nova limit 65535 bytes after gzip+base64 '
+                           f'(original={len(encoded)}, packed={len(packed)}); no Nova request sent')
+    return packed
+
+
 def create_on_target(compute, target, *, name, image_id, flavor_id, networks, metadata, user_data):
     """POST the Nova 2.74 request keys unchanged across SDK versions.
 
@@ -58,7 +82,7 @@ def create_on_target(compute, target, *, name, image_id, flavor_id, networks, me
     if not target.get('nova_host') or not target.get('hypervisor'):
         raise RuntimeError('Missing explicit Nova host/hypervisor destination')
     body = dict(name=name, imageRef=image_id, flavorRef=flavor_id,
-                networks=networks, metadata=metadata, user_data=user_data,
+                networks=networks, metadata=metadata, user_data=bounded_user_data(user_data),
                 host=target['nova_host'], hypervisor_hostname=target['hypervisor'])
     response = compute.post('/servers', json={'server': body}, microversion='2.74')
     exceptions.raise_from_response(response, error_message='Create validation server on requested destination')

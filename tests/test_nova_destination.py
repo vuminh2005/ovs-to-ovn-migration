@@ -1,7 +1,15 @@
 """Exercise real compute-adapter HTTP bodies and microversion headers offline."""
+import base64
+import gzip
 import json
+from pathlib import Path
+import random
+import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
+from unittest.mock import Mock, patch
+import yaml
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from keystoneauth1 import noauth, session
@@ -9,6 +17,7 @@ from openstack.compute.v2._proxy import Proxy
 from openstack.connection import Connection
 from openstack.exceptions import BadRequestException
 from test_validation import ROOT
+from extended_validation import Extended
 from validation_placement import create_on_target
 
 
@@ -29,6 +38,9 @@ class NovaDestinationHTTPTests(unittest.TestCase):
                 if set(body.get('server', {})) - allowed:
                     self.send_response(400)
                     payload = {'badRequest': {'message':'Additional properties are not allowed'}}
+                elif len(body['server']['user_data']) > 65535:
+                    self.send_response(400)
+                    payload = {'badRequest': {'message':'user_data is too long'}}
                 else:
                     self.send_response(owner.response_status)
                 self.send_header('Content-Type', 'application/json')
@@ -82,6 +94,77 @@ class NovaDestinationHTTPTests(unittest.TestCase):
     def test_invalid_target_fails_without_http_request(self):
         with self.assertRaisesRegex(RuntimeError, 'destination'):
             create_on_target(self.compute, {'nova_host':'compute1'}, **self.attributes)
+        self.assertEqual(self.requests, [])
+
+    def test_user_data_boundary_is_measured_after_base64_encoding(self):
+        for size in (49149, 49150):
+            raw = b'#cloud-config\n'+b'x'*(size-len(b'#cloud-config\n'))
+            encoded = base64.b64encode(raw).decode()
+            create_on_target(self.compute, self.target, **dict(self.attributes, user_data=encoded))
+            wire = self.requests[-1][2]['server']['user_data']
+            self.assertLessEqual(len(wire), 65535)
+            if size == 49149:
+                self.assertEqual(len(encoded), 65532)
+                self.assertEqual(wire, encoded)
+            else:
+                self.assertEqual(len(encoded), 65536)
+                self.assertEqual(gzip.decompress(base64.b64decode(wire)), raw)
+
+    def test_real_ns_guest_payload_reaches_nova_with_every_file_and_command_intact(self):
+        for action, export in (('client', True), ('serve', False)):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as folder:
+                cfg = dict(run='20261018-164925', port=18180, new_port=18181,
+                    control_port=18182, control_token='0'*32, source='10.233.0.11',
+                    target='10.1.0.187', interval=.5, timeout=2, lifetime=86400,
+                    label='snat', expected_peer='10.1.0.4', expected_server='external-endpoint',
+                    icmp_enabled=True, icmp_export_enabled=export,
+                    icmp_output='/var/lib/ovn-migration-icmp/20261018-164925/snat-icmp-sender.jsonl')
+                vm = dict(name='owned-ns-'+action, role='ns-'+action, port='owned-port', placement=self.target)
+                validation = SimpleNamespace(root=Path(folder), cloud=SimpleNamespace(compute=self.compute),
+                    cfg=dict(run=cfg['run'], image='image-id', flavor='flavor-id'),
+                    wait_active=Mock(), wait_placement=Mock())
+                extended = Extended(validation)
+                with patch.object(self.compute, 'servers', return_value=[]), \
+                        patch.object(extended, 'server', wraps=extended.server) as boot:
+                    extended.add_ns_guest(vm, action, cfg)
+                original = b'#cloud-config\n'+yaml.safe_dump(boot.call_args.args[1]).encode()
+                wire = self.requests[-1][2]['server']['user_data']
+                raw = base64.b64decode(wire, validate=True)
+                self.assertLessEqual(len(wire), 65535)
+                if export:
+                    self.assertGreater(len(base64.b64encode(original)), 65535)
+                    raw = gzip.decompress(raw)
+                self.assertEqual(raw, original)
+                files = {f['path']: f for f in yaml.safe_load(raw)['write_files']}
+                for guest, source in (('ns-probe.py','ns_probe.py'), ('ns_icmp.py','ns_icmp.py')):
+                    self.assertEqual(files['/usr/local/bin/'+guest]['content'],
+                                     (ROOT/'scripts'/source).read_text())
+                if export:
+                    for name in ('ns_log_transfer.py','run_layout.py'):
+                        self.assertEqual(files['/usr/local/bin/'+name]['content'],
+                                         (ROOT/'scripts'/name).read_text())
+                self.assertEqual(json.loads(files['/etc/ns-probe.json']['content']), cfg)
+                self.assertEqual(vm['server'], 'vm-id')
+                validation.wait_active.assert_called_once_with('vm-id')
+
+    def test_already_gzipped_user_data_is_not_wrapped_again(self):
+        original = b'#cloud-config\n'+b'# repeated config line\n'*4000
+        encoded = base64.b64encode(gzip.compress(original, mtime=0)).decode()
+        create_on_target(self.compute, self.target, **dict(self.attributes, user_data=encoded))
+        wire = self.requests[-1][2]['server']['user_data']
+        self.assertEqual(wire, encoded)
+        self.assertEqual(gzip.decompress(base64.b64decode(wire)), original)
+
+    def test_uncompressible_oversized_data_fails_before_post_without_exposing_it(self):
+        encoded = base64.b64encode(random.Random(0).randbytes(65000)).decode()
+        with self.assertRaisesRegex(RuntimeError, '65535.*gzip') as caught:
+            create_on_target(self.compute, self.target, **dict(self.attributes, user_data=encoded))
+        self.assertNotIn(encoded, str(caught.exception))
+        self.assertEqual(self.requests, [])
+
+    def test_invalid_oversized_base64_fails_before_post(self):
+        with self.assertRaisesRegex(RuntimeError, 'base64'):
+            create_on_target(self.compute, self.target, **dict(self.attributes, user_data='!'*65536))
         self.assertEqual(self.requests, [])
 
 
