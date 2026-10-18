@@ -1,4 +1,3 @@
----
 - name: "Phase 03 - Prepare validation image and flavor"
   hosts: localhost
   gather_facts: false
@@ -27,9 +26,11 @@
 
     - name: "[03] [SAVE] Save image and flavor preparation settings"
       ansible.builtin.copy:
-        dest: "{{ migration_run_dir }}/validation-prerequisites-config.json"
+        dest: "{{ migration_run_dir | run_file('validation-prerequisites-config.json') }}"
         mode: '0600'
-        content: "{{ {'image': validation_image, 'flavor': validation_flavor, 'managed_image_name': validation_managed_image_name, 'managed_flavor_name': validation_managed_flavor_name, 'image_url': validation_managed_image_url, 'cache_dir': validation_image_cache_dir, 'download_timeout': validation_image_download_timeout_seconds | int, 'image_active_timeout': validation_image_active_timeout_seconds | int} | to_nice_json }}"
+        content: "{{ {'image': validation_image, 'flavor': validation_flavor, 'managed_image_name': validation_managed_image_name, 'managed_flavor_name': validation_managed_flavor_name,
+          'image_url': validation_managed_image_url, 'cache_dir': validation_image_cache_dir, 'download_timeout': validation_image_download_timeout_seconds | int,
+          'image_active_timeout': validation_image_active_timeout_seconds | int} | to_nice_json }}"
       when: validation_workloads_enabled | bool
 
     - name: "[03] Prepare and verify validation image and flavor"
@@ -43,7 +44,7 @@
 
     - name: "[03] Load resolved image and flavor IDs"
       ansible.builtin.set_fact:
-        validation_prerequisites_runtime: "{{ lookup('file', migration_run_dir + '/validation-prerequisites.json') | from_json }}"
+        validation_prerequisites_runtime: "{{ lookup('file', (migration_run_dir | run_file('validation-prerequisites.json'))) | from_json }}"
       when: validation_workloads_enabled | bool
 
     - name: "[03] [TIMER] End phase 03"

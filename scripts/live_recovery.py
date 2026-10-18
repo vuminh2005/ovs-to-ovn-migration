@@ -4,6 +4,7 @@
 This barrier never sets traffic measurement anchors, calculates downtime, starts
 probes, reconnects held sockets, or performs resource creation/remediation.
 """
+from run_layout import run_path
 import argparse
 import json
 import math
@@ -115,9 +116,9 @@ class Reader:
 def wait(root, reader, timeout=300, poll=2):
     if not finite(timeout) or timeout <= 0:
         raise ValueError('Positive bounded recovery timeout required')
-    journal = root/'post-restore-observations'/str(uuid.uuid4())
+    journal = run_path(root, 'post-restore-observations')/str(uuid.uuid4())
     journal.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    latest = root/'post-restore-traffic.json'
+    latest = run_path(root, 'post-restore-traffic.json')
     start, deadline = time.time(), time.monotonic()+timeout
     fences, checks = {}, {}
     result = dict(status='IN_PROGRESS', started_at=start, timeout_seconds=timeout,

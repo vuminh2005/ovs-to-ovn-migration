@@ -1,4 +1,3 @@
----
 - name: Recover only a completed DB migration before dataplane cutover
   hosts: localhost
   gather_facts: false
@@ -16,7 +15,8 @@
           - not ansible_check_mode
     - name: Require committed successful DB migration and no cutover markers
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/scripts/post_db_recovery.py", inspect, "{{ migration_resume_run_dir }}", --inventory, "{{ ansible_inventory_sources[0] }}"]
+        argv: [python3, "{{ playbook_dir }}/scripts/post_db_recovery.py", inspect, "{{ migration_resume_run_dir }}", --inventory, "{{ ansible_inventory_sources[0]
+              }}"]
       register: post_db_checkpoint
       changed_when: false
     - name: Require original pre-freeze preparation before resuming cutover
@@ -97,7 +97,7 @@
       ansible.builtin.command:
         argv: [python3, "{{ playbook_dir }}/scripts/diagnostics_control.py", ensure, "{{ migration_run_dir }}"]
       changed_when: false
-      when: lookup('fileglob', migration_run_dir + '/diagnostics-config.json') | length > 0
+      when: lookup('fileglob', (migration_run_dir | run_file('diagnostics-config.json'))) | length > 0
 
 - import_playbook: playbooks/08-cutover.yml
 - import_playbook: playbooks/09-cleanup.yml

@@ -262,7 +262,7 @@ class RecoveryTests(unittest.TestCase):
         copies=[t for p in reset for t in p.get('tasks',[]) if 'ansible.builtin.copy' in t]
         task=copy.deepcopy(next(t for t in copies if t['ansible.builtin.copy'].get('dest')=='{{ reset_globals_path }}'))
         target=yaml.safe_load((ROOT/'playbooks/06-target-config.yml').read_text())
-        change=copy.deepcopy(next(t for t in target[0]['tasks'] if t['name']=='Write target ML2/OVN globals'))
+        change=copy.deepcopy(next(t for t in target[0]['tasks'] if t['name']=='[06] Write target ML2/OVN settings'))
         path=self.root/'globals.yml'
         vars=dict(reset_globals_path=str(path),reset_config_path=str(self.root/'config'),
             reset_nova_scheduler_workers=1,reset_nova_conductor_workers=1,

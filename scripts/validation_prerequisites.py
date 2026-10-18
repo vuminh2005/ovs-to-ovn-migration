@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Prepare reusable validation image/flavor; independent of workload lifecycle."""
+from run_layout import run_path
 import argparse
 import fcntl
 import hashlib
@@ -118,11 +119,11 @@ def prepare(cloud, cfg, root):
                 result['image'].update(created=True, source_url=cfg['image_url'], sha256=sha256,
                                        checksum_url=manifest, cache_path=str(path))
                 result['image'].update(id=image.id, name=image.name)
-                save(root/'validation-prerequisites.json', result)
+                save(run_path(root, 'validation-prerequisites.json'), result)
         result['image'].setdefault('created', False)
         image = active_image(cloud, image, cfg['image_active_timeout'])
         result['image'].update(id=image.id, name=image.name, status=image.status)
-        save(root/'validation-prerequisites.json', result)
+        save(run_path(root, 'validation-prerequisites.json'), result)
         flavor = exact_flavor(cloud, cfg['flavor']) if cfg['flavor'] else None
         if cfg['flavor'] and flavor is None and cfg['flavor'] != cfg['managed_flavor_name']:
             raise RuntimeError(f'Configured validation flavor {cfg["flavor"]!r} was not found; correct override or leave it empty for automatic preparation')
@@ -138,7 +139,7 @@ def prepare(cloud, cfg, root):
         result['flavor'].setdefault('created', False)
         result['flavor'].update(id=flavor.id, name=flavor.name, vcpus=int(flavor.vcpus),
                                 ram_mb=int(flavor.ram), disk_gb=int(flavor.disk))
-        save(root/'validation-prerequisites.json', result)
+        save(run_path(root, 'validation-prerequisites.json'), result)
         return result
 
 
@@ -148,7 +149,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('root', type=pathlib.Path)
     args = p.parse_args()
-    cfg = json.loads((args.root/'validation-prerequisites-config.json').read_text())
+    cfg = json.loads((run_path(args.root, 'validation-prerequisites-config.json')).read_text())
     try:
         prepare(openstack.connect(), cfg, args.root)
     except Exception as exc:

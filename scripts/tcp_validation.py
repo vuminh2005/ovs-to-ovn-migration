@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Owned Pair-D lifecycle and fresh, boot/session-fenced TCP summaries."""
+from run_layout import run_path
 import json
 import math
 import pathlib
@@ -16,12 +17,12 @@ class PairD:
         return self.v.cfg.get('pair_d_enabled', False)
 
     def read(self, name):
-        path = self.v.root/name
+        path = run_path(self.v.root, name)
         return json.loads(path.read_text()) if path.exists() else {}
 
     def save(self, name, value):
         from workload_validation import save
-        save(self.v.root/name, value)
+        save(run_path(self.v.root, name), value)
 
     def latest(self, rows):
         result = {}
@@ -87,8 +88,8 @@ class PairD:
                          current.get('1', {}).get('listener_opened') is False)
             if post:
                 from phase_schema import timestamp
-                start = timestamp(self.v.root/'metrics/control_plane_downtime.start')
-                end = timestamp(self.v.root/'metrics/control_plane_downtime.end')
+                start = timestamp(run_path(self.v.root, 'metrics/control_plane_downtime.start'))
+                end = timestamp(run_path(self.v.root, 'metrics/control_plane_downtime.end'))
                 acknowledged = trigger.get('acknowledged_at')
                 opened_during_freeze = (start is not None and end is not None and
                     type(acknowledged) in (int, float) and start <= acknowledged <= end)
@@ -142,7 +143,7 @@ class PairD:
         payload = dict(action=action, run=self.v.cfg['run'], router=self.v.state['pre']['router'],
                        ip=pair['0']['ip'], port=self.v.cfg['tcp_control_port'])
         ack_filename = 'pair-d-trigger-ack.json' if action == 'ARM' else 'pair-d-control-precheck.json'
-        extra = self.v.root/'pair-d-transport.json'
+        extra = run_path(self.v.root, 'pair-d-transport.json')
         self.save(extra.name, dict(pair_d_trigger=payload, pair_d_network_host=self.v.cfg['pair_d_network_host'],
                                   pair_d_root=str(self.v.root), pair_d_ack_filename=ack_filename))
         if action == 'ARM':
@@ -150,7 +151,7 @@ class PairD:
         helper = pathlib.Path(__file__).parent.parent/'playbooks/pair-d-trigger-tasks.yml'
         completed = subprocess.run(['ansible-playbook', '-i', self.v.cfg['inventory'], str(helper), '-e', '@'+str(extra)],
                                    capture_output=True, text=True, timeout=self.v.cfg['timeout'])
-        log = self.v.root/('pair-d-trigger.log' if action == 'ARM' else 'pair-d-control-precheck.log')
+        log = run_path(self.v.root, 'pair-d-trigger.log' if action == 'ARM' else 'pair-d-control-precheck.log')
         log.write_text(completed.stdout+'\n'+completed.stderr)
         log.chmod(0o600)
         if completed.returncode:
@@ -171,7 +172,7 @@ class PairD:
         if not self.enabled:
             return
         # This operation does not query Neutron: its API is already frozen.
-        if not (self.v.root/'metrics/control_plane_downtime.start').exists() or (self.v.root/'metrics/control_plane_downtime.end').exists():
+        if not (run_path(self.v.root, 'metrics/control_plane_downtime.start')).exists() or (run_path(self.v.root, 'metrics/control_plane_downtime.end')).exists():
             raise RuntimeError('Pair D can be armed only inside the Neutron freeze window')
         if self.read('pair-d-trigger.json').get('status') == 'PASS':
             return  # Never reset the guest epoch during a retry.

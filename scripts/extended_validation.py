@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Owned EW matrix endpoints and SNAT/FIP continuity, checkpointed independently."""
+from run_layout import run_path
 import base64
 import copy
 import json
@@ -53,7 +54,7 @@ def quota20(cloud, root):
     row = dict(project=project, before=original,
                after={k: getattr(after, k) for k in ('instances', 'cores', 'ram')})
     row['status'] = 'PASS' if after.instances == 20 and after.cores == original['cores'] and after.ram == original['ram'] else 'FAIL'
-    save(root/'quota-instances.json', row)
+    save(run_path(root, 'quota-instances.json'), row)
     if row['status'] != 'PASS':
         raise RuntimeError('Quota verification failed: only instances may change')
 
@@ -64,7 +65,7 @@ class Extended:
         self.root = validation.root
         self.cfg = validation.cfg
         self.cloud = validation.cloud
-        self.path = self.root/'extended-resources.json'
+        self.path = run_path(self.root, 'extended-resources.json')
         self.state = read_evidence(self.root, self.path.name) or {'schema': 1, 'run': self.cfg['run']}
         if self.state['run'] != self.cfg['run']:
             raise RuntimeError('Extended workload run identity changed')
@@ -108,7 +109,7 @@ class Extended:
                 free_disk_gb=node.local_disk_size-node.local_disk_used, required_disk_gb=slots*flavor.disk,
                 status='PASS' if node.memory_size-node.memory_used >= slots*flavor.ram and
                 node.local_disk_size-node.local_disk_used >= slots*flavor.disk else 'FAIL')
-        save(self.root/'workload-capacity.json', dict(status='PASS' if all(c['status']=='PASS' for c in checks.values()) else 'FAIL',
+        save(run_path(self.root, 'workload-capacity.json'), dict(status='PASS' if all(c['status']=='PASS' for c in checks.values()) else 'FAIL',
               max_instances=count, max_per_compute=per_host, flavor=dict(id=flavor.id, ram=flavor.ram, vcpus=flavor.vcpus, disk=flavor.disk), checks=checks))
         if any(c['status'] != 'PASS' for c in checks.values()):
             raise RuntimeError('Insufficient quota/compute RAM or disk; inspect workload-capacity.json')
@@ -214,7 +215,7 @@ class Extended:
         return dict(zip(FLOW_NAMES, ((a['0'], x['0']), (x['0'], a['1']), (a['1'], x['1']))))
 
     def capture(self, name, pair):
-        root = self.root/'flows'/name
+        root = run_path(self.root, 'flows')/name
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
         cfg = dict(self.cfg, capture_directory=str(Path(self.cfg['capture_directory'])/name),
                    capture_role=pair[0].get('role', 'measure'))
@@ -260,7 +261,7 @@ class Extended:
                         rows.append(row)
                 except (ValueError, TypeError):
                     pass
-        save(self.root/(vm['role']+'-extended-console.json'), rows)
+        save(run_path(self.root, vm['role']+'-extended-console.json'), rows)
         return rows
 
     def matrix_boots(self, post):
@@ -289,7 +290,7 @@ class Extended:
         if post and not saved:
             raise RuntimeError('Missing matrix boot baseline')
         if not saved:
-            save(self.root/'matrix-boot-baseline.json', current)
+            save(run_path(self.root, 'matrix-boot-baseline.json'), current)
 
     def matrix_finish(self):
         if not self.matrix:
@@ -312,11 +313,11 @@ class Extended:
                 result.pop('pair_a_boot_continuity', None)
                 if boot_error:
                     result.update(status='UNAVAILABLE', reason=boot_error)
-                save(cap.v.root/'tenant-dataplane-probe.json', result)
+                save(run_path(cap.v.root, 'tenant-dataplane-probe.json'), result)
                 results[name] = result
             except Exception as exc:
                 results[name] = dict(status='UNAVAILABLE', reason=str(exc))
-        save(self.root/'ew-matrix-results.json', dict(status='PASS' if all(r['status']=='PASS' for r in results.values()) else 'UNAVAILABLE', flows=results))
+        save(run_path(self.root, 'ew-matrix-results.json'), dict(status='PASS' if all(r['status']=='PASS' for r in results.values()) else 'UNAVAILABLE', flows=results))
         if any(r['status'] != 'PASS' for r in results.values()):
             raise RuntimeError('EW matrix evidence incomplete')
 
@@ -331,12 +332,12 @@ class Extended:
             if fields.get('label'):
                 cfg.update(icmp_enabled=ns.get('icmp_enabled', True),
                     icmp_interval=self.cfg.get('interval', .2))
-                cfg['icmp_output'] = (str(self.root/'ns/fip-icmp-sender.jsonl') if fields['label'] == 'fip'
+                cfg['icmp_output'] = (str(run_path(self.root, 'ns/fip-icmp-sender.jsonl')) if fields['label'] == 'fip'
                     else '/var/lib/ovn-migration-icmp/'+self.cfg['run']+'/snat-icmp-sender.jsonl')
                 if fields['label'] == 'snat' and ns.get('icmp_sender_export_enabled'):
                     cfg['icmp_export_enabled'] = True
             if fields.get('server') == 'external-endpoint' and ns.get('icmp_sender_export_enabled'):
-                cfg['icmp_receive_path'] = str(self.root/'ns/snat-icmp-sender.full.jsonl')
+                cfg['icmp_receive_path'] = str(run_path(self.root, 'ns/snat-icmp-sender.full.jsonl'))
             if fields.get('label') == 'fip':
                 cfg['control_bind'] = '127.0.0.1'
         return cfg
@@ -345,19 +346,49 @@ class Extended:
         journal = self.state.setdefault('processes', {})
         if role in journal:
             cp = journal[role]
-            if cp.get('config') != cfg or not alive(cp.get('identity')):
+            if (cp.get('config') != cfg or cp.get('status') != 'RUNNING'
+                    or not alive(cp.get('identity'))):
                 raise RuntimeError('N-S endpoint process ended/changed; restart prohibited')
+            if action == 'serve' and not Path(cfg['output']).is_file():
+                raise RuntimeError('N-S listener readiness evidence is absent; restart prohibited')
             return
         directory = self.root/'ns'
         directory.mkdir(mode=0o700, exist_ok=True)
         config = directory/(role+'.json')
+        if Path(cfg['output']).exists():
+            raise RuntimeError('N-S output exists without a process checkpoint; refusing overwrite')
         save(config, cfg)
         journal[role] = dict(status='START_INTENT', config=cfg)
         self.commit()
-        with (directory/(role+'.log')).open('ab') as log:
+        log_path = directory/(role+'.log')
+        with log_path.open('ab') as log:
             process = subprocess.Popen(['python3', str(Path(__file__).parent/'ns_probe.py'), action, str(config)],
                 stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
-        journal[role].update(status='RUNNING', identity=identity(process.pid))
+        cp = journal[role]
+        cp.update(status='STARTING', identity=identity(process.pid), pid=process.pid)
+        self.commit()
+        if action == 'serve':
+            deadline = time.monotonic()+self.cfg['timeout']
+            while True:
+                returncode = process.poll()
+                if returncode is not None:
+                    cp.update(status='FAILED', returncode=returncode)
+                    self.commit()
+                    raise RuntimeError(f'N-S {role} exited with rc={returncode}; see {log_path}: '+
+                                       log_path.read_text(errors='replace')[-2000:])
+                if Path(cfg['output']).is_file():
+                    break
+                if time.monotonic() >= deadline:
+                    cp.update(status='FAILED', reason='Listener readiness timed out')
+                    self.commit()
+                    raise RuntimeError(f'N-S {role} readiness timed out; see {log_path}')
+                time.sleep(.05)
+        if process.poll() is not None:
+            cp.update(status='FAILED', returncode=process.returncode)
+            self.commit()
+            raise RuntimeError(f'N-S {role} exited with rc={process.returncode}; see {log_path}: '+
+                               log_path.read_text(errors='replace')[-2000:])
+        cp.update(status='RUNNING')
         self.commit()
 
     def add_ns_guest(self, vm, action, cfg):
@@ -373,6 +404,8 @@ class Extended:
         if cfg.get('icmp_export_enabled'):
             data['write_files'].append(dict(path='/usr/local/bin/ns_log_transfer.py',
                 content=(Path(__file__).parent/'ns_log_transfer.py').read_text(), permissions='0700'))
+            data['write_files'].append(dict(path='/usr/local/bin/run_layout.py',
+                content=(Path(__file__).parent/'run_layout.py').read_text(), permissions='0700'))
         self.server(vm, data)
 
     def create_ns(self):
@@ -457,7 +490,7 @@ class Extended:
                 floating_ip_address=cfg['fip_ip'], port_id=vm['port'], fixed_ip_address=vm['ip'], description=marker)
             s['floating_ip'] = fip.id
             self.commit()
-        directory = self.root/'ns'
+        directory = run_path(self.root, 'ns')
         directory.mkdir(mode=0o700, exist_ok=True)
         from ns_diagnostics import Diagnostics
         diagnostics = Diagnostics(self)
@@ -465,11 +498,6 @@ class Extended:
         diagnostics.start('endpoint')
         self.local_process('snat-server', 'serve', self.ns_config(bind=cfg['endpoint_ip'], server='external-endpoint',
             console=False, output=str(directory/'snat-server.jsonl')))
-        deadline = time.monotonic()+self.cfg['timeout']
-        while not (directory/'snat-server.jsonl').exists():
-            if time.monotonic() > deadline:
-                raise RuntimeError('Cannot bind external endpoint address/port on controller')
-            time.sleep(1)
         self.add_ns_guest(vms['1'], 'serve', self.ns_config(bind=vms['1']['ip'], server='instance-id'))
         self.add_ns_guest(vms['0'], 'client', self.ns_config(source=vms['0']['ip'], target=cfg['endpoint_ip'],
             expected_peer=cfg['snat_ip'], expected_server='external-endpoint', label='snat'))
@@ -486,7 +514,7 @@ class Extended:
         diagnostics.start('guest-fip')
         # Diagnostic evidence identifies the MACs that an outer whitelist must permit.
         ports = list(self.cloud.network.ports(device_id=router.id, network_id=ext.id))
-        save(self.root/'ns-outer-policy.json', dict(router_uuid=router.id,
+        save(run_path(self.root, 'ns-outer-policy.json'), dict(router_uuid=router.id,
             gateway_ports=[dict(id=p.id, mac=p.mac_address, fixed_ips=p.fixed_ips) for p in ports],
             required_ips=[cfg['snat_ip'], cfg['fip_ip']], scope='Reachability gate validates the mentor-managed outer policy'))
 
@@ -497,14 +525,14 @@ class Extended:
         state, ns = self.state['ns'], self.cfg['ns']
         payload = dict(run=self.cfg['run'], action=action, token=state['control_token'],
             ip=state['vms']['0']['ip'], port=ns['control_port'], router=state['router'])
-        ack_path = self.root/('ns-control-'+action.lower()+'.json')
-        extra = self.root/'ns-control-transport.json'
+        ack_path = run_path(self.root, 'ns-control-'+action.lower()+'.json')
+        extra = run_path(self.root, 'ns-control-transport.json')
         save(extra, dict(ns_control_payload=payload, ns_control_host=self.cfg['pair_d_network_host'],
             ns_control_ack_path=str(ack_path)))
         helper = Path(__file__).parent.parent/'playbooks/ns-control-tasks.yml'
         result = subprocess.run(['ansible-playbook', '-i', self.cfg['inventory'], str(helper),
             '-e', '@'+str(extra)], capture_output=True, text=True, timeout=self.cfg['timeout'])
-        (self.root/('ns-control-'+action.lower()+'.log')).write_text(result.stdout+'\n'+result.stderr)
+        (run_path(self.root, 'ns-control-'+action.lower()+'.log')).write_text(result.stdout+'\n'+result.stderr)
         if result.returncode:
             raise RuntimeError('N-S control failed; inspect ns-control log')
         snat = read_evidence(self.root, ack_path.name)
@@ -522,10 +550,10 @@ class Extended:
     def ns_arm(self):
         if not self.ns or not self.cfg['ns'].get('new_port'):
             return
-        metrics = self.root/'metrics'
+        metrics = run_path(self.root, 'metrics')
         if not (metrics/'control_plane_downtime.start').exists() or (metrics/'control_plane_downtime.end').exists():
             raise RuntimeError('N-S listeners can open only after Neutron API freeze')
-        path = self.root/'ns-arm.json'
+        path = run_path(self.root, 'ns-arm.json')
         previous = read_evidence(self.root, path.name)
         if previous.get('status') == 'PASS':
             return  # Never reset socket identities or measurement epoch on retry.
@@ -583,7 +611,7 @@ class Extended:
     def ns_rows(self):
         from ns_probe import PREFIX
         guest = self.console_rows(self.state['ns']['vms']['0'], PREFIX)
-        local_path = self.root/'ns/fip-client.jsonl'
+        local_path = run_path(self.root, 'ns/fip-client.jsonl')
         local = []
         if local_path.exists():
             for line in local_path.read_text().splitlines():
@@ -671,11 +699,11 @@ class Extended:
                 raise RuntimeError('N-S baseline missing; cannot validate held session across migration')
             if not errors:
                 if not baseline:
-                    save(self.root/'ns-baseline.json', dict(status='PASS', clients=rows, resources=snapshot))
+                    save(run_path(self.root, 'ns-baseline.json'), dict(status='PASS', clients=rows, resources=snapshot))
                 if post:
                     self.ns_results(rows, snapshot, baseline)
                 else:
-                    save(self.root/'ns-precutover.json', dict(status='PASS', clients=rows, resources=snapshot))
+                    save(run_path(self.root, 'ns-precutover.json'), dict(status='PASS', clients=rows, resources=snapshot))
                 return
             if time.monotonic() > deadline:
                 if post:
@@ -722,7 +750,7 @@ class Extended:
                 held_session_preservation=streams.get('held', {}).get('status', 'UNAVAILABLE'),
                 boot_continuity='PASS' if continuity else 'FAIL', start_mono=old_row['mono'], end_mono=row.get('mono'), streams=streams,
                 icmp_health=row.get('icmp'), armed_mono=row.get('armed_mono'), listener_ack=row.get('listener_ack'))
-        save(self.root/'ns-results.json', dict(status='PASS' if not errors and all(r['status']=='PASS' for r in results.values()) else 'FAIL',
+        save(run_path(self.root, 'ns-results.json'), dict(status='PASS' if not errors and all(r['status']=='PASS' for r in results.values()) else 'FAIL',
             reason='; '.join(errors or []), directions=results, resources=snapshot,
             scope='Fresh pre-migration baseline summary to final recovered summary, client monotonic application probes; no held reconnect', baseline=baseline,
             source_snat_profile=dict(preserve_snat_source_port_requested=bool(self.cfg['ns'].get('preserve_snat_source_port')),
@@ -787,6 +815,6 @@ class Extended:
                 getattr(self.cloud.network, 'delete_'+kind)(ns[key], ignore_missing=True)
         self.state['cleaned'] = True
         self.commit()
-        save(self.root/'extended-cleanup.json', dict(status='PASS',
+        save(run_path(self.root, 'extended-cleanup.json'), dict(status='PASS',
             retained_shared_external={k: ns[k] for k in ('external_network','external_subnet')}
                 if ns.get('external_owned') is False else {}))

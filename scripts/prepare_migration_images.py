@@ -4,6 +4,7 @@
 Only a temporary copy of the installed Ansible tree is changed. The installed
 Kolla files, image tags, containers, volumes and network state are untouched.
 """
+from run_layout import run_path
 import argparse
 import hashlib
 import json
@@ -78,10 +79,10 @@ def prepare_tree(source, destination):
 
 def run(root, binary, inventory, globals_path):
     root = Path(root).resolve()
-    if not (root/'runtime.json').is_file():
+    if not (run_path(root, 'runtime.json')).is_file():
         raise ValueError('An existing migration run is required')
     source = kolla_tree(binary)
-    evidence = root/'image-preflight'/str(uuid.uuid4())
+    evidence = run_path(root, 'image-preflight')/str(uuid.uuid4())
     evidence.mkdir(parents=True, mode=0o700)
     metadata = dict(status='STARTED', policy='missing', started_at=time.time(),
                     kolla_ansible=str(binary), kolla_ansible_tree=str(source),

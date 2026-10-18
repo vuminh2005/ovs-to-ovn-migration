@@ -1,5 +1,11 @@
 # Kolla-Ansible ML2/OVS -> ML2/OVN migration automation v2
 
+Cập nhật 18/10/2026 trên nền **b87da3d**: sửa listener N-S còn giữ cổng sau
+reset/rollback, thống nhất `[SAVE]` và Group A–D, chia thư mục kết quả cho run
+mới và ghi vị trí backup MariaDB. Run cũ vẫn đọc/ghi/resume theo layout cũ.
+Giữ OpenFlow phase 08 và cơ chế gateway của b87.
+Xem [phạm vi thay đổi, cấu trúc kết quả và cách chạy lại](docs/b87-update-20261018.md).
+
 Cập nhật 16/10/2026: chuẩn bị OpenFlow15/helper/port checkpoint trước freeze,
 hoãn dump tổng hợp và sampling bổ sung đến sau phục hồi, quan sát probe gốc
 trước AFTER/smoke; reset và resume được đồng bộ. Format TXT giữ nguyên.
@@ -64,9 +70,9 @@ Creation sends the API request keys `host` and `hypervisor_hostname` through
 the authenticated compute adapter, so older SDKs cannot drop the host or
 serialize the response-only `OS-EXT-SRV-ATTR:hypervisor_hostname` key.
 Placement is checkpointed and checked before freeze and after migration.
-Pair-A PCAP delegation uses this verified compute mapping.
+Group A PCAP delegation uses this verified compute mapping.
 
-Pair D is enabled automatically by default (`validation_pair_d_enabled: true`).
+Group D is enabled automatically by default (`validation_pair_d_enabled: true`).
 A/B/D share the pre-migration two-network routed topology. C still creates its
 own two Geneve networks/subnets and router after migration. With D enabled the
 base workload creates eight VMs, four networks/subnets and two routers. The enabled EW/NS extension raises the total to twelve VMs, six networks/subnets and three routers.
@@ -109,7 +115,7 @@ Image and flavor preparation is automatic. The deployment host needs outbound HT
 to `cloud-images.ubuntu.com` only when the managed Ubuntu image is absent.
 Existing image/flavor overrides remain optional; no manual upload or flavor creation is required.
 `group_vars/all.yml` contains the defaults for this four-node nested lab:
-Geneve MTU 1392, automatic Pair D, and guarded Pair-B remediation enabled both
+Geneve MTU 1392, automatic Group D, and guarded Group B remediation enabled both
 before and after cutover. No `migration-lab.yml` or extra variables are required.
 For another lab, configure an appropriate validation target MTU before running.
 
@@ -374,7 +380,7 @@ report generation recursively. Final reports must already exist before capture
 cleanup, and existing validation/cleanup gates remain in force.
 Legacy totals continue to end at report entry and exclude finalization. Total wall
 time includes operator/resume waits in either schema. Dedicated DB, control-plane,
-PortBinding and Pair-A packet measurement boundaries are otherwise unchanged.
+PortBinding and Group A packet measurement boundaries are otherwise unchanged.
 
 ### Guest packet loss and outage
 
@@ -389,14 +395,14 @@ Three explicit pairs have separate purposes:
 | C | `fresh0`, `fresh1` | Fresh OVN provisioning on new routed Geneve networks after migration |
 
 Pairs A and B share two dedicated VXLAN networks and a centralized router,
-with separate explicit ports per guest. Pair C uses two new networks and a new
+with separate explicit ports per guest. Group C uses two new networks and a new
 router. Names include the run ID and role. No Floating IP, provider network,
 SSH key or tenant SSH is used. The preservation snapshot includes all four
 pre-migration guests.
 
-Cloud-init installs a Python service in every guest. Pair A uses one persistent
+Cloud-init installs a Python service in every guest. Group A uses one persistent
 `ping -n -D -O -s 56 -i <interval>` session per guest. The authoritative direction
-is measure0 -> measure1; reverse traffic remains a recovery diagnostic. Pair B/C
+is measure0 -> measure1; reverse traffic remains a recovery diagnostic. Group B/C
 retain their existing per-attempt small-packet health probes. Compact serial JSON
 still carries boot, DHCP, MTU and metadata diagnostics, requiring the instance UUID
 for metadata success. Guest probes require no package downloads.
@@ -414,15 +420,15 @@ packet-buffered Ethernet PCAP under `validation_capture_directory/<run-id>/` (de
 it needs no Nova console or Neutron API. The root supervisor records process identities,
 heartbeat gaps, clean completion and tcpdump kernel-drop counters.
 
-After both Pair-A guests are ACTIVE/bound, exact identities/boots are saved and
+After both Group A guests are ACTIVE/bound, exact identities/boots are saved and
 capture observes five continuous request/reply pairs, `validation-window.json`
-receives its immutable `pcap_start`. This happens before Pair-B creation, OVN staging,
+receives its immutable `pcap_start`. This happens before Group B creation, OVN staging,
 MTU changes, remediations or freeze/cutover. Phase 08 reuses it. Capture continues
-through all post-cutover Pair-B/Pair-C validation and final OVN binding checks.
+through all post-cutover Group B/Group C validation and final OVN binding checks.
 Only then a request-index recovery fence is saved; five stable recovered requests
 newer than that fence establish `pcap_end`. The measured interval
 is `(pcap_start.index, pcap_end.index]`, indexed by captured measure0 echo requests.
-Metadata and stale guest MTU never gate the packet endpoint. Pair A is never rebooted
+Metadata and stale guest MTU never gate the packet endpoint. Group A is never rebooted
 or remediated. Its boot/resource preservation is reported independently.
 
 Each readiness invocation first snapshots per-VM sequence fences in
@@ -450,21 +456,21 @@ percentage and outage; raw counts may remain for diagnostics. Guest console
 truncation does not invalidate a complete PCAP. Neither controller/guest clock
 comparisons nor PortBinding state select or synthesize packet observations.
 
-Pair B must initially pass source VXLAN, source guest MTU, ACTIVE/bound identity,
+Group B must initially pass source VXLAN, source guest MTU, ACTIVE/bound identity,
 DHCP, metadata, routed connectivity and short-T1 renewal checks. Phase 06 first
 attempts automatic target MTU convergence without reboot. If it fails solely
 because of stale guest MTU, optional controlled remediation is described below.
-Both Pair-B guests must be healthy at the target MTU before phase 07 begins;
+Both Group B guests must be healthy at the target MTU before phase 07 begins;
 a fresh guard checks this immediately before downtime metrics and Neutron freeze.
-After OVN restoration, Pair B must retain the authoritative pre-cutover boot and
+After OVN restoration, Group B must retain the authoritative pre-cutover boot and
 server/port/IP baseline, use the target MTU and the actual OVN metadata route,
-and pass DHCP, metadata and routed connectivity. Pair C is created only after
+and pass DHCP, metadata and routed connectivity. Group C is created only after
 existing networks demonstrate Geneve semantics and must pass provisioning,
 DHCP, target MTU, metadata, routed connectivity and Southbound binding checks.
 
-Cleanup requires all independent pair checks, Pair-C Southbound bindings,
-VXLAN -> Geneve semantics, valid Pair-A coverage/boot continuity, orchestration
-and resource preservation. Complete success deletes Pair C first, then both
+Cleanup requires all independent pair checks, Group C Southbound bindings,
+VXLAN -> Geneve semantics, valid Group A coverage/boot continuity, orchestration
+and resource preservation. Complete success deletes Group C first, then both
 pre-existing pairs, then their shared topology. `post-cleanup.json` and
 `pre-cleanup.json` journal exact UUIDs; the final report requires both cleanups.
 Reusable image/flavor prerequisites remain retained.
@@ -498,15 +504,15 @@ Configuration in `group_vars/all.yml`:
 | `validation_console_tail_lines` | Bounded console tail per API call; default 20,000 |
 | `dataplane_probe_interval_seconds` | Guest ICMP interval |
 | `validation_capture_directory` | Persistent compute evidence base; default `/var/lib/ovn-migration-validation` |
-| `validation_allow_pre_cutover_guest_reboot` | Guarded, owned Pair-B pre-cutover remediation; default true for this lab |
-| `validation_allow_post_cutover_guest_reboot` | Independent guarded, owned Pair-B post-cutover remediation; default true for this lab |
+| `validation_allow_pre_cutover_guest_reboot` | Guarded, owned Group B pre-cutover remediation; default true for this lab |
+| `validation_allow_post_cutover_guest_reboot` | Independent guarded, owned Group B post-cutover remediation; default true for this lab |
 | `validation_post_cutover_dhcp_timeout_seconds` | Automatic OVN DHCP convergence bound; default 180 |
 
 Use an Ubuntu cloud image containing cloud-init, Python3, ping, iproute2,
 systemd, DHCP lease files in `/run/systemd/netif/leases` or `/var/lib/dhcp`,
 and writable ttyS0. Unsupported images fail before downtime with console
 instructions. DHCP evidence proves a real lease and usable configuration; it
-also checks that Pair B has received the target MTU and the actual OVN metadata
+also checks that Group B has received the target MTU and the actual OVN metadata
 next-hop after migration; a stale source lease is insufficient for convergence.
 Nova must expose serial
 console output through the API, and the deployment Python environment must contain
@@ -609,7 +615,7 @@ meanings from runtime metadata only. Before cleanup, resume still verifies live
 `ovn-controller` containers and stopped legacy Neutron agents. A failed eligibility
 or live-state check aborts before other host groups can enter cleanup.
 
-Pair-B pre-cutover reboot remains blocked by freeze/cutover evidence:
+Group B pre-cutover reboot remains blocked by freeze/cutover evidence:
 legacy `phase05.start`/`phase06.start`, canonical `phase08.start` or the dedicated
 `db_migration.start`, and `control_plane_downtime.start` in either schema.
 Canonical phase 07's file timer alone cannot prohibit remediation before freeze;
@@ -667,18 +673,18 @@ not be treated as complete packet-loss measurement. `initial_ovs_workload_valida
 and `validation_orchestration` retains subprocess failure details.
 
 On late retries, resource-preservation comparisons exclude additions only for
-checkpointed UUIDs belonging to this run's fresh Pair-C topology. Original
+checkpointed UUIDs belonging to this run's fresh Group C topology. Original
 resource deletions and unrelated additions still fail the existing guard.
 
 ## Owned validation DHCP preparation
 
-Before Pair-B guests boot, their owned explicit ports receive
+Before Group B guests boot, their owned explicit ports receive
 DHCP option 58 (T1, default 30 seconds) and option 59 (T2, default 60 seconds)
 through Neutron `extra_dhcp_opts`. Caracal supports these options in both its
 [dnsmasq agent](https://github.com/openstack/neutron/blob/24.0.0/neutron/agent/linux/dhcp.py)
 and [OVN option mapping](https://github.com/openstack/neutron/blob/24.0.0/neutron/common/ovn/constants.py).
 No database SQL, forced lease renewal or unrelated tenant DHCP configuration is used.
-Guest reboot is limited to the guarded, validation-owned Pair-B remediation below. Short T2 bounds broadcast rebinding when the old OVS DHCP
+Guest reboot is limited to the guarded, validation-owned Group B remediation below. Short T2 bounds broadcast rebinding when the old OVS DHCP
 server disappears; T1 alone would keep renewing against that old server.
 
 The root guest service passively observes guest DHCP renewal REQUESTs and their
@@ -711,7 +717,7 @@ must permit AF_PACKET and its DHCP client must request/honor these options.
 Unsupported or missing ACK evidence fails before migration rather than guessing.
 
 `06-target-config.yml` retains the existing VXLAN MTU reduction and then polls
-Pair-B guest evidence until both report the advertised target MTU, usable leases,
+Group B guest evidence until both report the advertised target MTU, usable leases,
 short-T1/T2 renewals, continuing packet probes and unchanged boot IDs. This guard
 runs with a new sequence/guest-monotonic anchor captured after the network MTU
 update: the last matched renewal ACK must be newer than that anchor. Old phase-04
@@ -743,7 +749,7 @@ Historical phase checkpoint names remain schema 1; late-resume resource IDs are 
 Older run guests without the new DHCP evidence cannot claim DHCP convergence;
 resume does not fabricate preparation or silently reboot them.
 
-## Pair-B controlled pre-cutover remediation and checkpoints
+## Group B controlled pre-cutover remediation and checkpoints
 
 `validation_allow_pre_cutover_guest_reboot` defaults to **true** for this lab.
 Reboot is still conditional on all remediation guards below. To disable only
@@ -761,13 +767,13 @@ and routed packets work, diagnostics show no static MTU and enabled DHCP MTU
 consumption, and its boot is still the original boot. Any other problem stops
 before freeze. Diagnostics that are unknown cannot authorize reboot.
 
-Only exact Pair-B UUIDs in the checkpoint with owned ports, matching server
+Only exact Group B UUIDs in the checkpoint with owned ports, matching server
 ownership metadata and unchanged identity may receive a Nova
 [SOFT reboot](https://docs.openstack.org/openstacksdk/2024.1/user/proxies/compute.html).
 The guests are rebooted sequentially. Each must reach ACTIVE and demonstrate a
 new boot, unchanged server/port/IP, target MTU, usable DHCP, metadata and fresh
-routed success before the next guest is handled. Pair A is explicitly excluded.
-The final Pair-B migration baseline is established only after both are healthy;
+routed success before the next guest is handled. Group A is explicitly excluded.
+The final Group B migration baseline is established only after both are healthy;
 post-migration boot continuity compares to this baseline, allowing the planned
 pre-cutover reboot without allowing a migration-time reboot.
 
@@ -790,8 +796,8 @@ Server and explicit port UUIDs are saved immediately after creation. Existing
 checkpoints are reused; an uncheckpointed port/server response is recoverable
 only through its unique role name and owned network/port association. Ambiguous
 matches fail. Historical dual-purpose pairs retain their UUIDs and old console
-labels as `existing`/`fresh`; they cannot be relabeled Pair A or authorize reboot.
-Missing Pair-A evidence cannot be reconstructed after takeover.
+labels as `existing`/`fresh`; they cannot be relabeled Group A or authorize reboot.
+Missing Group A evidence cannot be reconstructed after takeover.
 
 The separate evidence checkpoints are:
 
@@ -820,12 +826,12 @@ Reports retain existing timing/validation fields and add `dataplane_continuity`,
 `automatic_mtu_convergence`, `remediation_required`, `remediation_action`,
 `pre_cutover_mtu_readiness`, `existing_workload_mtu`,
 `existing_workload_boot_continuity`, `new_ovn_workload_mtu`,
-`new_ovn_workload_geneve`, plus Pair-A measurement/boot labels in `dataplane_probe`.
+`new_ovn_workload_geneve`, plus Group A measurement/boot labels in `dataplane_probe`.
 Automatic MTU convergence can be FAIL while overall SUCCESS follows proven,
 controlled remediation, full post-migration validation and successful cleanup.
 
 
-## Pair-A compute capture journal and post-cutover Pair-B convergence
+## Group A compute capture journal and post-cutover Group B convergence
 
 `pair-a-capture.json` has schema version 1 and records `compute_host`, `binding_host`,
 measure0 `server`/`port`, `source_ip`/`peer_ip`, `tap`, `directory`, `path`, `intent_at`,
@@ -839,14 +845,14 @@ finalization; start/end indices are never reset. Historical console measurements
 remain historical diagnostics and cannot become a current authoritative PCAP result.
 A new measurement run is necessary if capture was not started before migration.
 
-After Neutron restoration, Pair B first has a bounded automatic DHCP convergence
+After Neutron restoration, Group B first has a bounded automatic DHCP convergence
 attempt. `existing-post-cutover-anchor.json` is latched after restoration (therefore
 later than takeover), with guest sequence and monotonic fences; pre-cutover renewals
 cannot pass. Identity, baseline boot, ACTIVE/binding, routed traffic, usable DHCP,
 target MTU, fresh matched renewal with the unchanged sane timer/cadence semantics,
 actual distributed metadata next-hop and metadata access must all pass.
 
-Only a validation-owned Pair-B guest with unchanged identity/boot, target MTU,
+Only a validation-owned Group B guest with unchanged identity/boot, target MTU,
 healthy routed traffic, usable lease, a running renewal observer and **no** fresh
 renewal may be POST_CUTOVER_REBOOT_REQUIRED. Its route must be demonstrably stale.
 A read-only query must prove an exact LSP with a unique referenced IPv4 DHCP_Options
@@ -864,7 +870,7 @@ ansible-playbook -i /root/multinode migrate-to-ovn.yml
 
 Each SOFT reboot is sequential and journaled before Nova is called. New boot,
 unchanged server/port/IP, genuine OVN renewal, target MTU, correct metadata route,
-metadata access and routed traffic must pass. Pair A/C are explicitly excluded.
+metadata access and routed traffic must pass. Group A/C are explicitly excluded.
 An ambiguous request is never resent; resume either proves completion on the new
 boot or fails safely. Completed boots cannot be rebased to an unexpected third boot.
 `existing-migration-baseline.json` remains immutable; a separate
@@ -882,11 +888,11 @@ Reports add `automatic_guest_mtu_convergence`, `pre_cutover_remediation_required
 `fixed_ip_preserved`, and `pair_a_capture`, plus grouped remediation evidence.
 Existing field aliases remain compatible. With all final validations and cleanup
 complete, seamless runs report SUCCESS; a required post-cutover reboot reports
-SUCCESS_WITH_REMEDIATION and Pair-B `PASS AFTER REMEDIATION`. Pre-cutover-only
+SUCCESS_WITH_REMEDIATION and Group B `PASS AFTER REMEDIATION`. Pre-cutover-only
 remediation retains SUCCESS with its explicit fields. Any unresolved validation
 failure reports MIGRATED_VALIDATION_INCOMPLETE, preserves evidence/resources and
-never rolls back. Pair-A capture counts every actual Pair-A loss during either
-remediation; Pair-B packets never enter that metric.
+never rolls back. Group A capture counts every actual Group A loss during either
+remediation; Group B packets never enter that metric.
 
 
 ## N-S ICMP, listener bổ sung và diagnostics

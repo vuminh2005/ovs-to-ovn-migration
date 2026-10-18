@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'scripts'))
 import reset_local_probes as probes
 from reset_local_probes import stop_probes
+from run_layout import initialize, run_path
 
 
 PROGRAM = '''import json, signal, socket, sys, time
@@ -76,8 +77,10 @@ class ResetLocalProbeTests(unittest.TestCase):
                 saved == self.identities[pid])
 
     def process(self, run='run-one', role='snat-server', ignore_term=False, script=None,
-                fields=None, env=None):
+                fields=None, env=None, organized=False):
         root = self.backups/run
+        if organized:
+            initialize(root)
         (root/'ns').mkdir(parents=True, exist_ok=True)
         config = dict(run=run, console=False, output=str(root/'ns'/(role+'.jsonl')),
                       ignore_term=ignore_term)
@@ -104,11 +107,11 @@ class ResetLocalProbeTests(unittest.TestCase):
             if process.poll() is not None or time.monotonic() > deadline:
                 self.fail('Test listener did not start')
             time.sleep(.01)
-        checkpoint = root/'extended-resources.json'
+        checkpoint = run_path(root,'extended-resources.json')
         state = json.loads(checkpoint.read_text()) if checkpoint.exists() else dict(schema=1, run=run, processes={})
         state['processes'][role] = dict(status='RUNNING', config=config, identity=dict(self.identities[process.pid]))
         checkpoint.write_text(json.dumps(state))
-        (root/'validation-config.json').write_text(json.dumps({'run': run}))
+        run_path(root,'validation-config.json').write_text(json.dumps({'run': run}))
         return process, root, state
 
     def test_stops_both_owned_probes_releases_listeners_and_preserves_evidence(self):
@@ -131,6 +134,30 @@ class ResetLocalProbeTests(unittest.TestCase):
         result = stop_probes(self.backups, self.evidence)
         self.assertEqual(result['status'], 'PASS')
         self.assertEqual(result['stopped'], [])
+
+    def test_reset_releases_listeners_from_flat_and_organized_runs_together(self):
+        flat,old,_=self.process(run='flat-run')
+        organized,new,_=self.process(run='organized-run',organized=True)
+        checkpoints={p:p.read_bytes() for p in
+            (run_path(old,'extended-resources.json'),run_path(new,'extended-resources.json'))}
+        ports=[int((root/'ns/snat-server.jsonl').read_text()) for root in (old,new)]
+        result=stop_probes(self.backups,self.evidence)
+        self.assertEqual({row['run'] for row in result['stopped']},{'flat-run','organized-run'})
+        flat.wait(2); organized.wait(2)
+        for path,data in checkpoints.items(): self.assertEqual(path.read_bytes(),data)
+        for port in ports:
+            with socket.socket() as sock: sock.bind(('127.0.0.1',port))
+        self.assertEqual(stop_probes(self.backups,self.evidence)['stopped'],[])
+
+    def test_invalid_organized_owner_blocks_signals_to_the_valid_flat_run(self):
+        flat,_,_=self.process(run='a-flat')
+        organized,root,state=self.process(run='z-organized',organized=True)
+        state['processes']['snat-server']['config']['run']='foreign'
+        run_path(root,'extended-resources.json').write_text(json.dumps(state))
+        with self.assertRaisesRegex(RuntimeError,'config ownership'):
+            stop_probes(self.backups,self.evidence)
+        self.assertIsNone(flat.poll()); self.assertIsNone(organized.poll())
+        self.assertEqual(json.loads(self.evidence.read_text())['signaled'],[])
 
     def test_stale_start_ticks_never_signal_reused_pid(self):
         process, root, state = self.process()

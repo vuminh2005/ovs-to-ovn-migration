@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Read-only post-DB/pre-cutover checkpoint selection and guarded recovery notes."""
+from run_layout import run_path
 import argparse
 import configparser
 import json
@@ -14,7 +15,7 @@ from workload_validation import save
 
 
 def read(root, name):
-    value=json.loads((root/name).read_text())
+    value=json.loads((run_path(root, name)).read_text())
     if not isinstance(value,dict):
         raise ValueError('Malformed checkpoint: '+name)
     return value
@@ -29,9 +30,9 @@ def inspect(root, inventory):
         raise ValueError('Recovery inventory differs from the original run')
     if Path(runtime['run_id']).name != root.name:
         raise ValueError('Runtime run ID differs from checkpoint directory')
-    if (root/'inventory.before').read_bytes() != Path(inventory).read_bytes():
+    if (run_path(root, 'inventory.before')).read_bytes() != Path(inventory).read_bytes():
         raise ValueError('Kolla inventory changed after source snapshot')
-    metrics=root/'metrics'
+    metrics=run_path(root, 'metrics')
     times={name:timestamp(metrics/name) for name in ('phase06.end','phase07.start',
         'control_plane_downtime.start','db_migration.start','db_migration.end')}
     if any(value is None for value in times.values()):
@@ -42,24 +43,24 @@ def inspect(root, inventory):
         if (metrics/name).exists():
             raise ValueError('Cutover/cleanup/API restoration already began: '+name)
     # DB migration is never repeated by this recovery route.
-    log=(root/'db-sync-migrate.log').read_text()
+    log=(run_path(root, 'db-sync-migrate.log')).read_text()
     if not re.match(r'\Areturncode:\s*0\s*\n',log):
         raise ValueError('Authoritative DB migration did not report rc=0')
     if read(root,'provider-associations-verification.json').get('status') != 'PASS':
         raise ValueError('L3 provider association verification is not PASS')
-    if verification(json.loads((root/'provider-associations.after.json').read_text()))['status'] != 'PASS':
+    if verification(json.loads((run_path(root, 'provider-associations.after.json')).read_text()))['status'] != 'PASS':
         raise ValueError('Provider snapshot still contains legacy associations')
-    if not (root/'compute-port-ids.txt').is_file():
+    if not (run_path(root, 'compute-port-ids.txt')).is_file():
         raise ValueError('Pre-existing compute port ID checkpoint is absent')
     counts=read(root,'resource-counts.before.json')
     config=configparser.ConfigParser(interpolation=None)
-    if not config.read(root/'ml2_conf.ini.target'):
+    if not config.read(run_path(root, 'ml2_conf.ini.target')):
         raise ValueError('Target ML2 configuration checkpoint is absent')
     nb=config.get('ovn','ovn_nb_connection')
     sb=config.get('ovn','ovn_sb_connection')
     if not nb or not sb:
         raise ValueError('Checkpointed OVN endpoints are empty')
-    cfg=read(root,'validation-config.json') if (root/'validation-resources.json').exists() else {}
+    cfg=read(root,'validation-config.json') if (run_path(root, 'validation-resources.json')).exists() else {}
     if cfg:
         if cfg.get('run') != runtime['run_id']:
             raise ValueError('Workload run identity differs')
@@ -97,7 +98,7 @@ def select(parent, inventory):
 
 
 def record(root):
-    path=Path(root)/'orchestration-recovery.json'
+    path=run_path(Path(root), 'orchestration-recovery.json')
     prior=read(Path(root),path.name) if path.exists() else {'events':[]}
     if not any(event.get('route')=='post-db-pre-cutover' for event in prior['events']):
         prior['events'].append(dict(route='post-db-pre-cutover',resumed_at=time.time(),

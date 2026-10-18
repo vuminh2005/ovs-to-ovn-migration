@@ -355,7 +355,7 @@ class SharedAnsibleTests(unittest.TestCase):
 
     def test_guest_config_retains_all_automatic_workloads_and_shared_checkpoint(self):
         plays=yaml.safe_load((ROOT/'playbooks/04-validation-workloads.yml').read_text())
-        task=next(t for p in plays for t in p['tasks'] if t['name']=='Save non-secret guest validation configuration')
+        task=next(t for p in plays for t in p['tasks'] if t['name']=='[04] [SAVE] Save workload validation settings')
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)
             shared=dict(owned=False,network={'id':'shared-network'},subnet={'id':'shared-subnet'})
@@ -382,9 +382,9 @@ class SharedAnsibleTests(unittest.TestCase):
         self.assertIn('source_topology.py',pre)
         report=yaml.safe_load((ROOT/'playbooks/13-report.yml').read_text())[0]['tasks']
         names=[t['name'] for t in report]
-        cleanup=names.index('Finalize owned pairs only after all guest binding semantics and probe evidence passes')
-        check=names.index('Verify pre-existing demo and shared external survive workload cleanup')
-        rebuild=names.index('Rebuild final report including all enabled pairs cleanup evidence')
+        cleanup=names.index('[13] Finalize and clean up owned workloads when checks pass')
+        check=names.index('[13] Check demo and shared external resources survive cleanup')
+        rebuild=names.index('[13] Update reports with workload cleanup results')
         self.assertLess(cleanup,check);self.assertLess(check,rebuild)
         self.assertIn('source-topology-before.json',str(report[check]['when']))
         source=(ROOT/'scripts/report_format.py').read_text().partition('\ndef terminal_summary(')[0]

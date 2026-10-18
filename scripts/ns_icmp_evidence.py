@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """N-S ICMP metrics from sender-side PCAP, avoiding translated ICMP identifiers."""
+from run_layout import run_path
 import json
 from pathlib import Path
 
@@ -10,14 +11,14 @@ from ns_icmp_reconcile import reconcile
 
 def finalize(root):
     root = Path(root)
-    cfg = json.loads((root/'validation-config.json').read_text())
+    cfg = json.loads((run_path(root, 'validation-config.json')).read_text())
     ns = cfg.get('ns', {})
     if not ns.get('enabled') or not ns.get('icmp_enabled'):
         return {}
-    path = root/'ns-results.json'
+    path = run_path(root, 'ns-results.json')
     result = json.loads(path.read_text()) if path.exists() else dict(status='UNAVAILABLE', directions={})
-    baseline = json.loads((root/'ns-baseline.json').read_text())
-    captures = json.loads((root/'ns-diagnostics.json').read_text()).get('captures', {})
+    baseline = json.loads((run_path(root, 'ns-baseline.json')).read_text())
+    captures = json.loads((run_path(root, 'ns-diagnostics.json')).read_text()).get('captures', {})
     outcomes = {}
     for direction, kind, source, peer in (
         ('snat', 'guest-snat', ns['outbound_ip'], ns['endpoint_ip']),
@@ -29,7 +30,7 @@ def finalize(root):
             if (cp.get('remote', {}).get('status') != 'STOPPED' or
                     cp['remote'].get('dropped_packets') != 0):
                 raise ValueError('Capture completeness/drop count not proven')
-            raw = root/'ns-diagnostics'/kind/'tcp.pcap'
+            raw = run_path(root, 'ns-diagnostics')/kind/'tcp.pcap'
             rows, problems = echo_rows(raw, source, peer)
             start_ts = baseline['clients'][direction]['ts']
             before = [r for r in rows if r['ts'] <= start_ts and r['reply_timestamp'] is not None]
@@ -49,8 +50,8 @@ def finalize(root):
             bursts = value.get('failure_bursts', [])
             value['total_downtime_seconds'] = (sum(b['duration_seconds'] for b in bursts)
                 if value['status'] == 'PASS' else None)
-            sender_path = root/'ns'/(direction+'-icmp-sender.jsonl')
-            full = root/'ns/snat-icmp-sender.full.jsonl'
+            sender_path = run_path(root, 'ns')/(direction+'-icmp-sender.jsonl')
+            full = run_path(root, 'ns/snat-icmp-sender.full.jsonl')
             if direction == 'snat' and (full.exists() or ns.get('icmp_sender_export_enabled')):
                 sender_path = full
                 from ns_log_transfer import verify_export
@@ -93,6 +94,6 @@ def finalize(root):
         entry['status'] = 'PASS' if value['status'] == 'PASS' and entry['tcp_status'] == 'PASS' else 'FAIL'
     result['status'] = ('PASS' if not result.get('reason') and result.get('directions') and
                         all(v.get('status') == 'PASS' for v in result['directions'].values()) else 'FAIL')
-    save(root/'ns-icmp-results.json', outcomes)
+    save(run_path(root, 'ns-icmp-results.json'), outcomes)
     save(path, result)
     return outcomes

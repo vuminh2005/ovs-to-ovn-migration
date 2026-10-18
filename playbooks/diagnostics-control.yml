@@ -13,11 +13,12 @@
         state: directory
         mode: '0700'
       when: diagnostics_action == 'start'
-    - name: "[DIAGNOSTICS] Stage host observer helper"
+    - name: "[DIAGNOSTICS] [SAVE] Stage host observer helper"
       ansible.builtin.copy:
-        src: ../scripts/migration_diagnostics.py
-        dest: "{{ diagnostic_entry.remote_directory }}/migration_diagnostics.py"
+        src: "../scripts/{{ item }}"
+        dest: "{{ diagnostic_entry.remote_directory }}/{{ item }}"
         mode: '0700'
+      loop: [migration_diagnostics.py, run_layout.py]
       when: diagnostics_action == 'start'
     - name: "[DIAGNOSTICS] Run observer control operation"
       ansible.builtin.command:
@@ -44,7 +45,7 @@
       changed_when: false
       failed_when: false
       when: diagnostics_action == 'stop'
-    - name: "[DIAGNOSTICS] Fetch host evidence before workload cleanup"
+    - name: "[DIAGNOSTICS] [SAVE] Fetch host evidence before workload cleanup"
       ansible.builtin.fetch:
         src: "{{ diagnostic_entry.remote_directory }}.tar.gz"
         dest: "{{ diagnostics_root }}/{{ diagnostic_entry.archive_name | default(inventory_hostname + '-' + diagnostic_entry.role + '.tar.gz') }}"

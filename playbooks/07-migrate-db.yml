@@ -1,4 +1,3 @@
----
 - name: "Phase 07 - Prepare Neutron API freeze and database migration"
   hosts: localhost
   any_errors_fatal: true
@@ -35,10 +34,9 @@
 
     - name: "[07] [SAVE] Save cutover inputs and timeouts"
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../scripts/cutover_preparation.py", prepare,
-               "{{ hostvars['localhost']['migration_run_dir'] }}", --image, "{{ neutron_server_image.stdout }}",
-               --base, "{{ binding_timeout_base_seconds | int }}", --per-port, "{{ binding_timeout_seconds_per_port | int }}",
-               --maximum, "{{ binding_timeout_max_seconds | int }}"]
+        argv: [python3, "{{ playbook_dir }}/../scripts/cutover_preparation.py", prepare, "{{ hostvars['localhost']['migration_run_dir'] }}", --image, "{{ neutron_server_image.stdout
+              }}", --base, "{{ binding_timeout_base_seconds | int }}", --per-port, "{{ binding_timeout_seconds_per_port | int }}", --maximum, "{{ binding_timeout_max_seconds
+              | int }}"]
       delegate_to: localhost
       register: cutover_preparation_result
       run_once: true
@@ -51,21 +49,21 @@
       delegate_facts: true
       run_once: true
 
-    - name: "[07] Create run-owned provider helper directory"
+    - name: "[07] Create run-owned router backend helper directory"
       ansible.builtin.file:
         path: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}"
         state: directory
         mode: '0700'
       run_once: true
 
-    - name: "[07] [SAVE] Save provider helper ownership"
+    - name: "[07] [SAVE] Save router backend helper ownership"
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}/owner.json"
         content: "{{ hostvars['localhost']['cutover_preparation_runtime'] | to_nice_json }}"
         mode: '0600'
       run_once: true
 
-    - name: "[07] Stage provider association helper"
+    - name: "[07] [SAVE] Stage router backend association helper"
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}/provider_associations.py"
         content: "{{ lookup('file', playbook_dir + '/../scripts/provider_associations.py') }}"
@@ -92,12 +90,13 @@
         content: "{{ cutover_preparation_runtime | to_nice_json }}"
         mode: '0600'
       delegate_to: "{{ ovn_cli_host_runtime }}"
-    - name: "[07] Copy existing VM port IDs to OVN CLI host"
+    - name: "[07] [SAVE] Copy existing VM port IDs to OVN CLI host"
       ansible.builtin.copy:
-        src: "{{ migration_run_dir }}/compute-port-ids.txt"
+        src: "{{ migration_run_dir | run_file('compute-port-ids.txt') }}"
         dest: "{{ cutover_preparation_runtime.ports_path }}"
         mode: '0600'
       delegate_to: "{{ ovn_cli_host_runtime }}"
+
 
 - name: "Phase 07 - Prepare OpenFlow support before API freeze"
   hosts: network:compute
@@ -121,7 +120,7 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: "[07] Check Pair B MTU and workload readiness"
+    - name: "[07] Check Group B MTU and workload readiness"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -130,7 +129,7 @@
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: "[07] Check original Pair A capture and measurement anchor"
+    - name: "[07] Check original Group A capture and measurement anchor"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -176,7 +175,7 @@
         executable: /bin/bash
       changed_when: false
 
-- name: "Phase 07 - Arm Pair D TCP probes after API freeze"
+- name: "Phase 07 - Arm Group D TCP probes after API freeze"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -184,7 +183,7 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: "[07] Open additional Pair D listener and establish its session"
+    - name: "[07] Open additional Group D listener and establish its session"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -212,7 +211,7 @@
 
 - name: "Phase 07 - Migrate Neutron database to OVN"
   hosts: control
-  any_errors_fatal: true  # a failed DB sync/compatibility gate must block later plays on every host
+  any_errors_fatal: true # a failed DB sync/compatibility gate must block later plays on every host
   gather_facts: false
   become: true
   vars_files:
@@ -232,7 +231,7 @@
       --entrypoint /bin/bash {{ hostvars['localhost']['cutover_preparation_runtime'].neutron_image | quote }}
       -lc {{ provider_association_entrypoint | quote }} provider-associations
   tasks:
-    - name: "[07] Read router provider associations before migration"
+    - name: "[07] Read router service backend associations before migration"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ provider_association_container_command }} snapshot
@@ -242,9 +241,9 @@
       run_once: true
       changed_when: false
 
-    - name: "[07] [SAVE] Save router provider associations before migration"
+    - name: "[07] [SAVE] Save router service backend associations before migration"
       ansible.builtin.copy:
-        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/provider-associations.before.json"
+        dest: "{{ hostvars['localhost']['migration_run_dir'] | run_file('provider-associations.before.json') }}"
         content: "{{ provider_associations_before.stdout }}\n"
         mode: '0600'
       delegate_to: localhost
@@ -253,7 +252,7 @@
     - name: "[07] [TIMER] Start database migration measurement"
       ansible.builtin.shell: |
         set -euo pipefail
-        date +%s.%N > {{ (hostvars['localhost']['migration_run_dir'] + '/metrics/db_migration.start') | quote }}
+        date +%s.%N > {{ ((hostvars['localhost']['migration_run_dir'] | run_file('metrics/db_migration.start'))) | quote }}
       args:
         executable: /bin/bash
       delegate_to: localhost
@@ -282,12 +281,12 @@
       args:
         executable: /bin/bash
       register: db_sync_migrate
-      failed_when: false  # persist both streams and return code, then fail before any compatibility update
+      failed_when: false # persist both streams and return code, then fail before any compatibility update
       run_once: true
 
     - name: "[07] [SAVE] Save database migration output and return code"
       ansible.builtin.copy:
-        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/db-sync-migrate.log"
+        dest: "{{ hostvars['localhost']['migration_run_dir'] | run_file('db-sync-migrate.log') }}"
         content: |
           returncode: {{ db_sync_migrate.rc }}
           --- stdout ---
@@ -304,9 +303,9 @@
         fail_msg: "neutron-ovn-db-sync-util migrate failed (rc={{ db_sync_migrate.rc }}); see db-sync-migrate.log. Cutover is prohibited."
       run_once: true
 
-    # Neutron 24.2.x migrate mode does not convert legacy L3 service provider
-    # associations. Use the same in-place model UPDATE as newer upstream Neutron.
-    - name: "[07] Convert legacy router provider associations for Caracal"
+  # Neutron 24.2.x migrate mode does not convert legacy L3 service provider
+  # associations. Use the same in-place model UPDATE as newer upstream Neutron.
+    - name: "[07] Switch router service backend associations to OVN"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ provider_association_container_command }} migrate
@@ -316,15 +315,15 @@
       changed_when: provider_associations_migration.rc == 0 and (provider_associations_migration.stdout | from_json).changed_count | int > 0
       run_once: true
 
-    - name: "[07] [SAVE] Save provider conversion result"
+    - name: "[07] [SAVE] Save router backend conversion result"
       ansible.builtin.copy:
-        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/provider-associations-compatibility.json"
+        dest: "{{ hostvars['localhost']['migration_run_dir'] | run_file('provider-associations-compatibility.json') }}"
         content: "{{ provider_associations_migration.stdout }}\n"
         mode: '0600'
       delegate_to: localhost
       run_once: true
 
-    - name: "[07] Read router provider associations after conversion"
+    - name: "[07] Read router service backend associations after conversion"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ provider_association_container_command }} snapshot
@@ -334,15 +333,15 @@
       run_once: true
       changed_when: false
 
-    - name: "[07] [SAVE] Save router provider associations after conversion"
+    - name: "[07] [SAVE] Save router service backend associations after conversion"
       ansible.builtin.copy:
-        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/provider-associations.after.json"
+        dest: "{{ hostvars['localhost']['migration_run_dir'] | run_file('provider-associations.after.json') }}"
         content: "{{ provider_associations_after.stdout }}\n"
         mode: '0600'
       delegate_to: localhost
       run_once: true
 
-    - name: "[07] Verify router provider conversion and save result"
+    - name: "[07] Verify router backend conversion and save result"
       ansible.builtin.command:
         argv:
           - python3
@@ -356,7 +355,7 @@
     - name: "[07] [TIMER] End database migration measurement"
       ansible.builtin.shell: |
         set -euo pipefail
-        date +%s.%N > {{ (hostvars['localhost']['migration_run_dir'] + '/metrics/db_migration.end') | quote }}
+        date +%s.%N > {{ ((hostvars['localhost']['migration_run_dir'] | run_file('metrics/db_migration.end'))) | quote }}
       args:
         executable: /bin/bash
       delegate_to: localhost

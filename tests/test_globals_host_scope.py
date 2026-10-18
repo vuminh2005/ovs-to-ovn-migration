@@ -23,8 +23,8 @@ class GlobalsHostScopeTests(unittest.TestCase):
             inventory=root/'inventory.ini'
             inventory.write_text('[control]\ncontroller ansible_connection=local\n[network]\nnetwork1 ansible_connection=local\n[compute]\ncompute1 ansible_connection=local\ncompute2 ansible_connection=local\n')
             production=yaml.safe_load((ROOT/'playbooks/02-precheck.yml').read_text())
-            source=next(p for p in production if p['name']=='Phase 02 - Precheck Kolla hosts and OVS source dataplane')
-            task=next(t for t in source['tasks'] if t['name']=='Resolve source globals per host and verify effective tunnel interface')
+            source=next(p for p in production if p['name']=='Phase 02 - Check source hosts and OVS networking')
+            task=next(t for t in source['tasks'] if t['name']=='[02] Resolve effective tunnel interface per host')
             vars_files=[str(ROOT/'group_vars/all.yml'),str(ROOT/'group_vars/ns-lab.yml')]
             plays=[dict(name='Prove play variable is absent from localhost hostvars',hosts='localhost',gather_facts=False,
                         vars_files=vars_files,tasks=[{'ansible.builtin.assert':{'that':["'kolla_globals_path' not in hostvars['localhost']"]}}]),

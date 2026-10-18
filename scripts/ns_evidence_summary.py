@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Read one completed run's SNAT tuple, server connection log, and TCP resets."""
+from run_layout import run_path
 import argparse
 import ipaddress
 import json
@@ -13,7 +14,7 @@ def read(path):
 
 
 def summarize(root):
-    result = read(root/'ns-results.json')
+    result = read(run_path(root, 'ns-results.json'))
     held = result.get('directions', {}).get('snat', {}).get('streams', {}).get('held', {})
     print('=== SNAT HELD ===')
     keys = ('status', 'connection_attempts', 'first_session', 'last_session', 'first_local_endpoint',
@@ -21,7 +22,7 @@ def summarize(root):
     print(json.dumps({k:held.get(k) for k in keys}, indent=2))
     print('=== MATCHING SERVER CONNECTION EVENTS ===')
     connection = (held.get('first_session') or {}).get('connection')
-    path = root/'ns/snat-server.jsonl'
+    path = run_path(root, 'ns/snat-server.jsonl')
     if path.exists() and connection:
         for line in path.open():
             try:
@@ -31,12 +32,12 @@ def summarize(root):
             if row.get('connection') == connection:
                 print(json.dumps(row, sort_keys=True))
     print('=== CAPTURE EVIDENCE ===')
-    evidence = read(root/'ns-diagnostics.json')
+    evidence = read(run_path(root, 'ns-diagnostics.json'))
     print('Status:', evidence.get('status', 'UNAVAILABLE'), 'Errors:', evidence.get('errors', []))
     if not shutil.which('tcpdump'):
         print('tcpdump unavailable; raw captures remain on disk')
         return
-    ns = read(root/'validation-config.json').get('ns', {})
+    ns = read(run_path(root, 'validation-config.json')).get('ns', {})
     if not ns:
         return
     guest, translated = held.get('first_local_endpoint'), held.get('first_peer_endpoint')
@@ -46,7 +47,7 @@ def summarize(root):
         return
     endpoint, snat, source = (str(ipaddress.IPv4Address(ns[k])) for k in ('endpoint_ip','snat_ip','outbound_ip'))
     for kind, peer in [('endpoint',snat), ('guest-snat',source)]:
-        path = root/'ns-diagnostics'/kind/'tcp.pcap'
+        path = run_path(root, 'ns-diagnostics')/kind/'tcp.pcap'
         print('=== HELD-RELATED TCP RST:', kind, '===')
         if not path.exists():
             print('MISSING:', path)

@@ -11,6 +11,7 @@ from signal import pidfd_send_signal
 import time
 
 from dataplane_capture import alive, save
+from run_layout import run_path
 
 
 def command_owned(pid, role, config_path):
@@ -53,8 +54,12 @@ def stop_probes(backup_root, evidence_path, timeout=5, *, interrupt_legacy_clien
             raise ValueError('Probe stop timeout must be finite and positive')
         # Validate every live candidate before signaling any of them. pidfds
         # keep signals bound to the original process even if a PID is reused.
-        for checkpoint in sorted(backup_root.glob('*/extended-resources.json')):
-            root = checkpoint.parent
+        for root in sorted(backup_root.iterdir()) if backup_root.is_dir() else []:
+            if not root.is_dir() or root.is_symlink():
+                continue
+            checkpoint = run_path(root, 'extended-resources.json')
+            if not checkpoint.is_file():
+                continue
             state = json.loads(checkpoint.read_text())
             for role, cp in state.get('processes', {}).items():
                 saved = cp.get('identity')
@@ -65,7 +70,7 @@ def stop_probes(backup_root, evidence_path, timeout=5, *, interrupt_legacy_clien
                     raise RuntimeError('Live N-S checkpoint run/schema mismatch: '+str(checkpoint))
                 if role not in ('snat-server', 'fip-client'):
                     raise RuntimeError('Unknown live N-S process role: '+role)
-                cfg = json.loads((root/'validation-config.json').read_text())
+                cfg = json.loads(run_path(root, 'validation-config.json').read_text())
                 config_path = root/'ns'/(role+'.json')
                 process_cfg = json.loads(config_path.read_text())
                 if (cfg.get('run') != root.name or process_cfg.get('run') != root.name or

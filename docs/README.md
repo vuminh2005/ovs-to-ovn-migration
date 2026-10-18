@@ -7,7 +7,8 @@
 | Reset bốn node | [reset-four-nodes.md](reset-four-nodes.md) |
 | Thứ tự chuẩn bị, cutover và phục hồi | [cutover-workflow.md](cutover-workflow.md) |
 | Workload EW/N-S và cấu hình lab | [ns-ew-matrix.md](ns-ew-matrix.md) |
-| Pair A/B/C/D | [abcd-validation.md](abcd-validation.md) |
+| Group A/B/C/D | [abcd-validation.md](abcd-validation.md) |
+| Bản cập nhật b87, lỗi listener và layout run | [b87-update-20261018.md](b87-update-20261018.md) |
 | Audit bản sửa | [audit.md](audit.md) |
 | Evidence và đường dẫn report | [report-evidence.md](report-evidence.md) |
 | Observers và giới hạn đo lường | [ns-observability.md](ns-observability.md) |

@@ -1,4 +1,3 @@
----
 # Restricted retry for the first VM-create failure in phase 04, using its run.
 # No bootstrap/new run, repeat backup, or destructive reset is performed.
 - name: Recover the first VM-create failure checkpoint before any target changes
@@ -30,9 +29,9 @@
 
     - name: Read the original runtime workload and prerequisite checkpoints
       ansible.builtin.set_fact:
-        validation_retry_runtime: "{{ lookup('file', migration_resume_run_dir + '/runtime.json') | from_json }}"
-        validation_retry_config: "{{ lookup('file', migration_resume_run_dir + '/validation-config.json') | from_json }}"
-        validation_retry_prerequisites: "{{ lookup('file', migration_resume_run_dir + '/validation-prerequisites.json') | from_json }}"
+        validation_retry_runtime: "{{ lookup('file', (migration_resume_run_dir | run_file('runtime.json'))) | from_json }}"
+        validation_retry_config: "{{ lookup('file', (migration_resume_run_dir | run_file('validation-config.json'))) | from_json }}"
+        validation_retry_prerequisites: "{{ lookup('file', (migration_resume_run_dir | run_file('validation-prerequisites.json'))) | from_json }}"
 
     - name: Verify the original inventory topology still matches this retry
       ansible.builtin.assert:
@@ -87,8 +86,8 @@
     - name: Refuse to replace the saved placement or validation configuration
       ansible.builtin.assert:
         that:
-          - (lookup('file', migration_run_dir + '/validation-placement.json') | from_json) == validation_retry_config.placement
-          - (lookup('file', migration_run_dir + '/validation-config.json') | from_json) == validation_retry_config
+          - (lookup('file', (migration_run_dir | run_file('validation-placement.json'))) | from_json) == validation_retry_config.placement
+          - (lookup('file', (migration_run_dir | run_file('validation-config.json'))) | from_json) == validation_retry_config
 
 - import_playbook: playbooks/04-validation-workloads.yml
 - import_playbook: playbooks/05-stage-ovn-db.yml

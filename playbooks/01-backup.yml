@@ -1,4 +1,3 @@
----
 - name: "Phase 01 - Back up source configuration and resource identities"
   hosts: localhost
   gather_facts: false
@@ -18,28 +17,28 @@
       run_once: true
       changed_when: false
 
-    - name: "[01] Back up Kolla configuration and inventory"
+    - name: "[01] [SAVE] Back up Kolla configuration and inventory"
       ansible.builtin.copy:
         src: "{{ item.src }}"
         dest: "{{ item.dest }}"
         remote_src: true
         mode: "0600"
       loop:
-        - { src: "{{ kolla_globals_path }}", dest: "{{ migration_run_dir }}/globals.yml.before" }
-        - { src: "{{ kolla_inventory_runtime }}", dest: "{{ migration_run_dir }}/inventory.before" }
+        - {src: "{{ kolla_globals_path }}", dest: "{{ migration_run_dir | run_file('globals.yml.before') }}"}
+        - {src: "{{ kolla_inventory_runtime }}", dest: "{{ migration_run_dir | run_file('inventory.before') }}"}
 
     - name: "[01] [SAVE] Record source resource identities"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path }}
-        openstack network list -f json > {{ migration_run_dir }}/networks.before.json
-        openstack subnet list -f json > {{ migration_run_dir }}/subnets.before.json
-        openstack router list -f json > {{ migration_run_dir }}/routers.before.json
-        openstack server list --all-projects -f json > {{ migration_run_dir }}/servers.before.json
-        openstack port list -f json > {{ migration_run_dir }}/ports.before.json
-        openstack port list --device-owner compute:nova -f json > {{ migration_run_dir }}/compute-ports.before.json
-        openstack port list --device-owner compute:nova -f value -c ID | sort > {{ migration_run_dir }}/compute-port-ids.txt
-        openstack network agent list -f json > {{ migration_run_dir }}/agents.before.json
+        openstack network list -f json > {{ migration_run_dir | run_file('networks.before.json') }}
+        openstack subnet list -f json > {{ migration_run_dir | run_file('subnets.before.json') }}
+        openstack router list -f json > {{ migration_run_dir | run_file('routers.before.json') }}
+        openstack server list --all-projects -f json > {{ migration_run_dir | run_file('servers.before.json') }}
+        openstack port list -f json > {{ migration_run_dir | run_file('ports.before.json') }}
+        openstack port list --device-owner compute:nova -f json > {{ migration_run_dir | run_file('compute-ports.before.json') }}
+        openstack port list --device-owner compute:nova -f value -c ID | sort > {{ migration_run_dir | run_file('compute-port-ids.txt') }}
+        openstack network agent list -f json > {{ migration_run_dir | run_file('agents.before.json') }}
       args:
         executable: /bin/bash
       changed_when: false
@@ -48,6 +47,9 @@
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - <<'PY'
+        import sys
+        sys.path.insert(0, '{{ playbook_dir }}/../scripts')
+        from run_layout import run_path, run_glob
         import json, pathlib
         root = pathlib.Path("{{ migration_run_dir }}")
         keys = {
@@ -58,8 +60,8 @@
           "ports": "ports.before.json",
           "compute_ports": "compute-ports.before.json",
         }
-        out = {k: len(json.loads((root/f).read_text())) for k,f in keys.items()}
-        (root/"resource-counts.before.json").write_text(json.dumps(out, indent=2, sort_keys=True))
+        out = {k: len(json.loads((run_path(root, f)).read_text())) for k,f in keys.items()}
+        (run_path(root, "resource-counts.before.json")).write_text(json.dumps(out, indent=2, sort_keys=True))
         PY
       args:
         executable: /bin/bash
@@ -67,15 +69,48 @@
 
     - name: "[01] Load source network count"
       ansible.builtin.set_fact:
-        source_network_count_runtime: "{{ (lookup('file', migration_run_dir + '/resource-counts.before.json') | from_json).networks | int }}"
+        source_network_count_runtime: "{{ (lookup('file', (migration_run_dir | run_file('resource-counts.before.json'))) | from_json).networks | int }}"
 
-    - name: "[01] Back up MariaDB through Kolla"
+    - name: "[01] [SAVE] Back up MariaDB through Kolla"
       ansible.builtin.shell: |
         set -euo pipefail
         {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} mariadb_backup
       args:
         executable: /bin/bash
       when: run_mariadb_backup | bool
+
+    - name: "[01] Locate MariaDB backup volumes"
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import json, pathlib, socket, subprocess, time
+        proc = subprocess.run(['docker', 'volume', 'inspect', 'mariadb_backup'], capture_output=True, text=True)
+        result = dict(host=socket.gethostname(), volume='mariadb_backup', collected_at=time.time(), files=[])
+        if proc.returncode:
+            if 'no such volume' not in proc.stderr.lower():
+                raise RuntimeError('Cannot inspect MariaDB backup volume')
+            result['status'] = 'NOT_PRESENT'
+        else:
+            volume = json.loads(proc.stdout)[0]
+            directory = pathlib.Path(volume['Mountpoint'])
+            result.update(status='PRESENT', mountpoint=str(directory))
+            result['files'] = [dict(name=str(p.relative_to(directory)), size_bytes=p.stat().st_size,
+                                    modified_at=p.stat().st_mtime)
+                               for p in sorted(directory.rglob('*')) if p.is_file() and not p.is_symlink()]
+        print(json.dumps(result))
+        PY
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['mariadb'] | default(groups['control']) }}"
+      register: mariadb_backup_locations
+      changed_when: false
+      when: run_mariadb_backup | bool
+
+    - name: "[01] [SAVE] Save MariaDB backup locations"
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir | run_file('mariadb-backup.json') }}"
+        mode: '0600'
+        content: "{{ {'enabled': run_mariadb_backup | bool, 'volume': 'mariadb_backup', 'locations': mariadb_backup_locations.results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | map('from_json') | list, 'scope': 'Location and file metadata only; database backups remain in Kolla volumes'} | to_nice_json }}"
 
     - name: "[01] [TIMER] End phase 01"
       ansible.builtin.command:

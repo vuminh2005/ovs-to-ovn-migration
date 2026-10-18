@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """API-visible Caracal segment conversion audit, no database writes."""
+from run_layout import run_path
 import json
 import pathlib
 import sys
@@ -9,11 +10,11 @@ c = openstack.connect()
 if sys.argv[1] == 'before':
     rows = [dict(network_uuid=n.id, network_type_before=n.provider_network_type,
                  segmentation_id_before=n.provider_segmentation_id, physical_network_before=n.provider_physical_network, mtu_before=n.mtu) for n in c.network.networks()]
-    (root/'network-segments.before.json').write_text(json.dumps(rows, indent=2))
+    (run_path(root, 'network-segments.before.json')).write_text(json.dumps(rows, indent=2))
 else:
-    rows = json.loads((root/'network-segments.before.json').read_text())
-    switches = json.loads((root/'ovn-logical-switches.json').read_text())
-    encaps = json.loads((root/'ovn-encaps.json').read_text())
+    rows = json.loads((run_path(root, 'network-segments.before.json')).read_text())
+    switches = json.loads((run_path(root, 'ovn-logical-switches.json')).read_text())
+    encaps = json.loads((run_path(root, 'ovn-encaps.json')).read_text())
     names = {r[0] for r in switches['data']}
     types = {r[0] for r in encaps['data']}
     for row in rows:
@@ -31,6 +32,6 @@ else:
             str(n.provider_segmentation_id)==str(row['segmentation_id_before']) and row['ovn_logical_switch_exists'])
         row['status'] = 'PASS' if converted or flat_preserved else 'FAIL'
         row['scope'] = 'flat-preservation' if row['network_type_before']=='flat' else 'vxlan-to-geneve'
-    (root/'existing-network-semantics.json').write_text(json.dumps(dict(
+    (run_path(root, 'existing-network-semantics.json')).write_text(json.dumps(dict(
         status='PASS' if all(r['status']=='PASS' for r in rows) else 'FAIL', networks=rows,
         upstream='https://github.com/openstack/neutron/blob/24.0.0/neutron/plugins/ml2/drivers/ovn/db_migration.py'), indent=2))

@@ -1,4 +1,3 @@
----
 - name: "Phase 08 - Begin network takeover by OVN"
   hosts: localhost
   any_errors_fatal: true
@@ -22,8 +21,7 @@
       changed_when: false
     - name: "[08] Verify original cutover checkpoint"
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../scripts/cutover_preparation.py", verify,
-               "{{ hostvars['localhost']['migration_run_dir'] }}"]
+        argv: [python3, "{{ playbook_dir }}/../scripts/cutover_preparation.py", verify, "{{ hostvars['localhost']['migration_run_dir'] }}"]
       register: prepared_cutover_checkpoint
       changed_when: false
     - name: "[08] Load original port checkpoint and timeout"
@@ -145,7 +143,7 @@
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
     - name: "[08] [TIMER] End OVN port takeover measurement"
-      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] }}/metrics/dataplane_convergence.end
+      ansible.builtin.shell: date +%s.%N > {{ hostvars['localhost']['migration_run_dir'] | run_file('metrics') }}/dataplane_convergence.end
       run_once: true
       changed_when: false
 

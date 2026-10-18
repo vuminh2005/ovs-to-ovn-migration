@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Permit only phase-04 failure before the first endpoint capture launch."""
+from run_layout import run_path
 import argparse
 import json
 from pathlib import Path
@@ -11,22 +12,22 @@ def retry_check(root, inventory):
     root = Path(root)
     if not root.is_absolute() or schema_version(root) != CANONICAL_SCHEMA:
         raise ValueError('N-S preparation retry requires an absolute schema-2 checkpoint')
-    runtime = json.loads((root/'runtime.json').read_text())
-    cfg = json.loads((root/'validation-config.json').read_text())
-    state = json.loads((root/'validation-resources.json').read_text())
-    extended = json.loads((root/'extended-resources.json').read_text())
-    diagnostic = json.loads((root/'ns-diagnostics-checkpoint.json').read_text())
+    runtime = json.loads((run_path(root, 'runtime.json')).read_text())
+    cfg = json.loads((run_path(root, 'validation-config.json')).read_text())
+    state = json.loads((run_path(root, 'validation-resources.json')).read_text())
+    extended = json.loads((run_path(root, 'extended-resources.json')).read_text())
+    diagnostic = json.loads((run_path(root, 'ns-diagnostics-checkpoint.json')).read_text())
     if (runtime.get('run_id') != root.name or cfg.get('run') != root.name or
         runtime.get('inventory') != inventory or cfg.get('inventory') != inventory):
         raise ValueError('N-S retry run/inventory mismatch')
-    if any(timestamp(root/'metrics'/f'phase{phase:02d}.end') is None for phase in range(4)):
+    if any(timestamp(run_path(root, 'metrics')/f'phase{phase:02d}.end') is None for phase in range(4)):
         raise ValueError('N-S retry requires completed phases 00–03')
-    if timestamp(root/'metrics/phase04.start') is None or (root/'metrics/phase04.end').exists():
+    if timestamp(run_path(root, 'metrics/phase04.start')) is None or (run_path(root, 'metrics/phase04.end')).exists():
         raise ValueError('N-S retry requires incomplete phase 04')
     forbidden = ['total.end', 'control_plane_downtime.start', 'control_plane_downtime.end',
                  'db_migration.start', 'db_migration.end', 'dataplane_convergence.start', 'dataplane_convergence.end']
     forbidden += [f'phase{phase:02d}.{edge}' for phase in range(5,14) for edge in ('start','end')]
-    if any((root/'metrics'/name).exists() for name in forbidden):
+    if any((run_path(root, 'metrics')/name).exists() for name in forbidden):
         raise ValueError('N-S retry is forbidden after staging, target configuration or freeze')
     pre = state.get('pre', {})
     pair = pre.get('measure', {})
@@ -43,7 +44,7 @@ def retry_check(root, inventory):
         extended.get('cleaned') or not nstate.get('router') or set(nstate.get('vms', {})) != {'0','1'} or
         any(vm.get('server') or vm.get('owned') is not True or not vm.get('port') for vm in nstate['vms'].values())):
         raise ValueError('N-S retry is only supported before any N-S guest or local probe launch')
-    if any((root/name).exists() for name in ('ns-baseline.json','ns-precutover.json','ns-results.json')):
+    if any((run_path(root, name)).exists() for name in ('ns-baseline.json','ns-precutover.json','ns-results.json')):
         raise ValueError('N-S session evidence already exists; preserve it instead of retrying')
     if diagnostic.get('schema') != 1 or diagnostic.get('run') != root.name or set(diagnostic.get('captures', {})) != {'endpoint'}:
         raise ValueError('N-S retry requires exactly one endpoint launch intent')
@@ -51,7 +52,7 @@ def retry_check(root, inventory):
     if cp.get('status') != 'START_INTENT' or cp.get('remote') or cp.get('host') != 'localhost':
         raise ValueError('N-S retry cannot replace a previously launched capture')
     directory = cp.get('config', {}).get('directory')
-    if directory not in [str(root/'ns-diagnostics'/name) for name in ('endpoint', 'endpoint-agent')]:
+    if directory not in [str(run_path(root, 'ns-diagnostics')/name) for name in ('endpoint', 'endpoint-agent')]:
         raise ValueError('N-S endpoint directory identity changed')
     expected = dict(run=root.name, kind='endpoint', endpoint_ip=ns['endpoint_ip'], snat_ip=ns['snat_ip'],
                     fip_ip=ns['fip_ip'], guest_ip=ns['outbound_ip'], tcp_port=ns['port'],

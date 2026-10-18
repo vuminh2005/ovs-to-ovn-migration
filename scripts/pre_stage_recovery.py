@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Guard recovery of a failed phase 05 before target configuration or freeze."""
+from run_layout import run_path
 import argparse
 import json
 import os
@@ -10,7 +11,7 @@ from phase_schema import timestamp
 
 
 def read(root, name):
-    value = json.loads((root/name).read_text())
+    value = json.loads((run_path(root, name)).read_text())
     if not isinstance(value, dict):
         raise ValueError('Malformed checkpoint: '+name)
     return value
@@ -22,9 +23,9 @@ def inspect(root, inventory):
     if (runtime.get('phase_marker_schema_version') != 2 or runtime.get('run_id') != root.name or
             Path(runtime['inventory']).resolve() != Path(inventory).resolve()):
         raise ValueError('Recovery requires the original schema-2 run and inventory')
-    if (root/'inventory.before').read_bytes() != Path(inventory).read_bytes():
+    if (run_path(root, 'inventory.before')).read_bytes() != Path(inventory).read_bytes():
         raise ValueError('Inventory changed after the source snapshot')
-    metrics = root/'metrics'
+    metrics = run_path(root, 'metrics')
     previous = timestamp(metrics/'total.start')
     if previous is None:
         raise ValueError('Original total.start is absent')
@@ -44,9 +45,9 @@ def inspect(root, inventory):
         raise ValueError('Target configuration, freeze or later phases already began')
     for name in ('network-mtu-migration.tsv', 'ml2_conf.ini.target', 'neutron.conf.target',
                  'db-sync-migrate.log', 'pair-d-trigger.json', 'migration-report.json'):
-        if (root/name).exists():
+        if (run_path(root, name)).exists():
             raise ValueError('Later-phase artifact prohibits this recovery: '+name)
-    cfg = read(root, 'validation-config.json') if (root/'validation-resources.json').exists() else {}
+    cfg = read(root, 'validation-config.json') if (run_path(root, 'validation-resources.json')).exists() else {}
     if cfg:
         state = read(root, 'validation-resources.json')
         if cfg.get('run') != runtime['run_id'] or cfg.get('inventory') != runtime['inventory']:
@@ -87,7 +88,7 @@ def select(parent, inventory):
 
 
 def record(root):
-    path = Path(root)/'orchestration-recovery.json'
+    path = run_path(Path(root), 'orchestration-recovery.json')
     value = read(Path(root), path.name) if path.exists() else {'events': []}
     value['events'].append(dict(route='pre-target-stage', resumed_at=time.time(),
         reason='Resume interrupted phase 05 using original workloads and image cache',

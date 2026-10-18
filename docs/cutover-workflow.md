@@ -9,7 +9,7 @@ downtime tiết kiệm được trước khi chạy lại lab.
 | Vị trí | Công việc |
 |---|---|
 | Phase 07, trước freeze | Lấy image Neutron, tạo thư mục helper có ownership, tính timeout binding, copy danh sách VM port đã chốt, thêm OpenFlow15 vào protocol set hiện có |
-| Ngay trước freeze | Chờ snapshot diagnostics `pre-freeze` thực hiện xong; kiểm tra readiness và capture/anchor Pair A đang có |
+| Ngay trước freeze | Chờ snapshot diagnostics `pre-freeze` thực hiện xong; kiểm tra readiness và capture/anchor Group A đang có |
 | Phase 07–10 sau freeze | DB migration/provider verification, ARM listener, stop agents, deploy controller/metadata, chờ binding, cleanup rồi restart Neutron như cũ |
 | Đầu phase 11, API đã phục hồi | Quan sát các probe đang chạy đến khi có thành công mới; sau đó bật sampling bổ sung và lấy snapshot diagnostics sau phục hồi |
 | Tiếp theo | Snapshot tài nguyên AFTER, so sánh, smoke test, validation/workload mới và remediation |

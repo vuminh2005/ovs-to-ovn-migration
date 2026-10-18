@@ -12,12 +12,12 @@
       delegate_to: "{{ ns_diag_checkpoint.host }}"
       when: ns_diag_action in ['start', 'inspect']
 
-    - name: "[N-S] Stage N-S diagnostic helpers"
+    - name: "[N-S] [SAVE] Stage N-S diagnostic helpers"
       ansible.builtin.copy:
         src: "../scripts/{{ item }}"
         dest: "{{ ns_diag_checkpoint.config.directory }}/{{ item }}"
         mode: '0700'
-      loop: [ns_diagnostics.py, dataplane_capture.py]
+      loop: [ns_diagnostics.py, dataplane_capture.py, run_layout.py]
       delegate_to: "{{ ns_diag_checkpoint.host }}"
       when: ns_diag_action in ['start', 'inspect']
 
@@ -47,7 +47,7 @@
         content: "{{ ns_diag_conntrack.stdout if ns_diag_action == 'conntrack' else ns_diag_operation.stdout }}"
         mode: '0600'
 
-    - name: "[N-S] Fetch stopped N-S captures and logs"
+    - name: "[N-S] [SAVE] Fetch stopped N-S captures and logs"
       ansible.builtin.fetch:
         src: "{{ ns_diag_checkpoint.config.directory }}/{{ item }}"
         dest: "{{ ns_diag_local_directory }}/{{ item }}"

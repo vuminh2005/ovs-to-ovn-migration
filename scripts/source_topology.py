@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Admit supported pre-existing topology and verify its preservation, read-only."""
+from run_layout import run_path
 import argparse
 import json
 from pathlib import Path
@@ -32,7 +33,7 @@ def port_shape(port):
 
 
 def before(cloud, root):
-    cfg = json.loads((root/'source-topology-config.json').read_text())
+    cfg = json.loads((run_path(root, 'source-topology-config.json')).read_text())
     networks = list(cloud.network.networks())
     shared = select(cloud.network, cfg, networks)
     selected = shared['network']['id'] if shared else None
@@ -65,7 +66,7 @@ def before(cloud, root):
         ownership='Read-only preservation baseline, never workload cleanup ownership')
     for key in ('networks','subnets','routers','floating_ips','compute_ports','servers'):
         data[key].sort(key=lambda row: row['id'])
-    path = root/'source-topology-before.json'
+    path = run_path(root, 'source-topology-before.json')
     if path.exists() and json.loads(path.read_text()) != data:
         raise RuntimeError('Pre-existing topology checkpoint changed; refusing to replace baseline')
     save(path, data)
@@ -75,7 +76,7 @@ def before(cloud, root):
 def verify(cloud, root, scope):
     result = dict(status='FAIL', scope=scope, owned=False, errors=[])
     try:
-        data = json.loads((root/'source-topology-before.json').read_text())
+        data = json.loads((run_path(root, 'source-topology-before.json')).read_text())
         if data.get('schema') != 1 or data.get('run') != root.name:
             raise RuntimeError('Pre-existing resource baseline identity changed')
         if data['shared_external']:
@@ -108,7 +109,7 @@ def verify(cloud, root, scope):
             shared_external=data['shared_external'])
     except Exception as exc:
         result['errors'].append(str(exc))
-    save(root/'preexisting-resource-preservation.json', result)
+    save(run_path(root, 'preexisting-resource-preservation.json'), result)
     if result['status'] != 'PASS':
         raise RuntimeError('; '.join(result['errors']))
     return result

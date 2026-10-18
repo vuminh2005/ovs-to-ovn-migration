@@ -253,17 +253,17 @@ class OrchestrationPhaseTests(unittest.TestCase):
     def test_bootstrap_metadata_precedes_markers_and_includes_initial_discovery_time(self):
         tasks=yaml.safe_load((ROOT/'playbooks/00-bootstrap.yml').read_text())[0]['tasks']
         names=[task['name'] for task in tasks]
-        self.assertEqual(names[0],'Timestamp the first bootstrap task')
-        self.assertLess(names.index('Save discovered runtime metadata'),names.index('Mark phase 00 start'))
-        self.assertIn("'phase_marker_schema_version': 2",tasks[names.index('Save discovered runtime metadata')]['ansible.builtin.copy']['content'])
-        self.assertIn('--timestamp',tasks[names.index('Mark phase 00 start')]['ansible.builtin.command']['argv'])
+        self.assertEqual(names[0],'[00] [TIMER] Record migration start')
+        self.assertLess(names.index('[00] [SAVE] Save runtime settings'),names.index('[00] [TIMER] Start phase 00'))
+        self.assertIn("'phase_marker_schema_version': 2",tasks[names.index('[00] [SAVE] Save runtime settings')]['ansible.builtin.copy']['content'])
+        self.assertIn('--timestamp',tasks[names.index('[00] [TIMER] Start phase 00')]['ansible.builtin.command']['argv'])
 
     def test_phase07_timer_covers_readiness_without_earlier_freeze_checkpoint(self):
         plays=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
         tasks=[task for play in plays for task in play['tasks']]
-        self.assertIn('Mark phase 07 entry',tasks[0]['name'])
+        self.assertIn('Start phase 07 before readiness checks',tasks[0]['name'])
         self.assertEqual(tasks[0]['ansible.builtin.command']['argv'][2],'phase-entry')
-        readiness=next(i for i,t in enumerate(tasks) if 'before any Neutron freeze' in t['name'])
+        readiness=next(i for i,t in enumerate(tasks) if 'Check Group B MTU and workload readiness' in t['name'])
         freeze=next(i for i,t in enumerate(tasks) if '--freeze-start' in str(t.get('ansible.builtin.command',{})))
         self.assertLess(readiness,freeze)
         self.assertGreater(readiness,1)
@@ -272,14 +272,14 @@ class OrchestrationPhaseTests(unittest.TestCase):
     def test_phase13_cleanup_gate_precedes_timing_publication_and_end(self):
         tasks=yaml.safe_load((ROOT/'playbooks/13-report.yml').read_text())[0]['tasks']
         names=[task['name'] for task in tasks]
-        before='Rebuild final report including all enabled pairs cleanup evidence'
-        cleanup='Remove compute copy only after successful final reports are persisted'
-        end='Mark phase 13 and total end after finalization and capture cleanup'
-        publication='Publish final timing metadata without repeating finalization or cleanup'
+        before='[13] Update reports with workload cleanup results'
+        cleanup='[13] Remove compute capture copy after reports are saved'
+        end='[13] [TIMER] End phase 13 and total migration measurement'
+        publication='[13] Update reports with final timing results'
         self.assertLess(names.index(before),names.index(cleanup))
         self.assertLess(names.index(cleanup),names.index(end))
         self.assertLess(names.index(end),names.index(publication))
-        self.assertIn('Return an honest failure',names[-1])
+        self.assertIn('Return exit status',names[-1])
         self.assertEqual(sum('capture-cleanup' in task.get('ansible.builtin.shell','') for task in tasks),1)
         self.assertEqual(sum(' finalize ' in task.get('ansible.builtin.shell','') for task in tasks),1)
 

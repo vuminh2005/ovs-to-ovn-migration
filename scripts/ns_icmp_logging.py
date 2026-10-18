@@ -2,6 +2,7 @@
 
 Ping output is secondary evidence of sequence/errors, not proof of wire sends.
 """
+from run_layout import run_path
 import fcntl
 import json
 import math
@@ -23,7 +24,7 @@ def mirror_console(root, output, run):
             continue  # Missing event indices make the final mirror incomplete.
     if not rows:
         return
-    directory = Path(root)/'ns'
+    directory = run_path(Path(root), 'ns')
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = directory/'snat-icmp-sender.jsonl'
     with path.open('a+') as stream:

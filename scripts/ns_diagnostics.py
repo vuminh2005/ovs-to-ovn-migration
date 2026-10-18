@@ -20,6 +20,7 @@ sys.dont_write_bytecode = True
 # Ansible's script module copies only this file for the read-only conntrack
 # command. Capture operations stage this file together with its tap resolver.
 if __name__ != '__main__' or len(sys.argv) < 2 or sys.argv[1] != 'conntrack':
+    from run_layout import run_path
     from dataplane_capture import alive, identity, resolve_tap, safe_interface_name, save
 
 
@@ -69,18 +70,18 @@ def capture_interface(cfg):
 
 
 def read_state(root):
-    return json.loads((root/'tcp-capture-state.json').read_text())
+    return json.loads((run_path(root, 'tcp-capture-state.json')).read_text())
 
 
 def unexpected_capture_files(root):
     unexpected = []
-    allowed = {'ns_diagnostics.py', 'dataplane_capture.py', 'start.lock'}
+    allowed = {'ns_diagnostics.py', 'dataplane_capture.py', 'run_layout.py', 'start.lock'}
     for path in root.iterdir():
         if path.name in allowed and path.is_file() and not path.is_symlink():
             continue
         if path.name == '__pycache__' and path.is_dir() and not path.is_symlink():
             if all(p.is_file() and not p.is_symlink() and re.fullmatch(
-                r'(?:ns_diagnostics|dataplane_capture)\.cpython-\d+(?:\.opt-\d+)?\.pyc', p.name)
+                r'(?:ns_diagnostics|dataplane_capture|run_layout)\.cpython-\d+(?:\.opt-\d+)?\.pyc', p.name)
                 for p in path.iterdir()):
                 continue
         unexpected.append(path.name)
@@ -94,7 +95,7 @@ def agent_inspect(root, cfg):
         raise RuntimeError('Diagnostic directory mismatch')
     if not root.exists():
         return dict(status='NOT_STARTED', config=cfg)
-    if (root/'tcp-capture-state.json').exists():
+    if (run_path(root, 'tcp-capture-state.json')).exists():
         return agent_snapshot(root, cfg)
     unexpected = unexpected_capture_files(root)
     if unexpected:
@@ -107,9 +108,9 @@ def agent_start(root, cfg):
     if root.resolve() != Path(cfg['directory']).resolve():
         raise RuntimeError('Diagnostic directory mismatch')
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with (root/'start.lock').open('a') as lock:
+    with (run_path(root, 'start.lock')).open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if (root/'tcp-capture-state.json').exists():
+        if (run_path(root, 'tcp-capture-state.json')).exists():
             state = read_state(root)
             if state['config'] != cfg or state['status'] != 'RUNNING' or not all(alive(state.get(k)) for k in ('supervisor', 'tcpdump')):
                 raise RuntimeError('TCP capture changed/ended; replacement prohibited')
@@ -123,9 +124,9 @@ def agent_start(root, cfg):
         # All tools/interfaces are checked before recording a launch intent.
         subprocess.run(['tcpdump', '--version'], check=True, capture_output=True, timeout=10)
         state = dict(status='START_INTENT', config=cfg, interface=interface, filter=capture_filter(cfg),
-                     intent_at=time.time(), path=str(root/'tcp.pcap'))
-        save(root/'tcp-capture-state.json', state)
-        with (root/'supervisor.log').open('ab') as log:
+                     intent_at=time.time(), path=str(run_path(root, 'tcp.pcap')))
+        save(run_path(root, 'tcp-capture-state.json'), state)
+        with (run_path(root, 'supervisor.log')).open('ab') as log:
             subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'supervise', str(root)],
                              stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
         deadline = time.monotonic()+10
@@ -150,7 +151,7 @@ def supervise(root):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     try:
-        with (root/'tcpdump.log').open('ab') as log:
+        with (run_path(root, 'tcpdump.log')).open('ab') as log:
             child = subprocess.Popen(['tcpdump', '-U', '-n', '-s', '0', '-i', state['interface'],
                                       '-w', state['path'], state['filter']],
                                      stdin=subprocess.DEVNULL, stdout=log, stderr=log)
@@ -161,7 +162,7 @@ def supervise(root):
                     raise RuntimeError('TCP capture did not open a PCAP')
                 time.sleep(.05)
             state['status'] = 'RUNNING'
-            save(root/'tcp-capture-state.json', state)
+            save(run_path(root, 'tcp-capture-state.json'), state)
             timed_out = False
             signaled = False
             stop_deadline = None
@@ -172,7 +173,7 @@ def supervise(root):
                     state['supervisor_gap'] = True
                 heartbeat = now
                 timed_out = time.monotonic()-started >= state['config']['lifetime']
-                if (stopping or timed_out or (root/'stop-request').exists()) and not signaled:
+                if (stopping or timed_out or (run_path(root, 'stop-request')).exists()) and not signaled:
                     child.send_signal(signal.SIGINT)
                     signaled = True
                     stop_deadline = time.monotonic()+10
@@ -182,7 +183,7 @@ def supervise(root):
                     state['forced_stop'] = True
                     break
                 state['heartbeat_at'] = time.time()
-                save(root/'tcp-capture-state.json', state)
+                save(run_path(root, 'tcp-capture-state.json'), state)
                 time.sleep(.25)
             state.update(stopped_at=time.time(), returncode=child.returncode,
                          status='STOPPED' if signaled and child.returncode == 0 and not timed_out and not state.get('forced_stop') else 'FAILED')
@@ -198,11 +199,11 @@ def supervise(root):
                 child.kill(); child.wait(timeout=5)
                 state['forced_stop'] = True
     finally:
-        text = (root/'tcpdump.log').read_text() if (root/'tcpdump.log').exists() else ''
+        text = (run_path(root, 'tcpdump.log')).read_text() if (run_path(root, 'tcpdump.log')).exists() else ''
         for key, pattern in [('captured_packets', r'(\d+) packets captured'), ('dropped_packets', r'(\d+) packets dropped by kernel')]:
             match = re.search(pattern, text)
             state[key] = int(match[1]) if match else None
-        save(root/'tcp-capture-state.json', state)
+        save(run_path(root, 'tcp-capture-state.json'), state)
 
 
 def agent_snapshot(root, cfg, stop=False):
@@ -214,7 +215,7 @@ def agent_snapshot(root, cfg, stop=False):
         if not all(alive(state.get(k)) for k in ('supervisor', 'tcpdump')):
             raise RuntimeError('Original TCP capture process lost; replacement prohibited')
         if stop:
-            (root/'stop-request').touch(mode=0o600)
+            (run_path(root, 'stop-request')).touch(mode=0o600)
             deadline = time.monotonic()+15
             while state['status'] == 'RUNNING' and time.monotonic() < deadline:
                 time.sleep(.1)
@@ -272,7 +273,7 @@ class Diagnostics:
         self.x = extended
         self.cfg = extended.cfg
         self.root = extended.root
-        self.path = self.root/'ns-diagnostics-checkpoint.json'
+        self.path = run_path(self.root, 'ns-diagnostics-checkpoint.json')
         self.state = json.loads(self.path.read_text()) if self.path.exists() else dict(schema=1, run=self.cfg['run'], captures={})
         if self.state['run'] != self.cfg['run']:
             raise RuntimeError('Diagnostic checkpoint run mismatch')
@@ -282,9 +283,9 @@ class Diagnostics:
         return self.cfg.get('ns', {}).get('enabled') and self.cfg['ns'].get('diagnostics_enabled', False)
 
     def transport(self, action, cp):
-        dest = self.root/'ns-diagnostics'/cp['kind']
+        dest = run_path(self.root, 'ns-diagnostics')/cp['kind']
         dest.mkdir(parents=True, exist_ok=True, mode=0o700)
-        transport_dir = self.root/'ns-diagnostics'/'transport'/cp['kind']
+        transport_dir = run_path(self.root, 'ns-diagnostics')/'transport'/cp['kind']
         transport_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         extra = transport_dir/'transport.json'
         operation_file = transport_dir/'operation.json'
@@ -303,9 +304,9 @@ class Diagnostics:
 
     def archive_endpoint(self, cp, state):
         """Keep one local PCAP; old checkpoint directories remain readable."""
-        dest = self.root/'ns-diagnostics'/'endpoint'
+        dest = run_path(self.root, 'ns-diagnostics')/'endpoint'
         source = Path(cp['config']['directory'])
-        allowed = [dest.resolve(), (self.root/'ns-diagnostics'/'endpoint-agent').resolve()]
+        allowed = [dest.resolve(), (run_path(self.root, 'ns-diagnostics')/'endpoint-agent').resolve()]
         if cp['host'] != 'localhost' or source.resolve() not in allowed:
             raise RuntimeError('Endpoint archive directory identity changed')
         if cp.get('remote') and any(cp['remote'].get(k) != state.get(k)
@@ -361,7 +362,7 @@ class Diagnostics:
             host = 'localhost'
             if kind == 'endpoint':
                 cfg['interface'] = ns['capture_interface']
-                directory = self.root/'ns-diagnostics'/'endpoint'
+                directory = run_path(self.root, 'ns-diagnostics')/'endpoint'
             else:
                 vm = self.x.state['ns']['vms']['0' if kind == 'guest-snat' else '1']
                 self.x.audit(vm)
@@ -392,14 +393,14 @@ class Diagnostics:
         cp = self.state['captures']['endpoint']
         if cp['status'] != 'START_INTENT' or cp.get('remote') or cp['host'] != 'localhost':
             raise RuntimeError('Retry cannot replace any launched TCP capture')
-        expected = [self.root/'ns-diagnostics'/name for name in ('endpoint', 'endpoint-agent')]
+        expected = [run_path(self.root, 'ns-diagnostics')/name for name in ('endpoint', 'endpoint-agent')]
         if Path(cp['config']['directory']).resolve() not in [p.resolve() for p in expected]:
             raise RuntimeError('Retry endpoint directory identity changed')
         row = self.transport('inspect', cp)
         if row.get('status') != 'NOT_STARTED' or row.get('config') != cp['config']:
             raise RuntimeError('TCP capture has launch evidence; automatic retry prohibited')
         # Preserve the failed intent and inspection before enabling one launch.
-        save(self.root/'ns-diagnostics-launch-recovery.json', dict(
+        save(run_path(self.root, 'ns-diagnostics-launch-recovery.json'), dict(
             before=json.loads(json.dumps(cp)), inspection=row, recovered_at=time.time()))
         cp['launch_attempted'] = False
         save(self.path, self.state)
@@ -417,7 +418,7 @@ class Diagnostics:
             except Exception as exc:
                 row = dict(status='UNAVAILABLE', error=str(exc))
             rows.append(dict(inventory_host=host, **row))
-        save(self.root/('ns-conntrack-'+label+'.json'), dict(hosts=rows, conntrack_transfer=False))
+        save(run_path(self.root, 'ns-conntrack-'+label+'.json'), dict(hosts=rows, conntrack_transfer=False))
 
     def ready(self):
         if not self.enabled:
@@ -449,7 +450,7 @@ class Diagnostics:
         expected = {'endpoint', 'guest-snat', 'guest-fip'}
         if set(self.state['captures']) != expected:
             errors.append('Missing required diagnostic capture')
-        save(self.root/'ns-diagnostics.json', dict(status='PASS' if not errors else 'UNAVAILABLE', errors=errors,
+        save(run_path(self.root, 'ns-diagnostics.json'), dict(status='PASS' if not errors else 'UNAVAILABLE', errors=errors,
              captures=self.state['captures'], conntrack_transfer=False,
              scope='TCP/ICMP/ARP captures identify tuples, resets and packet loss; TCP application outage remains client monotonic.'))
         if self.cfg['ns'].get('icmp_enabled'):
@@ -473,18 +474,23 @@ class Diagnostics:
             except Exception as exc:
                 errors.append('N-S ICMP evidence: '+str(exc))
             if errors:
-                result = json.loads((self.root/'ns-diagnostics.json').read_text())
+                result = json.loads((run_path(self.root, 'ns-diagnostics.json')).read_text())
                 result.update(status='UNAVAILABLE', errors=errors)
-                save(self.root/'ns-diagnostics.json', result)
+                save(run_path(self.root, 'ns-diagnostics.json'), result)
         return errors
 
 
 def reset_stop(backup_root, evidence):
     rows = []
     errors = []
-    for path in sorted(Path(backup_root).glob('*/ns-diagnostics-checkpoint.json')):
-        root = path.parent
-        cfg = json.loads((root/'validation-config.json').read_text())
+    parent = Path(backup_root)
+    for root in sorted(parent.iterdir()) if parent.is_dir() else []:
+        if not root.is_dir() or root.is_symlink():
+            continue
+        path = run_path(root, 'ns-diagnostics-checkpoint.json')
+        if not path.is_file():
+            continue
+        cfg = json.loads((run_path(root, 'validation-config.json')).read_text())
         x = type('Checkpoint', (), dict(root=root, cfg=cfg))()
         diag = Diagnostics(x)
         if diag.state.get('schema') != 1 or diag.state['run'] != root.name:
@@ -497,7 +503,7 @@ def reset_stop(backup_root, evidence):
                     if inspected.get('status') == 'NOT_STARTED':
                         rows.append(dict(run=root.name, kind=kind, status='NEVER_STARTED'))
                         continue
-                archived = root/'ns-diagnostics'/kind
+                archived = run_path(root, 'ns-diagnostics')/kind
                 # A successfully archived stopped capture needs no remote
                 # service or interface from a later lab generation.
                 if cp['status'] == 'STOPPED' and (archived/'tcp.pcap').exists() and (archived/'tcp-capture-state.json').exists():
@@ -541,9 +547,9 @@ def main():
         print(json.dumps(result))
     else:
         # No OpenStack API is used during freeze or when finalizing captures.
-        cfg = json.loads((args.root/'validation-config.json').read_text())
+        cfg = json.loads((run_path(args.root, 'validation-config.json')).read_text())
         x = type('Checkpoint', (), dict(root=args.root, cfg=cfg,
-            state=json.loads((args.root/'extended-resources.json').read_text())))()
+            state=json.loads((run_path(args.root, 'extended-resources.json')).read_text())))()
         diag = Diagnostics(x)
         if not diag.enabled:
             return

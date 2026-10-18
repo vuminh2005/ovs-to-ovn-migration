@@ -40,7 +40,7 @@ Bản này xây từ `playbook-ns-ew-matrix.zip` đã có lưu lỗi socket đ�
 
 ## Giới hạn và điều kiện
 
-- Controller cần `tcpdump`; compute cần các công cụ capture đã dùng cho Pair A.
+- Controller cần `tcpdump`; compute cần các công cụ capture đã dùng cho Group A.
   `ns_capture_interface: eth1` phải có IP endpoint 10.1.0.187. Sai interface/IP
   hoặc không mở được capture sẽ chặn trước freeze.
 - `ns_diagnostics_enabled: true` mặc định. Không đổi use_random_fully, không
@@ -106,7 +106,7 @@ bị coi là dữ liệu lạ. Bản sửa tắt tạo bytecode ở agent và ch
 .pyc của hai helper nếu đã tồn tại. PCAP/log/symlink và file lạ vẫn bị chặn.
 
 `retry-ns-diagnostics-preparation.yml` dành riêng cho phase 04 chưa hoàn tất:
-Pair A/EW matrix có thể đã chạy, nhưng capture endpoint, VM N-S và local N-S
+Group A/EW matrix có thể đã chạy, nhưng capture endpoint, VM N-S và local N-S
 probe phải chưa từng khởi động. Guard chặn mọi marker phase 05 trở đi, freeze,
 DB migration và cutover. Agent inspect kiểm tra không có journal/PCAP/log
 khởi động trước khi cho phép một lần launch. Intent lỗi được lưu riêng,

@@ -76,7 +76,7 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual((self.root/'tcp.pcap').read_bytes(), b'old evidence')
 
     def test_actual_helper_import_cache_does_not_block_startup(self):
-        for name in ('ns_diagnostics.py','dataplane_capture.py'):
+        for name in ('ns_diagnostics.py','dataplane_capture.py','run_layout.py'):
             (self.root/name).write_bytes((ROOT/'scripts'/name).read_bytes())
         program = '''import json, pathlib, sys
 root=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root))

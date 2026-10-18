@@ -1,4 +1,3 @@
----
 - name: "Phase 00 - Initialize migration"
   hosts: localhost
   gather_facts: false
@@ -40,11 +39,16 @@
         mode: "0700"
       loop:
         - "{{ migration_run_dir }}"
-        - "{{ migration_run_dir }}/metrics"
+        - "{{ migration_run_dir | run_file('metrics') }}"
+
+    - name: "[00] Create organized run data directories"
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/run_layout.py", init, "{{ migration_run_dir }}"]
+      changed_when: false
 
     - name: "[00] [SAVE] Save runtime settings"
       ansible.builtin.copy:
-        dest: "{{ migration_run_dir }}/runtime.json"
+        dest: "{{ migration_run_dir | run_file('runtime.json') }}"
         mode: "0600"
         content: >-
           {{ {

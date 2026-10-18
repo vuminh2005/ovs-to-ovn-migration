@@ -86,7 +86,7 @@ class PreparationRetryTests(unittest.TestCase):
             '06-target-config.yml','07-migrate-db.yml','08-cutover.yml','09-cleanup.yml',
             '10-restore-neutron.yml','11-validate.yml','12-workload-validation.yml','13-report.yml')])
         tasks = yaml.safe_load((ROOT/'playbooks/04-validation-workloads.yml').read_text())[0]['tasks']
-        task = next(t for t in tasks if t['name']=='Save non-secret guest validation configuration')
+        task = next(t for t in tasks if t['name']=='[04] [SAVE] Save workload validation settings')
         self.assertIn('not (validation_retry_preparation_runtime | default(false) | bool)', task['when'])
         restore = next(t['ansible.builtin.set_fact'] for t in plays[0]['tasks']
                        if t['name']=='Restore the original run paths settings and prerequisites')

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Versioned phase instrumentation and checkpoint meanings; no cloud access."""
+from run_layout import run_path
 import argparse
 import json
 import math
@@ -36,7 +37,7 @@ PHASE_SCOPE = 'Per-file execution, across all plays; latest execution on resume.
 
 
 def schema_version(root):
-    path = pathlib.Path(root)/'runtime.json'
+    path = run_path(pathlib.Path(root), 'runtime.json')
     runtime = json.loads(path.read_text()) if path.exists() else {}
     if not isinstance(runtime, dict):
         raise ValueError('Malformed runtime checkpoint')
@@ -75,8 +76,8 @@ def phase_measurements(root):
     for phase, (name, filename) in enumerate(PHASES):
         start_name = marker_name(version, phase, 'start')
         end_name = marker_name(version, phase, 'end')
-        start_path = root/'metrics'/start_name if start_name else None
-        end_path = root/'metrics'/end_name if end_name else None
+        start_path = run_path(root, 'metrics')/start_name if start_name else None
+        end_path = run_path(root, 'metrics')/end_name if end_name else None
         start = timestamp(start_path) if start_path else None
         end = timestamp(end_path) if end_path else None
         duration = None
@@ -98,7 +99,7 @@ def phase_measurements(root):
 def resume_eligible(root):
     root = pathlib.Path(root)
     version = schema_version(root)
-    return any((root/'metrics'/marker_name(version, phase, edge)).exists()
+    return any((run_path(root, 'metrics')/marker_name(version, phase, edge)).exists()
                for phase, edge in ((8, 'end'), (9, 'start')))
 
 
@@ -110,7 +111,7 @@ def pre_cutover_reboot_prohibited(root):
     names = ([marker_name(version, phase, 'start') for phase in (7, 8)]
              if version == LEGACY_SCHEMA else ['phase08.start', 'db_migration.start'])
     names.append('control_plane_downtime.start')
-    return any((root/'metrics'/name).exists() for name in names)
+    return any((run_path(root, 'metrics')/name).exists() for name in names)
 
 
 def mark(root, phase, edge, when=None, also=None):
@@ -121,21 +122,21 @@ def mark(root, phase, edge, when=None, also=None):
     if type(when) not in (int, float) or not math.isfinite(when):
         raise ValueError('Invalid phase timestamp')
     if name:
-        metrics = root/'metrics'
+        metrics = run_path(root, 'metrics')
         if edge == 'start' and version == CANONICAL_SCHEMA:
             (metrics/marker_name(version, phase, 'end')).unlink(missing_ok=True)
         (metrics/name).write_text(f'{when:.9f}\n')
     if also:
-        (root/'metrics'/also).write_text(f'{when:.9f}\n')
+        (run_path(root, 'metrics')/also).write_text(f'{when:.9f}\n')
 
 
 def report_start(root):
     now = time.time()
     mark(root, 13, 'start', now)
     if schema_version(root) == LEGACY_SCHEMA:
-        (pathlib.Path(root)/'metrics/total.end').write_text(f'{now:.9f}\n')
+        (run_path(pathlib.Path(root), 'metrics/total.end')).write_text(f'{now:.9f}\n')
     else:
-        (pathlib.Path(root)/'metrics/total.end').unlink(missing_ok=True)
+        (run_path(pathlib.Path(root), 'metrics/total.end')).unlink(missing_ok=True)
 
 
 def finish(root):
@@ -148,22 +149,22 @@ def preparation_retry_check(root, inventory):
     root = pathlib.Path(root)
     if not root.is_absolute() or schema_version(root) != CANONICAL_SCHEMA:
         raise ValueError('Preparation retry requires an absolute schema-2 run directory')
-    runtime = json.loads((root/'runtime.json').read_text())
-    cfg = json.loads((root/'validation-config.json').read_text())
-    state = json.loads((root/'validation-resources.json').read_text())
+    runtime = json.loads((run_path(root, 'runtime.json')).read_text())
+    cfg = json.loads((run_path(root, 'validation-config.json')).read_text())
+    state = json.loads((run_path(root, 'validation-resources.json')).read_text())
     if (runtime.get('run_id') != root.name or cfg.get('run') != root.name or
             runtime.get('inventory') != inventory or cfg.get('inventory') != inventory):
         raise ValueError('Preparation retry run/inventory identity changed')
     for phase in range(4):
-        if timestamp(root/'metrics'/f'phase{phase:02d}.end') is None:
+        if timestamp(run_path(root, 'metrics')/f'phase{phase:02d}.end') is None:
             raise ValueError('Preparation retry requires completed phases 00 through 03')
-    if timestamp(root/'metrics/phase04.start') is None or (root/'metrics/phase04.end').exists():
+    if timestamp(run_path(root, 'metrics/phase04.start')) is None or (run_path(root, 'metrics/phase04.end')).exists():
         raise ValueError('Preparation retry requires an incomplete phase 04')
     forbidden = ['total.end', 'control_plane_downtime.start', 'control_plane_downtime.end',
                  'db_migration.start', 'db_migration.end',
                  'dataplane_convergence.start', 'dataplane_convergence.end']
     forbidden += [f'phase{phase:02d}.{edge}' for phase in range(5,14) for edge in ('start','end')]
-    if any((root/'metrics'/name).exists() for name in forbidden):
+    if any((run_path(root, 'metrics')/name).exists() for name in forbidden):
         raise ValueError('Preparation retry is forbidden after OVN staging, target changes or freeze')
     pre = state.get('pre', {})
     pair = pre.get('measure', {})
@@ -212,9 +213,9 @@ def main():
                 parser.error('freeze-start is only valid at the phase 07 freeze boundary')
             if schema_version(args.root) == LEGACY_SCHEMA:
                 mark(args.root, args.phase, args.edge, now)
-            elif not (args.root/'metrics/phase07.start').exists():
+            elif not (run_path(args.root, 'metrics/phase07.start')).exists():
                 parser.error('Canonical phase 07 entry marker missing')
-            (args.root/'metrics/control_plane_downtime.start').write_text(f'{now:.9f}\n')
+            (run_path(args.root, 'metrics/control_plane_downtime.start')).write_text(f'{now:.9f}\n')
         else:
             mark(args.root, args.phase, args.edge, when, args.also)
     elif args.action == 'report-start':

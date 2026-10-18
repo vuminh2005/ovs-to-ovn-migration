@@ -36,14 +36,16 @@ def cleanup(parent):
 
 
 def inputs(root):
-    runtime = json.loads((root/'runtime.json').read_text())
+    from run_layout import run_path
+
+    runtime = json.loads((run_path(root, 'runtime.json')).read_text())
     run = runtime['run_id']
     if run != root.name or not re.fullmatch(r'[A-Za-z0-9_-]+', run):
         raise ValueError('Preparation run identity differs')
     inventory = Path(runtime['inventory'])
-    if inventory.read_bytes() != (root/'inventory.before').read_bytes():
+    if inventory.read_bytes() != (run_path(root, 'inventory.before')).read_bytes():
         raise ValueError('Inventory changed since migration backup')
-    ports = (root/'compute-port-ids.txt').read_bytes()
+    ports = (run_path(root, 'compute-port-ids.txt')).read_bytes()
     return dict(run=run, inventory=str(inventory),
                 inventory_sha256=hashlib.sha256(inventory.read_bytes()).hexdigest(),
                 ports_sha256=hashlib.sha256(ports).hexdigest(),
@@ -52,7 +54,9 @@ def inputs(root):
 
 
 def verify(root):
-    value = json.loads((root/'cutover-preparation.json').read_text())
+    from run_layout import run_path
+
+    value = json.loads((run_path(root, 'cutover-preparation.json')).read_text())
     if value.get('schema') != 1 or value.get('status') != 'PASS' or any(
             value.get(k) != v for k,v in inputs(root).items()):
         raise ValueError('Cutover preparation does not match this run/inventory/VM ports')
@@ -65,7 +69,11 @@ def verify(root):
 
 
 def prepare(root, image, base, per_port, maximum):
-    if (root/'metrics/control_plane_downtime.start').exists():
+    # Reset cleanup is transferred alone by ansible.builtin.script. Keep this
+    # controller-side dependency confined to the migration actions.
+    from run_layout import run_path
+
+    if (run_path(root, 'metrics/control_plane_downtime.start')).exists():
         raise ValueError('Preparation must complete before Neutron freeze; do not rebase frozen runs')
     value = inputs(root)
     if min(base, maximum) <= 0 or per_port < 0 or not image.strip():
@@ -74,7 +82,7 @@ def prepare(root, image, base, per_port, maximum):
     value.update(schema=1, status='PASS', directory=directory,
                  ports_path=directory+'/compute-port-ids.txt', neutron_image=image.strip(),
                  binding_timeout=min(base+value['port_count']*per_port, maximum))
-    path = root/'cutover-preparation.json'
+    path = run_path(root, 'cutover-preparation.json')
     if path.exists():
         old = verify(root)
         if any(old.get(k) != v for k,v in value.items()):

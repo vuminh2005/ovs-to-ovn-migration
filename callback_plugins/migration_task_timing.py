@@ -9,6 +9,8 @@ import time
 import uuid
 
 from ansible.plugins.callback import CallbackBase
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
+from run_layout import run_path
 
 
 DOCUMENTATION = r'''
@@ -183,7 +185,7 @@ class CallbackModule(CallbackBase):
             'resume-after-cleanup.yml', 'retry-validation-preparation.yml', 'retry-ns-diagnostics-preparation.yml'}
         if (self.root is None or Path(self.playbook or '').name not in workflows or
                 os.environ.get('OVS_TO_OVN_DIAGNOSTICS_FINALIZING') == '1' or
-                not (self.root/'diagnostics-config.json').exists()):
+                not run_path(self.root, 'diagnostics-config.json').exists()):
             return
         failed = any(stats.summarize(host).get('failures', 0) or
             stats.summarize(host).get('unreachable', 0) for host in getattr(stats, 'processed', {}))
@@ -192,7 +194,7 @@ class CallbackModule(CallbackBase):
         helper = Path(__file__).resolve().parents[1]/'scripts/diagnostics_control.py'
         env = dict(os.environ, OVS_TO_OVN_DIAGNOSTICS_FINALIZING='1')
         try:
-            with (self.root/'diagnostics-abort.log').open('ab') as log:
+            with run_path(self.root, 'diagnostics-abort.log').open('ab') as log:
                 subprocess.run([sys.executable, str(helper), 'abort', str(self.root)],
                     stdout=log, stderr=log, stdin=subprocess.DEVNULL, env=env, timeout=240)
         except (OSError, subprocess.TimeoutExpired):

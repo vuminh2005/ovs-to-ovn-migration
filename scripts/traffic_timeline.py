@@ -1,4 +1,5 @@
 """Traffic clock anchors and temporal task attribution; never infer causality."""
+from run_layout import run_path
 from datetime import datetime, timezone, timedelta
 import json
 import math
@@ -15,7 +16,7 @@ def phase(row):
 
 def read_tasks(root):
     rows = {}
-    for path in (Path(root)/'task-timings').glob('*.json*'):
+    for path in (run_path(Path(root), 'task-timings')).glob('*.json*'):
         try:
             if path.suffix == '.json':
                 items = json.loads(path.read_text()).get('tasks', [])

@@ -118,7 +118,7 @@ class SourcePortExperimentTests(unittest.TestCase):
 
     def test_effective_source_gate_is_conditional_before_workload_creation(self):
         precheck=yaml.safe_load((ROOT/'playbooks/02-precheck.yml').read_text())
-        gate=next(p for p in precheck if 'SNAT experiment' in p['name'])
+        gate=next(p for p in precheck if 'optional SNAT source-port experiment' in p['name'])
         self.assertEqual(gate['hosts'],'network')
         self.assertIn('ns_preserve_snat_source_port',str(gate['tasks'][0]['when']))
         # ns-lab.yml is operator-selected; verify both modes rather than forcing

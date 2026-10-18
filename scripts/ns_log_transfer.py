@@ -5,6 +5,7 @@ The guest opens a separate outbound socket; held sockets and ping never restart.
 No remote path is accepted. A fixed-size JSONL prefix is hashed and published
 only after identity/sequence checks. The console mirror remains separate.
 """
+from run_layout import run_path
 import hashlib
 import json
 import math
@@ -212,17 +213,17 @@ def upload(client, nonce, *, not_before=None):
 def collect(extended, *, timeout=90):
     """Called only after all original N-S captures have stopped and fetched."""
     root, cfg = extended.root, extended.cfg
-    state = json.loads((root/'ns-diagnostics.json').read_text())
+    state = json.loads((run_path(root, 'ns-diagnostics.json')).read_text())
     if (set(state.get('captures', {})) != {'endpoint', 'guest-snat', 'guest-fip'} or
         any(c.get('remote', {}).get('status') != 'STOPPED' for c in state['captures'].values())):
         raise ValueError('Cannot export sender log before captures stop')
-    baseline = json.loads((root/'ns-baseline.json').read_text())['clients']['snat']
+    baseline = json.loads((run_path(root, 'ns-baseline.json')).read_text())['clients']['snat']
     expected = dict(run=cfg['run'], label='snat', boot=baseline['boot'],
         log_id=baseline['icmp']['log_id'], ping_pid=baseline['icmp']['pid'], probe_id=baseline['probe_id'])
-    path = root/'ns/snat-icmp-sender.full.jsonl'
+    path = run_path(root, 'ns/snat-icmp-sender.full.jsonl')
     receipt_path = path.with_suffix('.receipt.json')
     if not receipt_path.exists():
-        request_path = root/'ns/snat-icmp-export-request.json'
+        request_path = run_path(root, 'ns/snat-icmp-export-request.json')
         if request_path.exists():
             request = json.loads(request_path.read_text())
             if request.get('expected') != expected:
@@ -254,9 +255,9 @@ def collect(extended, *, timeout=90):
 
 def verify_export(root, run, baseline):
     root = Path(root)
-    path = root/'ns/snat-icmp-sender.full.jsonl'
+    path = run_path(root, 'ns/snat-icmp-sender.full.jsonl')
     receipt = json.loads(path.with_suffix('.receipt.json').read_text())
-    request = json.loads((root/'ns/snat-icmp-export-request.json').read_text())
+    request = json.loads((run_path(root, 'ns/snat-icmp-export-request.json')).read_text())
     expected = dict(run=run, label='snat', boot=baseline['boot'], log_id=baseline['icmp']['log_id'],
                     ping_pid=baseline['icmp']['pid'], probe_id=baseline['probe_id'])
     if (receipt.get('status') != 'PASS' or receipt.get('expected') != expected or

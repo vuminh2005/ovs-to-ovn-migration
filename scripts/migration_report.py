@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
+from run_layout import run_path, run_glob
 import json, pathlib, sys
 from workload_validation import validation_ready
 from report_format import ordered_report, render_text, terminal_summary
 from phase_schema import phase_measurements, schema_version, timestamp, TOTAL_SCOPES, PHASE_SCOPE
 root = pathlib.Path(sys.argv[1])
-m = root/'metrics'
+m = run_path(root, 'metrics')
 def n(name):
     return timestamp(m/name)
 def dur(a,b):
@@ -13,9 +14,9 @@ def dur(a,b):
 phase_rows=phase_measurements(root)
 phase_version=schema_version(root)
 phases={f"phase_{row['number']}":row['duration_seconds'] for row in phase_rows}
-consistency=json.loads((root/'resource-consistency.json').read_text()) if (root/'resource-consistency.json').exists() else {}
-before=json.loads((root/'resource-counts.before.json').read_text()) if (root/'resource-counts.before.json').exists() else {}
-smoke=json.loads((root/'new-network-smoke.json').read_text()) if (root/'new-network-smoke.json').exists() else None
+consistency=json.loads((run_path(root, 'resource-consistency.json')).read_text()) if (run_path(root, 'resource-consistency.json')).exists() else {}
+before=json.loads((run_path(root, 'resource-counts.before.json')).read_text()) if (run_path(root, 'resource-counts.before.json')).exists() else {}
+smoke=json.loads((run_path(root, 'new-network-smoke.json')).read_text()) if (run_path(root, 'new-network-smoke.json')).exists() else None
 report={
   'result':'SUCCESS',
   'run_id':sys.argv[2],
@@ -26,7 +27,7 @@ report={
   'dataplane_convergence_seconds':dur('dataplane_convergence.start','dataplane_convergence.end'),
   'phase_durations_seconds':phases,
   'phase_marker_schema_version':phase_version,
-  'phase_marker_schema_source':'runtime.json' if (root/'runtime.json').exists() and 'phase_marker_schema_version' in json.loads((root/'runtime.json').read_text()) else 'legacy default (metadata absent)',
+  'phase_marker_schema_source':str(run_path(root, 'runtime.json').relative_to(root)) if (run_path(root, 'runtime.json')).exists() and 'phase_marker_schema_version' in json.loads((run_path(root, 'runtime.json')).read_text()) else 'legacy default (metadata absent)',
   'phase_timings':phase_rows,
   'phase_timing_scope':PHASE_SCOPE,
   'total_duration_scope':TOTAL_SCOPES[phase_version],
@@ -40,8 +41,11 @@ report={
   ]
 }
 def evidence(name):
-    p=root/name
+    p=run_path(root, name)
     return json.loads(p.read_text()) if p.exists() else None
+report['run_storage'] = dict(layout_schema_version=1 if (root/'run-layout.json').exists() else 0,
+    layout_index='run-layout.json' if (root/'run-layout.json').exists() else None,
+    mariadb_backup=evidence('mariadb-backup.json'))
 report['orchestration_recovery']=evidence('orchestration-recovery.json')
 diagnostic_cfg = evidence('diagnostics-config.json') or {}
 report['migration_diagnostics'] = (evidence('migration-diagnostics.json') or {'status':'UNAVAILABLE'}) if diagnostic_cfg.get('enabled') else {'status':'DISABLED'}
@@ -50,7 +54,7 @@ report['diagnostic_coverage'] = coverage(report['migration_diagnostics'])
 report['image_preflight']=[dict(json.loads(path.read_text()),
     evidence_directory=str(path.parent),
     image_identities={entry.name:json.loads(entry.read_text()) for entry in sorted(path.parent.glob('*.json')) if entry.name!='result.json'})
-    for path in sorted(root.glob('image-preflight/*/result.json'))]
+    for path in sorted(run_glob(root, 'image-preflight/*/result.json'))]
 if report['orchestration_recovery']:
     routes={event.get('route') for event in report['orchestration_recovery'].get('events',[])}
     if 'pre-target-stage' in routes:
@@ -202,13 +206,13 @@ if report['result'] in ('SUCCESS', 'SUCCESS_WITH_REMEDIATION') and report['north
 
 if report['result'] in ('SUCCESS', 'SUCCESS_WITH_REMEDIATION') and report['extended_cleanup'] not in ('PASS', 'DISABLED'):
     report['result']='MIGRATED_VALIDATION_INCOMPLETE'
-if (evidence('runtime.json') or {}).get('preexisting_preservation_enabled') or (root/'source-topology-before.json').exists():
+if (evidence('runtime.json') or {}).get('preexisting_preservation_enabled') or (run_path(root, 'source-topology-before.json')).exists():
     report['preexisting_resources_preservation'] = evidence('preexisting-resource-preservation.json') or {'status':'UNAVAILABLE'}
-    if not (root/'source-topology-before.json').exists():
+    if not (run_path(root, 'source-topology-before.json')).exists():
         report['preexisting_resources_preservation'] = {'status':'UNAVAILABLE', 'reason':'Missing pre-existing resource baseline'}
     if report['preexisting_resources_preservation'].get('status') != 'PASS':
         report['result'] = 'MIGRATED_VALIDATION_INCOMPLETE'
 report = ordered_report(report)
-(root/'migration-report.json').write_text(json.dumps(report, indent=2) + '\n')
-(root/'migration-report.txt').write_text(render_text(report, root, modern=modern))
+(run_path(root, 'migration-report.json')).write_text(json.dumps(report, indent=2) + '\n')
+(run_path(root, 'migration-report.txt')).write_text(render_text(report, root, modern=modern))
 print(terminal_summary(report, root))

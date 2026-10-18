@@ -1,23 +1,25 @@
 # Chạy migration với A/B/C/D trên lab 4 node
 
-Bản sửa dựa trên ZIP commit `7de41d3`; reset 4 node được giữ nguyên.
+Nền hiện tại là commit `b87da3d`, cùng [bản cập nhật ngày 18/10](b87-update-20261018.md).
 Lab đã nghiệm thu: controller, network1, compute1, compute2; `eth1` MTU 1450,
 transport ping 1450 byte qua ba node thành công. Profile workload là VXLAN
 1400 → Geneve 1392. Network2 nằm ngoài inventory đang dùng.
 
 ## Thay đổi
 
-| Pair | Trước migration | Sau migration | Placement |
+| Group | Trước migration | Sau migration | Placement |
 |---|---|---|---|
-| A | Hai VM đo ping và PCAP liên tục | Xác nhận boot/UUID và packet recovery | A.1 compute1; A.2 compute2 |
+| A | Bốn VM EW ICMP: hai VM đo gốc và hai VM matrix | Xác nhận boot/UUID và packet recovery cho bốn trường hợp compute/subnet | Hai VM trên mỗi compute |
 | B | Hai VM kiểm tra DHCP, metadata, MTU | Giữ UUID/port/IP, kiểm tra OVN DHCP/metadata | B.1 compute1; B.2 compute2 |
 | C | Chưa tạo | Tạo riêng hai network/subnet Geneve, một router và hai VM | C.1 compute1; C.2 compute2 |
 | D | Hai VM TCP dùng chung topology với A/B | Báo cáo riêng ba loại TCP | D.1 compute1; D.2 compute2 |
 
-Khi D bật, tối đa tám VM, bốn network/subnet và hai router thuộc run.
+Với ma trận EW và N-S mặc định, workload tự động tối đa 12 VM, sáu mỗi compute.
+Cộng hai VM demo do reset tạo là 14 VM, bảy mỗi compute.
 Tên nội bộ trong checkpoint vẫn dùng `0`/`1`: `0` là member .1;
 `1` là member .2. `pre.measure`, `pre.existing`, `pre.tcp`, `post.fresh`
-tương ứng A, B, D, C.
+tương ứng hai VM gốc của A, B, D, C. Hai VM matrix của A được lưu riêng trong
+`extended-resources.json`; khóa checkpoint cũ không đổi.
 
 Precheck kiểm tra full mesh tunnel với gói IP bằng source MTU + 50 byte,
 tcpdump trên hai compute và mapping inventory/Nova/hypervisor/Neutron.
@@ -55,19 +57,18 @@ không được đổi thành PASS. Không reboot A hoặc D để cứu metric.
 
 ## Lệnh chạy trên controller
 
-Đưa `ovs-to-ovn-migration-abcd-sdkfix.zip` vào `/root`, rồi giải nén sang thư mục mới:
+Cập nhật ZIP đầy đủ vào `/root/ovs-to-ovn-migration`, giữ inventory và biến lab:
 
 ```bash
-python3 -m zipfile -e /root/ovs-to-ovn-migration-abcd-sdkfix.zip /root/ovn-migration-abcd
+cd /root/ovs-to-ovn-migration
 source /root/venvs/kolla-2024.1/bin/activate
 source /etc/kolla/admin-openrc.sh
-cd /root/ovn-migration-abcd/ovs-to-ovn-migration
 
 ansible-playbook -i /root/multinode migrate-to-ovn.yml --syntax-check
 ```
 
 Không cần file `migration-lab.yml`. `group_vars/all.yml` đặt sẵn Geneve MTU 1392,
-D bật và hai cờ cho phép remediation Pair B bằng `true`. Khi không có override
+D bật và hai cờ cho phép remediation Group B bằng `true`. Khi không có override
 image/flavor qua biến môi trường, phase 03 tìm `ovn-validation-ubuntu-24.04` và
 `ovn-validation.small` đang có; không dùng UUID từ lần reset cũ.
 
@@ -77,7 +78,7 @@ Chạy đầy đủ A/B/C/D cùng một lượt:
 ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
-Hai cờ reboot mặc định `true`, chỉ cho Pair B thuộc run, khi các guard cũ
+Hai cờ reboot mặc định `true`, chỉ cho Group B thuộc run, khi các guard cũ
 chứng minh stale DHCP/MTU đủ điều kiện. B được reboot tuần tự và UUID/port/IP phải
 giữ nguyên. `true` cho phép xử lý tự động nếu cần, không buộc reboot mọi lần.
 Muốn tắt remediation, truyền riêng cờ tương ứng bằng `false`.

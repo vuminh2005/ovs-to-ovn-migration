@@ -1,4 +1,3 @@
----
 - name: Recover an explicit late-phase checkpoint without repeating migration
   hosts: localhost
   any_errors_fatal: true
@@ -13,7 +12,7 @@
         fail_msg: Supply -e migration_resume_run_dir=/absolute/path/to/run.
     - name: Load runtime checkpoint
       ansible.builtin.slurp:
-        src: "{{ migration_resume_run_dir }}/runtime.json"
+        src: "{{ migration_resume_run_dir | run_file('runtime.json') }}"
       register: resume_runtime
     - name: Recover topology facts used by existing phases
       ansible.builtin.set_fact:
@@ -23,22 +22,25 @@
         kolla_ansible_bin_runtime: "{{ (resume_runtime.content | b64decode | from_json).kolla_ansible }}"
         ovn_cli_host_runtime: "{{ (resume_runtime.content | b64decode | from_json).ovn_cli_host }}"
         chassis_count_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | length }}"
-        source_network_count_runtime: "{{ (lookup('file', migration_resume_run_dir + '/resource-counts.before.json') | from_json).networks }}"
+        source_network_count_runtime: "{{ (lookup('file', (migration_resume_run_dir | run_file('resource-counts.before.json'))) | from_json).networks }}"
     - name: Verify takeover checkpoint and recover generated endpoints
       ansible.builtin.shell: |
         set -euo pipefail
         python3 {{ (playbook_dir + '/../scripts/phase_schema.py') | quote }} resume-check {{ migration_run_dir | quote }}
         python3 - {{ migration_run_dir | quote }} {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} <<'PYCODE'
+        import sys
+        sys.path.insert(0, '{{ playbook_dir }}/../scripts')
+        from run_layout import run_path, run_glob
         import configparser,json,pathlib,sys
         root=pathlib.Path(sys.argv[1])
-        state=root/'validation-resources.json'
+        state=run_path(root, 'validation-resources.json')
         if state.exists():
             checkpoint=json.loads(state.read_text())
             if any(checkpoint.get(stage,{}).get('cleanup_started') for stage in ('pre','post')):
                 import subprocess
                 subprocess.run(['python3',sys.argv[2],'cleanup-ready',str(root)],check=True)
         cfg=configparser.ConfigParser()
-        cfg.read(root/'ml2_conf.ini.target')
+        cfg.read(run_path(root, 'ml2_conf.ini.target'))
         print(cfg['ovn']['ovn_nb_connection'])
         print(cfg['ovn']['ovn_sb_connection'])
         PYCODE
@@ -48,13 +50,14 @@
       changed_when: false
     - name: Recover owned workload cleanup checkpoint
       ansible.builtin.set_fact:
-        validation_cleanup_pending: "{{ (lookup('file', migration_run_dir + '/validation-resources.json', errors='ignore') | default('{}', true) | from_json).get('post', {}).get('cleanup_started', false) }}"
+        validation_cleanup_pending: "{{ (lookup('file', (migration_run_dir | run_file('validation-resources.json')), errors='ignore') | default('{}', true) | from_json).get('post',
+          {}).get('cleanup_started', false) }}"
 
     - name: Publish recovered OVN connections and workload mode
       ansible.builtin.set_fact:
         ovn_nb_connection_runtime: "{{ resume_connections.stdout_lines[0] }}"
         ovn_sb_connection_runtime: "{{ resume_connections.stdout_lines[1] }}"
-        validation_workloads_enabled: "{{ lookup('fileglob', migration_run_dir + '/validation-resources.json') | length > 0 }}"
+        validation_workloads_enabled: "{{ lookup('fileglob', (migration_run_dir | run_file('validation-resources.json'))) | length > 0 }}"
 
 - name: Verify live late-phase takeover before cleanup resume
   hosts: network:compute

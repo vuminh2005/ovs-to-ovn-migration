@@ -16,6 +16,10 @@ import threading
 import time
 import uuid
 
+if __name__ == '__main__':
+    sys.dont_write_bytecode = True
+from run_layout import run_path, run_glob
+
 
 def save(path, value):
     path = Path(path)
@@ -128,13 +132,13 @@ def core_jobs(cfg, root):
         jobs['openflow-watch'] = dict(container='openvswitch_vswitchd', reconnect=True, args=['ovs-ofctl',
             '--timestamp', '-O', 'OpenFlow10', 'monitor', 'br-int', 'watch:!initial'])
         jobs['tunnel-pcap'] = dict(args=['tcpdump', '-n', '-U', '-s', '0', '-i', cfg['tunnel_interface'],
-            '-w', str(root/'tunnel.pcap'), 'udp port 4789 or udp port 6081'])
+            '-w', str(run_path(root, 'tunnel.pcap')), 'udp port 4789 or udp port 6081'])
     if cfg.get('network') and cfg.get('ns_enabled'):
         endpoint = cfg['endpoint_ip']
         # Retain ARP/GARP plus application traffic on the actual external OVS port.
         bpf = 'arp or ((icmp or (tcp and (port '+str(cfg['old_port'])+' or port '+str(cfg['new_port'])+')))'+' and host '+endpoint+')'
         jobs['gateway-pcap'] = dict(args=['tcpdump', '-n', '-U', '-s', '0', '-i', cfg['external_interface'],
-            '-w', str(root/'gateway.pcap'), bpf])
+            '-w', str(run_path(root, 'gateway.pcap')), bpf])
     return jobs
 
 
@@ -150,7 +154,7 @@ class Observer:
         self.reconnect_counts = {}
         self.offsets = {}
         self.errors = []
-        self.events = self.root/'events.jsonl'
+        self.events = run_path(self.root, 'events.jsonl')
         self.started = time.monotonic()
         self.intensive = False
         self.quiet_cutover = self.cfg.get('sampling_scope') == 'outside-cutover'
@@ -207,7 +211,7 @@ class Observer:
         self.segments.setdefault(name, []).append(row)
         self.record('observer-start', observer=name, segment=row['segment'], command=args[-len(spec['args']):])
         def output():
-            with (self.root/(name+'.jsonl')).open('a') as f:
+            with (run_path(self.root, name+'.jsonl')).open('a') as f:
                 for line in proc.stdout:
                     if line.startswith('DIAG_PID=') and line.strip()[9:].isdigit():
                         row['inner_pid'] = int(line.strip()[9:])
@@ -371,7 +375,7 @@ exit 0'''
                 proc.wait(timeout=3)
         row['thread'].join(timeout=2)
         if name.endswith('-pcap'):
-            text = (self.root/(name+'.jsonl')).read_text()
+            text = (run_path(self.root, name+'.jsonl')).read_text()
             parsed = {}
             for key, pattern in (('captured_packets', r'(\d+) packets captured'), ('dropped_packets', r'(\d+) packets dropped by kernel')):
                 matches = re.findall(pattern, text)
@@ -405,7 +409,7 @@ exit 0'''
         try:
             if self.cfg['role'] == 'central':
                 jobs, schemas = database_jobs(self.cfg)
-                save(self.root/'schemas.json', schemas)
+                save(run_path(self.root, 'schemas.json'), schemas)
             else:
                 jobs = core_jobs(self.cfg, self.root)
             for name, spec in jobs.items():
@@ -413,7 +417,7 @@ exit 0'''
             self.queue_snapshot(executor, 'collector-start')
             while not self.stop.is_set() and time.monotonic()-self.started < self.cfg['lifetime']:
                 self.tail_logs()
-                for request in self.root.glob('snapshot-*.request'):
+                for request in run_glob(self.root, 'snapshot-*.request'):
                     if request.name not in seen:
                         seen.add(request.name)
                         label = request.read_text().strip()
@@ -423,14 +427,14 @@ exit 0'''
                     if not getattr(self, 'sample_future', None) or self.sample_future.done():
                         self.sample_future = executor.submit(self.sample)
                         self.last_sample = time.monotonic()
-                if not self.stop.is_set() and not (self.root/'stop.request').exists():
+                if not self.stop.is_set() and not (run_path(self.root, 'stop.request')).exists():
                     self.reconnect_jobs(executor)
                 size = sum(p.stat().st_size for p in self.root.iterdir() if p.is_file())
                 if size >= self.cfg['max_bytes']:
                     self.errors.append('byte-budget-exhausted')
                     break
-                save(self.root/'state.json', self.status())
-                if (self.root/'stop.request').exists():
+                save(run_path(self.root, 'state.json'), self.status())
+                if (run_path(self.root, 'stop.request')).exists():
                     break
                 self.stop.wait(.5)
             if time.monotonic()-self.started >= self.cfg['lifetime']:
@@ -446,7 +450,7 @@ exit 0'''
                     self.errors.append(name+': observer cleanup not proven')
             executor.shutdown(wait=True, cancel_futures=True)
             self.tail_logs()
-            save(self.root/'state.json', self.status('UNAVAILABLE' if self.errors else 'STOPPED'))
+            save(run_path(self.root, 'state.json'), self.status('UNAVAILABLE' if self.errors else 'STOPPED'))
 
 
 def operate(action, root, cfg=None, label='checkpoint'):
@@ -454,34 +458,34 @@ def operate(action, root, cfg=None, label='checkpoint'):
     if action == 'start':
         checked(cfg, root)
         root.mkdir(parents=True, mode=0o700, exist_ok=True)
-        path = root/'config.json'
+        path = run_path(root, 'config.json')
         if path.exists():
             if json.loads(path.read_text()) != cfg:
                 raise RuntimeError('Collector ownership/config changed')
             return operate('check', root)
-        if any(p.name not in ('migration_diagnostics.py',) for p in root.iterdir()):
+        if any(p.name not in ('migration_diagnostics.py', 'run_layout.py') for p in root.iterdir()):
             raise RuntimeError('Existing diagnostics evidence will not be overwritten')
         save(path, cfg)
-        with (root/'supervisor.log').open('ab') as log:
-            proc = subprocess.Popen([sys.executable, str(root/'migration_diagnostics.py'), 'run', str(root)],
+        with (run_path(root, 'supervisor.log')).open('ab') as log:
+            proc = subprocess.Popen([sys.executable, str(run_path(root, 'migration_diagnostics.py')), 'run', str(root)],
                 stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
-        save(root/'launch.json', dict(identity=identity(proc.pid), ts=time.time()))
+        save(run_path(root, 'launch.json'), dict(identity=identity(proc.pid), ts=time.time()))
         deadline = time.monotonic()+20
-        while not (root/'state.json').exists() and time.monotonic() < deadline:
+        while not (run_path(root, 'state.json')).exists() and time.monotonic() < deadline:
             if proc.poll() is not None:
                 raise RuntimeError('Collector exited during launch')
             time.sleep(.1)
         ready = operate('check', root)
         # The child reports its own /proc identity; do not assume PID namespace mappings.
-        save(root/'launch.json', dict(identity=ready['identity'], ts=time.time()))
+        save(run_path(root, 'launch.json'), dict(identity=ready['identity'], ts=time.time()))
         return ready
-    cfg = json.loads((root/'config.json').read_text())
+    cfg = json.loads((run_path(root, 'config.json')).read_text())
     checked(cfg, root)
     if action == 'run':
         Observer(root, cfg).run()
         return {}
     if action in ('snapshot', 'snapshot-wait'):
-        request = root/('snapshot-'+uuid.uuid4().hex+'.request')
+        request = run_path(root, 'snapshot-'+uuid.uuid4().hex+'.request')
         request.write_text(label)
         if action == 'snapshot-wait':
             deadline = time.monotonic()+60
@@ -496,14 +500,14 @@ def operate(action, root, cfg=None, label='checkpoint'):
             return result
         return dict(status='REQUESTED', label=label, ts=time.time())
     if action == 'stop':
-        (root/'stop.request').touch(mode=0o600)
-        launch = json.loads((root/'launch.json').read_text())
+        (run_path(root, 'stop.request')).touch(mode=0o600)
+        launch = json.loads((run_path(root, 'launch.json')).read_text())
         deadline = time.monotonic()+60
         while alive(launch['identity']) and time.monotonic() < deadline:
             time.sleep(.1)
         if alive(launch['identity']):
             raise RuntimeError('Original diagnostics collector did not stop')
-    state = json.loads((root/'state.json').read_text())
+    state = json.loads((run_path(root, 'state.json')).read_text())
     recovered = {name for name, job in state.get('jobs', {}).items() if job.get('gaps') and
                  all(g.get('end_timestamp') is not None for g in job['gaps']) and job.get('rc') is None and
                  (job.get('segments') or [{}])[-1].get('connected_at') is not None}

@@ -17,14 +17,14 @@ class WorkflowTests(unittest.TestCase):
     def test_preparation_and_existing_capture_check_precede_freeze(self):
         rows=tasks('playbooks/07-migrate-db.yml')
         names=[row['name'] for row in rows]
-        freeze=names.index('Stop and disable neutron-server through Kolla systemd')
-        for name in ('Discover neutron-server image on DB sync host',
-                     'Stage provider association helper on the DB sync host',
-                     'Copy pre-existing VM port IDs before freeze',
-                     'Add OpenFlow15 before the final pre-freeze readiness checks',
-                     'Check the original Pair A capture and anchor without resetting measurement'):
+        freeze=names.index('[07] Stop and disable neutron-server')
+        for name in ('[07] Resolve neutron-server image',
+                     '[07] [SAVE] Stage router backend association helper',
+                     '[07] [SAVE] Copy existing VM port IDs to OVN CLI host',
+                     '[07] Enable OpenFlow15 on br-int',
+                     '[07] Check original Group A capture and measurement anchor'):
             self.assertLess(names.index(name),freeze)
-        self.assertGreater(names.index('Run neutron-ovn-db-sync-util migrate'),freeze)
+        self.assertGreater(names.index('[07] Run neutron-ovn-db-sync-util migrate'),freeze)
         phase08=str(plays('playbooks/08-cutover.yml'))
         self.assertIn('openflow_check_only',phase08)
         self.assertNotIn('ovs-vsctl set Bridge',phase08)
@@ -43,7 +43,7 @@ class WorkflowTests(unittest.TestCase):
     def test_recovery_observation_precedes_after_snapshot_and_smoke_test(self):
         rows=tasks('playbooks/11-validate.yml'); names=[row['name'] for row in rows]
         gate=next(i for i,row in enumerate(rows) if 'live_recovery.py' in row.get('ansible.builtin.shell',''))
-        after=names.index('Snapshot post-migration resources before creating any smoke-test resource')
+        after=names.index('[11] [SAVE] Record resources before creating smoke tests')
         self.assertLess(gate,after)
         gate_task=rows[gate]
         self.assertIn('phase11.end',str(gate_task['when']))

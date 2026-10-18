@@ -1,4 +1,3 @@
----
 - name: "Phase 02 - Check deployment host and supported source topology"
   hosts: localhost
   any_errors_fatal: true
@@ -64,9 +63,11 @@
 
     - name: "[02] [SAVE] Save shared external network and N-S IP settings"
       ansible.builtin.copy:
-        dest: "{{ migration_run_dir }}/source-topology-config.json"
+        dest: "{{ migration_run_dir | run_file('source-topology-config.json') }}"
         mode: '0600'
-        content: "{{ {'network': ns_shared_external_name, 'cidr': ns_external_cidr, 'gateway_ip': ns_external_gateway, 'physnet': ns_physnet, 'mtu': ns_underlay_mtu | int, 'snat_ip': ns_router_ip, 'fip_ip': ns_floating_ip, 'mtu_delta': mtu_delta_vxlan_to_geneve | int, 'reserve_ns_ips': (validation_workloads_enabled | bool) and (validation_ns_enabled | bool)} | to_nice_json }}"
+        content: "{{ {'network': ns_shared_external_name, 'cidr': ns_external_cidr, 'gateway_ip': ns_external_gateway, 'physnet': ns_physnet, 'mtu': ns_underlay_mtu
+          | int, 'snat_ip': ns_router_ip, 'fip_ip': ns_floating_ip, 'mtu_delta': mtu_delta_vxlan_to_geneve | int, 'reserve_ns_ips': (validation_workloads_enabled
+          | bool) and (validation_ns_enabled | bool)} | to_nice_json }}"
 
     - name: "[02] Check existing networks, gateways and floating IPs"
       ansible.builtin.shell: |
@@ -90,7 +91,8 @@
     - ../group_vars/all.yml
     - ../group_vars/ns-lab.yml
   vars:
-    validation_effective_tunnel_interface: "{{ ('br-underlay' if inventory_hostname in groups['network'] else 'eth1') if validation_ns_enabled | bool else hostvars['localhost']['source_kolla_globals'].tunnel_interface }}"
+    validation_effective_tunnel_interface: "{{ ('br-underlay' if inventory_hostname in groups['network'] else 'eth1') if validation_ns_enabled | bool else hostvars['localhost']['source_kolla_globals'].tunnel_interface
+      }}"
   tasks:
     - name: "[02] Check Ubuntu 24.04 on migration hosts"
       ansible.builtin.assert:
@@ -134,7 +136,7 @@
         - validation_workloads_enabled | bool
         - inventory_hostname in (groups['network'] + groups['compute'])
 
-    - name: "[02] [SAVE] Save tunnel addresses for connectivity checks"
+    - name: "[02] Set tunnel addresses for connectivity checks"
       ansible.builtin.set_fact:
         validation_tunnel_ip: "{{ ((validation_tunnel_interface.stdout | from_json)[0].addr_info | selectattr('family', 'equalto', 'inet') | list)[0].local }}"
       when:
@@ -182,13 +184,13 @@
     - ../group_vars/all.yml
     - ../group_vars/ns-lab.yml
   vars:
-    validation_effective_tunnel_interface: "{{ ('br-underlay' if inventory_hostname in groups['network'] else 'eth1') if validation_ns_enabled | bool else hostvars['localhost']['source_kolla_globals'].tunnel_interface }}"
+    validation_effective_tunnel_interface: "{{ ('br-underlay' if inventory_hostname in groups['network'] else 'eth1') if validation_ns_enabled | bool else hostvars['localhost']['source_kolla_globals'].tunnel_interface
+      }}"
   tasks:
     - name: "[02] Check all tunnel paths without fragmentation"
       ansible.builtin.command:
-        argv: [ping, -I, "{{ validation_effective_tunnel_interface }}", -M, do,
-               -s, "{{ (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int) + 50 - 28 }}",
-               -c, '3', -W, '2', "{{ hostvars[item]['validation_tunnel_ip'] }}"]
+        argv: [ping, -I, "{{ validation_effective_tunnel_interface }}", -M, do, -s, "{{ (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int) + 50 - 28
+              }}", -c, '3', -W, '2', "{{ hostvars[item]['validation_tunnel_ip'] }}"]
       loop: "{{ ((groups['network'] + groups['compute']) | unique | list) | difference([inventory_hostname]) }}"
       when: validation_workloads_enabled | bool
       changed_when: false
@@ -208,7 +210,7 @@
     - ../group_vars/all.yml
     - ../group_vars/ns-lab.yml
   tasks:
-    - name: "[02] Check two distinct computes and Pair D topology"
+    - name: "[02] Validate workload topology and TCP test settings"
       ansible.builtin.assert:
         that:
           - validation_pair_compute_hosts | length == 2
@@ -232,7 +234,8 @@
       when: validation_workloads_enabled | bool
     - name: "[02] Add gathered compute hostnames"
       ansible.builtin.set_fact:
-        validation_placement_request: "{{ validation_placement_request | combine({'identities': {item: [hostvars[item]['ansible_hostname'], hostvars[item]['ansible_fqdn']]}}, recursive=true) }}"
+        validation_placement_request: "{{ validation_placement_request | combine({'identities': {item: [hostvars[item]['ansible_hostname'], hostvars[item]['ansible_fqdn']]}},
+          recursive=true) }}"
       loop: "{{ validation_pair_compute_hosts }}"
       when: validation_workloads_enabled | bool
     - name: "[02] Match Nova computes to source OVS hosts"
@@ -254,7 +257,7 @@
     - ../group_vars/all.yml
     - ../group_vars/ns-lab.yml
   tasks:
-    - name: "[02] Install uplink inspection helper"
+    - name: "[02] [SAVE] Install uplink inspection helper"
       ansible.builtin.copy:
         src: ../scripts/ns_underlay.py
         dest: /root/ns-underlay-check.py
@@ -262,7 +265,8 @@
       when: validation_ns_enabled | bool
     - name: "[02] Check uplink addressing and bridge mapping"
       ansible.builtin.command:
-        argv: [python3, /root/ns-underlay-check.py, deployed, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int, 'physnet': ns_physnet, 'ovn': false} | to_json }}"]
+        argv: [python3, /root/ns-underlay-check.py, deployed, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int, 'physnet': ns_physnet, 'ovn': false}
+              | to_json }}"]
       changed_when: false
       when: validation_ns_enabled | bool
     - name: "[02] Check connectivity to controller endpoint"
@@ -290,6 +294,12 @@
         PYCODE
       args:
         executable: /bin/bash
+      changed_when: false
+      when: validation_ns_enabled | bool
+
+    - name: "[02] Check controller N-S listener port is free"
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../scripts/ns_endpoint.py", "{{ ns_endpoint_ip }}", "{{ ns_tcp_port | int }}"]
       changed_when: false
       when: validation_ns_enabled | bool
 

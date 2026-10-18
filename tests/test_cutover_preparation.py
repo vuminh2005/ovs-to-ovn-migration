@@ -79,6 +79,46 @@ class PreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Unsafe'): c.cleanup(self.parent)
         self.assertTrue(owned.exists())
 
+    def test_reset_cleanup_runs_as_an_isolated_ansible_script_on_all_four_hosts(self):
+        # Use the production play: script transfers only cutover_preparation.py,
+        # without its controller-side sibling modules. Each local host alias gets
+        # a private cleanup parent instead of touching the real /tmp directories.
+        harness=self.parent/'harness'; harness.mkdir()
+        (harness/'scripts').symlink_to(ROOT/'scripts',target_is_directory=True)
+        snapshots=self.parent/'snapshot'; snapshots.mkdir()
+        inventory=harness/'inventory.ini'
+        inventory.write_text('[all:vars]\nansible_connection=local\n'
+            'ansible_python_interpreter='+sys.executable+'\n'
+            '[control]\ncontroller\n[network]\nnetwork1\n'
+            '[compute]\ncompute1\ncompute2\n')
+        hosts=('controller','network1','compute1','compute2')
+        for host in hosts:
+            parent=self.parent/host; parent.mkdir()
+            owned=parent/('ovs-to-ovn-preparation-'+host); owned.mkdir()
+            (owned/'owner.json').write_text(json.dumps(dict(run=host,
+                directory=str(owned),inventory_sha256=hashlib.sha256(b'inventory').hexdigest())))
+            (parent/'migration-report.txt').write_text('keep')
+        production=next(p for p in yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
+            if p['name']=='Remove only owned preparation directories after successful Kolla destroy')
+        production['become']=False
+        production['vars_files']=[str(ROOT/'group_vars/reset.yml')]
+        production['tasks'][0]['ansible.builtin.script']=(
+            'scripts/cutover_preparation.py cleanup '+str(self.parent)+'/{{ inventory_hostname }}')
+        plays=[dict(hosts='localhost',gather_facts=False,tasks=[
+            {'ansible.builtin.set_fact':dict(reset_run_dir=str(snapshots))}]),production]
+        play=harness/'reset-cleanup.yml'; play.write_text(yaml.safe_dump(plays,sort_keys=False))
+        env=dict(os.environ,ANSIBLE_NOCOLOR='1'); env.pop('PYTHONPATH',None)
+        for expected_count in (1,0):
+            result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i',str(inventory),str(play)],
+                cwd=harness,env=env,capture_output=True,text=True,timeout=50)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            for host in hosts:
+                value=json.loads((snapshots/('preparation-cleanup-'+host+'.json')).read_text())
+                self.assertEqual(value['status'],'PASS')
+                self.assertEqual(len(value['removed']),expected_count)
+                self.assertFalse((self.parent/host/('ovs-to-ovn-preparation-'+host)).exists())
+                self.assertEqual((self.parent/host/'migration-report.txt').read_text(),'keep')
+
 
 class OpenFlowTests(unittest.TestCase):
     def fake(self, protocols):
@@ -167,7 +207,12 @@ class OpenFlowTests(unittest.TestCase):
                 ovn_cli_host='controller',db_sync_host='controller')))
             harness=root/'harness'; (harness/'playbooks').mkdir(parents=True)
             (harness/'scripts').symlink_to(ROOT/'scripts',target_is_directory=True)
-            plays=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())[1:4]
+            source=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
+            plays=[p for p in source if p['name'] in (
+                'Phase 07 - Prepare database migration inputs before API freeze',
+                'Phase 07 - Prepare existing VM port checkpoint',
+                'Phase 07 - Prepare OpenFlow support before API freeze')]
+            self.assertEqual(len(plays),3)
             for production in plays:
                 production['become']=False
                 production['vars_files']=[str(ROOT/'group_vars/all.yml')]

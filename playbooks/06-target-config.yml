@@ -1,4 +1,3 @@
----
 - name: "Phase 06 - Prepare OVN configuration and network MTU"
   hosts: localhost
   gather_facts: false
@@ -25,23 +24,23 @@
         line: '{{ item.key }}: "{{ item.value }}"'
         insertafter: EOF
       loop:
-        - { key: neutron_plugin_agent, value: "{{ target_neutron_plugin_agent }}" }
-        - { key: neutron_type_drivers, value: "{{ neutron_type_drivers_target }}" }
-        - { key: neutron_tenant_network_types, value: "{{ target_tenant_network_type }}" }
-        - { key: enable_ovn, value: 'yes' }
-        - { key: enable_openvswitch, value: 'yes' }
-        - { key: neutron_ovn_dhcp_agent, value: 'no' }
-        - { key: neutron_ovn_distributed_fip, value: 'no' }
-        - { key: neutron_enable_ovn_agent, value: 'no' }
-        - { key: enable_neutron_dvr, value: 'no' }
-        - { key: enable_neutron_agent_ha, value: 'no' }
+        - {key: neutron_plugin_agent, value: "{{ target_neutron_plugin_agent }}"}
+        - {key: neutron_type_drivers, value: "{{ neutron_type_drivers_target }}"}
+        - {key: neutron_tenant_network_types, value: "{{ target_tenant_network_type }}"}
+        - {key: enable_ovn, value: 'yes'}
+        - {key: enable_openvswitch, value: 'yes'}
+        - {key: neutron_ovn_dhcp_agent, value: 'no'}
+        - {key: neutron_ovn_distributed_fip, value: 'no'}
+        - {key: neutron_enable_ovn_agent, value: 'no'}
+        - {key: enable_neutron_dvr, value: 'no'}
+        - {key: enable_neutron_agent_ha, value: 'no'}
 
     - name: "[06] Reduce VXLAN network MTU for Geneve"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
         # Retain original-to-target pairs across preparation retries.
-        mtu_journal={{ (migration_run_dir + '/network-mtu-migration.tsv') | quote }}
+        mtu_journal={{ ((migration_run_dir | run_file('network-mtu-migration.tsv'))) | quote }}
         touch "$mtu_journal"
         for id in $(openstack network list -f value -c ID); do
           type=$(openstack network show "$id" -f value -c provider:network_type)
@@ -112,11 +111,11 @@
     - name: "[06] [SAVE] Save generated target configuration"
       ansible.builtin.fetch:
         src: "{{ item.src }}"
-        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/{{ item.dest }}"
+        dest: "{{ hostvars['localhost']['migration_run_dir'] | run_file(item.dest) }}"
         flat: true
       loop:
-        - { src: /etc/kolla/neutron-server/ml2_conf.ini, dest: ml2_conf.ini.target }
-        - { src: /etc/kolla/neutron-server/neutron.conf, dest: neutron.conf.target }
+        - {src: /etc/kolla/neutron-server/ml2_conf.ini, dest: ml2_conf.ini.target}
+        - {src: /etc/kolla/neutron-server/neutron.conf, dest: neutron.conf.target}
       run_once: true
 
 - name: "Phase 06 - Start OVN database monitoring"
@@ -129,7 +128,7 @@
   tasks:
     - name: "[06] [SAVE] Save database monitor endpoints"
       ansible.builtin.copy:
-        dest: "{{ migration_run_dir }}/diagnostics-central-config.json"
+        dest: "{{ migration_run_dir | run_file('diagnostics-central-config.json') }}"
         content: "{{ {'nb': ovn_nb_connection_runtime, 'sb': ovn_sb_connection_runtime} | to_nice_json }}"
         mode: '0600'
     - name: "[06] Start Northbound and Southbound change monitors"

@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -158,40 +159,40 @@ class Phase07Tests(unittest.TestCase):
     def test_required_sequence_keeps_compatibility_verification_inside_db_metric(self):
         names = [task['name'] for task in self.tasks]
         ordered = [
-            'Mark phase 07 and control-plane downtime start',
-            'Stop and disable neutron-server through Kolla systemd',
-            'Snapshot ProviderResourceAssociation before authoritative migrate mode',
-            'Persist provider associations BEFORE on the deployment host',
-            'Mark DB migration start',
-            'Run neutron-ovn-db-sync-util migrate',
-            'Persist authoritative migrate stdout stderr and return code',
-            'Stop Phase 07 immediately after a failed authoritative migration',
-            'Apply Caracal L3 provider-association compatibility migration',
-            'Snapshot ProviderResourceAssociation after compatibility conversion commits',
-            'Persist provider associations AFTER on the deployment host',
-            'Persist and enforce fail-closed verification of legacy provider associations',
-            'Mark DB migration end',
-            'Verify NB logical topology and SB datapaths',
+            '[07] [TIMER] Start Neutron API downtime',
+            '[07] Stop and disable neutron-server',
+            '[07] Read router service backend associations before migration',
+            '[07] [SAVE] Save router service backend associations before migration',
+            '[07] [TIMER] Start database migration measurement',
+            '[07] Run neutron-ovn-db-sync-util migrate',
+            '[07] [SAVE] Save database migration output and return code',
+            '[07] Check database migration succeeded',
+            '[07] Switch router service backend associations to OVN',
+            '[07] Read router service backend associations after conversion',
+            '[07] [SAVE] Save router service backend associations after conversion',
+            '[07] Verify router backend conversion and save result',
+            '[07] [TIMER] End database migration measurement',
+            '[07] Check OVN logical topology and datapaths',
         ]
         positions = [names.index(name) for name in ordered]
         self.assertEqual(positions, sorted(positions))
-        start = self.named('Mark DB migration start')['ansible.builtin.shell']
-        self.assertIn('/metrics/db_migration.start', start)
+        start = self.named('[07] [TIMER] Start database migration measurement')['ansible.builtin.shell']
+        self.assertIn('metrics/db_migration.start', start)
         early = self.named(ordered[0])['ansible.builtin.command']['argv']
         self.assertIn('--freeze-start', early)
         self.assertEqual(early[4:6], ['07', 'start'])
         self.assertFalse(any('db_migration.start' in arg for arg in early))
-        self.assertIn('/metrics/db_migration.end', self.named('Mark DB migration end')['ansible.builtin.shell'])
+        self.assertIn('metrics/db_migration.end', self.named('[07] [TIMER] End database migration measurement')['ansible.builtin.shell'])
 
     def test_db_start_is_unique_local_and_immediately_after_before_persistence(self):
         names = [task['name'] for task in self.tasks]
-        start_index = names.index('Mark DB migration start')
-        self.assertEqual(names[start_index-1], 'Persist provider associations BEFORE on the deployment host')
-        self.assertEqual(names[start_index+1], 'Run neutron-ovn-db-sync-util migrate')
+        start_index = names.index('[07] [TIMER] Start database migration measurement')
+        self.assertEqual(names[start_index-1], '[07] [SAVE] Save router service backend associations before migration')
+        self.assertEqual(names[start_index+1], '[07] Run neutron-ovn-db-sync-util migrate')
         writes = [task for task in self.tasks if 'db_migration.start' in task.get('ansible.builtin.shell', '')]
-        self.assertEqual(writes, [self.named('Mark DB migration start')])
+        self.assertEqual(writes, [self.named('[07] [TIMER] Start database migration measurement')])
         start = writes[0]
-        end = self.named('Mark DB migration end')
+        end = self.named('[07] [TIMER] End database migration measurement')
         self.assertEqual(start['ansible.builtin.shell'], end['ansible.builtin.shell'].replace('db_migration.end', 'db_migration.start'))
         self.assertIn('set -euo pipefail', start['ansible.builtin.shell'])
         self.assertIn('date +%s.%N >', start['ansible.builtin.shell'])
@@ -199,19 +200,19 @@ class Phase07Tests(unittest.TestCase):
         self.assertTrue(start['run_once'])
         self.assertFalse(start['changed_when'])
         self.assertEqual(start['args']['executable'], '/bin/bash')
-        end_index = names.index('Mark DB migration end')
-        self.assertEqual(names[end_index-1], 'Persist and enforce fail-closed verification of legacy provider associations')
-        self.assertEqual(names[end_index+1], 'Verify NB logical topology and SB datapaths')
+        end_index = names.index('[07] [TIMER] End database migration measurement')
+        self.assertEqual(names[end_index-1], '[07] Verify router backend conversion and save result')
+        self.assertEqual(names[end_index+1], '[07] Check OVN logical topology and datapaths')
 
     def test_authoritative_migrate_mode_and_fail_closed_guards_are_preserved(self):
         self.assertTrue(next(p for p in self.plays if 'provider_association_container_command' in p.get('vars', {}))['any_errors_fatal'])
-        utility = self.named('Run neutron-ovn-db-sync-util migrate')
+        utility = self.named('[07] Run neutron-ovn-db-sync-util migrate')
         self.assertIn('--ovn-neutron_sync_mode migrate', utility['ansible.builtin.shell'])
         self.assertTrue(utility['run_once'])
         self.assertEqual(utility['register'], 'db_sync_migrate')
-        guard = self.named('Stop Phase 07 immediately after a failed authoritative migration')
+        guard = self.named('[07] Check database migration succeeded')
         self.assertEqual(guard['ansible.builtin.assert']['that'], 'db_sync_migrate.rc == 0')
-        verify = self.named('Persist and enforce fail-closed verification of legacy provider associations')
+        verify = self.named('[07] Verify router backend conversion and save result')
         self.assertIn('verify', verify['ansible.builtin.command']['argv'])
         self.assertNotIn('failed_when', verify)
         self.assertNotIn('ignore_errors', verify)
@@ -221,7 +222,8 @@ class Phase07Tests(unittest.TestCase):
         for task in self.tasks:
             copy = task.get('ansible.builtin.copy', {})
             if task.get('delegate_to') == 'localhost' and copy:
-                artifacts[copy['dest'].split('/')[-1]] = copy
+                match=re.search(r"run_file\('([^']+)'\)",copy['dest'])
+                artifacts[match[1] if match else copy['dest'].split('/')[-1]] = copy
                 self.assertEqual(copy['mode'], '0600')
         self.assertTrue({'provider-associations.before.json', 'provider-associations.after.json',
             'provider-associations-compatibility.json', 'db-sync-migrate.log'}.issubset(artifacts))
@@ -237,11 +239,11 @@ class Phase07Tests(unittest.TestCase):
         self.assertIn('provider_associations.py:/opt/provider_associations.py:ro', command)
         self.assertIn('kolla_set_configs', migration_play['vars']['provider_association_entrypoint'])
         self.assertEqual(migration_play['hosts'], 'control')
-        freeze = self.named('Stop and disable neutron-server through Kolla systemd')
+        freeze = self.named('[07] Stop and disable neutron-server')
         self.assertEqual(freeze['ansible.builtin.systemd_service']['state'], 'stopped')
-        for name in ('Snapshot ProviderResourceAssociation before authoritative migrate mode',
-                     'Apply Caracal L3 provider-association compatibility migration',
-                     'Snapshot ProviderResourceAssociation after compatibility conversion commits'):
+        for name in ('[07] Read router service backend associations before migration',
+                     '[07] Switch router service backend associations to OVN',
+                     '[07] Read router service backend associations after conversion'):
             task = self.named(name)
             self.assertTrue(task['run_once'])
             self.assertIn('set -euo pipefail', task['ansible.builtin.shell'])

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Coordinate run-owned host observers and archive even failed collection attempts."""
+from run_layout import run_path
 import argparse
 import hashlib
 import json
@@ -25,32 +26,32 @@ def effective_config(config):
 
 def operate(root, action, role=None, label='checkpoint'):
     root = Path(root).resolve()
-    cfg = json.loads((root/'diagnostics-config.json').read_text())
+    cfg = json.loads((run_path(root, 'diagnostics-config.json')).read_text())
     if action == 'abort':
         errors = []
         try:
             operate(root, 'stop')
         except Exception as exc:
             errors.append(str(exc))
-        if (root/'ns-diagnostics-checkpoint.json').exists():
+        if (run_path(root, 'ns-diagnostics-checkpoint.json')).exists():
             try:
                 from ns_diagnostics import Diagnostics
                 from types import SimpleNamespace
-                Diagnostics(SimpleNamespace(root=root, cfg=json.loads((root/'validation-config.json').read_text()))).finish()
+                Diagnostics(SimpleNamespace(root=root, cfg=json.loads((run_path(root, 'validation-config.json')).read_text()))).finish()
             except Exception as exc:
                 errors.append(str(exc))
-        save(root/'diagnostics-abort.json', dict(errors=errors, collected_at=time.time()))
+        save(run_path(root, 'diagnostics-abort.json'), dict(errors=errors, collected_at=time.time()))
         return dict(errors=errors)
     if not cfg.get('enabled'):
-        save(root/'migration-diagnostics.json', dict(status='DISABLED'))
+        save(run_path(root, 'migration-diagnostics.json'), dict(status='DISABLED'))
         return {}
-    runtime = json.loads((root/'runtime.json').read_text())
-    directory = root/'diagnostics'
+    runtime = json.loads((run_path(root, 'runtime.json')).read_text())
+    directory = run_path(root, 'diagnostics')
     checkpoints = directory/'checkpoints'
     checkpoints.mkdir(parents=True, exist_ok=True, mode=0o700)
     entries = {}
     if action == 'ensure':
-        if (root/'metrics/phase08.start').exists():
+        if (run_path(root, 'metrics/phase08.start')).exists():
             return operate(root, 'check')
         operate(root, 'start', role='core')
         return operate(root, 'start', role='central')
@@ -58,7 +59,7 @@ def operate(root, action, role=None, label='checkpoint'):
         hosts = ([runtime['ovn_cli_host']] if role == 'central' else list(dict.fromkeys(
             runtime.get('control_hosts', [])+runtime.get('network_hosts', [])+
             runtime.get('compute_hosts', [])+[runtime['ovn_cli_host']])))
-        central = json.loads((root/'diagnostics-central-config.json').read_text()) if role == 'central' else {}
+        central = json.loads((run_path(root, 'diagnostics-central-config.json')).read_text()) if role == 'central' else {}
         for host in hosts:
             config = dict(cfg, **central, run=runtime['run_id'], host=host, role=role,
                 control=host in runtime.get('control_hosts', []), network=host in runtime.get('network_hosts', []),
@@ -75,7 +76,7 @@ def operate(root, action, role=None, label='checkpoint'):
                 entry = old
                 if archived_stopped(root, old):
                     prune_archive(root, old)
-                    if (root/'metrics/phase08.start').exists():
+                    if (run_path(root, 'metrics/phase08.start')).exists():
                         raise RuntimeError('A diagnostics gap during/after cutover cannot be hidden by restarting collectors')
                     segment = uuid.uuid4().hex[:12]
                     entry = dict(old, remote_directory=remote+'-'+segment,
@@ -108,7 +109,7 @@ def operate(root, action, role=None, label='checkpoint'):
 
 
 def archived_stopped(root, entry):
-    path = root/entry.get('archive_directory', 'diagnostics/'+entry['host']+'/'+entry['role'])/'state.json'
+    path = run_path(root, entry.get('archive_directory', 'diagnostics/'+entry['host']+'/'+entry['role']))/'state.json'
     if not path.exists():
         return False
     value = json.loads(path.read_text())
@@ -118,10 +119,10 @@ def archived_stopped(root, entry):
 
 def prune_archive(root, entry):
     """Discard only a transport bundle whose files are all retained verbatim."""
-    archive = root/'diagnostics'/entry.get('archive_name', entry['host']+'-'+entry['role']+'.tar.gz')
+    archive = run_path(root, 'diagnostics')/entry.get('archive_name', entry['host']+'-'+entry['role']+'.tar.gz')
     if not archive.exists():
         return
-    dest = root/entry.get('archive_directory', 'diagnostics/'+entry['host']+'/'+entry['role'])
+    dest = run_path(root, entry.get('archive_directory', 'diagnostics/'+entry['host']+'/'+entry['role']))
     with tarfile.open(archive) as bundle:
         for member in bundle:
             target = dest/member.name
@@ -140,12 +141,12 @@ def prune_archive(root, entry):
 
 
 def transport(root, action, entries, label):
-    directory = root/'diagnostics'
+    directory = run_path(root, 'diagnostics')
     selected = next(iter(entries.values()))['role']
     extra = directory/('transport-'+selected+'.json')
     save(extra, dict(diagnostics_targets=list(entries), diagnostics_entries=entries,
         diagnostics_action=action, diagnostics_label=label, diagnostics_root=str(directory)))
-    inventory = json.loads((root/'runtime.json').read_text())['inventory']
+    inventory = json.loads((run_path(root, 'runtime.json')).read_text())['inventory']
     script = Path(__file__).parent.parent/'playbooks/diagnostics-control.yml'
     result = subprocess.run(['ansible-playbook', '-i', inventory, str(script), '--limit', ':'.join(entries), '-e', '@'+str(extra)],
         capture_output=True, text=True, timeout=180)
@@ -157,7 +158,7 @@ def transport(root, action, entries, label):
         for host, entry in entries.items():
             archive = directory/entry.get('archive_name', host+'-'+entry['role']+'.tar.gz')
             if archive.exists():
-                dest = root/entry.get('archive_directory', 'diagnostics/'+host+'/'+entry['role'])
+                dest = run_path(root, entry.get('archive_directory', 'diagnostics/'+host+'/'+entry['role']))
                 dest.mkdir(parents=True, exist_ok=True, mode=0o700)
                 with tarfile.open(archive) as bundle:
                     bundle.extractall(dest, filter='data')
@@ -166,11 +167,11 @@ def transport(root, action, entries, label):
 
 
 def summarize(root):
-    cfg = json.loads((root/'diagnostics-config.json').read_text())
+    cfg = json.loads((run_path(root, 'diagnostics-config.json')).read_text())
     rows = []
-    for path in sorted((root/'diagnostics/checkpoints').glob('*.json')):
+    for path in sorted((run_path(root, 'diagnostics/checkpoints')).glob('*.json')):
         entry = json.loads(path.read_text())
-        state_path = root/entry.get('archive_directory', 'diagnostics/'+entry['host']+'/'+entry['role'])/'state.json'
+        state_path = run_path(root, entry.get('archive_directory', 'diagnostics/'+entry['host']+'/'+entry['role']))/'state.json'
         state = json.loads(state_path.read_text()) if state_path.exists() else {}
         rows.append(dict(host=entry['host'], role=entry['role'], archive=str(state_path.parent.relative_to(root)),
             status='PASS' if state.get('status') == 'STOPPED' and not state.get('errors') else 'UNAVAILABLE',
@@ -189,7 +190,7 @@ def summarize(root):
         timestamp_scope='Observer receive time plus native source log/PCAP timestamps; inspect clock-offset snapshots',
         coverage_scope='Current observation segment begins before cutover; preparation gaps and earlier segments are retained explicitly',
         interpretation='Temporal correlation is evidence, not automatic proof of causality')
-    save(root/'migration-diagnostics.json', result)
+    save(run_path(root, 'migration-diagnostics.json'), result)
     return result
 
 

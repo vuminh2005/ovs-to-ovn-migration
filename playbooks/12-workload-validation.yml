@@ -1,4 +1,3 @@
----
 - name: "Phase 12 - Collect OVN network evidence"
   hosts: localhost
   gather_facts: false
@@ -38,7 +37,7 @@
       delegate_to: "{{ ovn_cli_host_runtime }}"
     - name: "[12] [SAVE] Save OVN network evidence"
       ansible.builtin.copy:
-        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/{{ item.name }}"
+        dest: "{{ hostvars['localhost']['migration_run_dir'] | run_file(item.name) }}"
         content: "{{ item.content }}"
         mode: '0600'
       loop:
@@ -66,8 +65,11 @@
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - {{ migration_run_dir | quote }} {{ (validation_allow_post_cutover_guest_reboot | bool | string) | quote }} {{ validation_post_cutover_dhcp_timeout_seconds | int }} {{ {'ovn_nb': ovn_nb_connection_runtime, 'ovn_sb': ovn_sb_connection_runtime, 'ovn_cli_host': ovn_cli_host_runtime, 'inventory': kolla_inventory_runtime} | to_json | quote }} <<'PYCODE'
+        import sys
+        sys.path.insert(0, '{{ playbook_dir }}/../scripts')
+        from run_layout import run_path, run_glob
         import json, pathlib, sys
-        root=pathlib.Path(sys.argv[1]); path=root/'validation-config.json'
+        root=pathlib.Path(sys.argv[1]); path=run_path(root, 'validation-config.json')
         cfg=json.loads(path.read_text())
         cfg.update(json.loads(sys.argv[4]))
         cfg.update(allow_post_cutover_guest_reboot=sys.argv[2].lower()=='true',
@@ -91,9 +93,10 @@
 
     - name: "[12] [SAVE] Record workload validation failures"
       ansible.builtin.copy:
-        dest: "{{ migration_run_dir }}/validation-orchestration.json"
+        dest: "{{ migration_run_dir | run_file('validation-orchestration.json') }}"
         mode: '0600'
-        content: "{{ {'semantics_rc': semantics_result.rc, 'semantics_error': semantics_result.stderr, 'workload_rc': workload_result.rc | default(none), 'workload_error': workload_result.stderr | default('disabled')} | to_nice_json }}"
+        content: "{{ {'semantics_rc': semantics_result.rc, 'semantics_error': semantics_result.stderr, 'workload_rc': workload_result.rc | default(none), 'workload_error':
+          workload_result.stderr | default('disabled')} | to_nice_json }}"
 
 - name: "Phase 12 - Check fresh VM port bindings before cleanup"
   hosts: localhost
@@ -104,8 +107,9 @@
   tasks:
     - name: "[12] Load fresh workload checkpoint"
       ansible.builtin.set_fact:
-        fresh_state: "{{ lookup('file', hostvars['localhost']['migration_run_dir'] + '/validation-resources.json', errors='ignore') | default('{}', true) | from_json }}"
-    - name: "[12] Resolve Pair C resources with legacy checkpoint support"
+        fresh_state: "{{ lookup('file', (hostvars['localhost']['migration_run_dir'] | run_file('validation-resources.json')), errors='ignore') | default('{}', true)
+          | from_json }}"
+    - name: "[12] Resolve Group C resources with legacy checkpoint support"
       ansible.builtin.set_fact:
         fresh_pair_checkpoint: "{{ fresh_state.get('post', {}).get('fresh', fresh_state.get('post', {})) }}"
     - name: "[12] Check fresh VM ports are bound and up in OVN"
@@ -114,16 +118,18 @@
         docker exec ovn_northd ovn-sbctl --db={{ hostvars['localhost']['ovn_sb_connection_runtime'] | quote }} --format=json --columns=chassis,up find Port_Binding logical_port={{ item | quote }} | python3 -c 'import json,sys; rows=json.load(sys.stdin)["data"]; assert len(rows)==1 and rows[0][0][0]=="uuid" and rows[0][1] is True'
       args:
         executable: /bin/bash
-      loop: "{{ [fresh_pair_checkpoint.get('0', {}).get('port'), fresh_pair_checkpoint.get('1', {}).get('port')] | reject('equalto', none) | list if not fresh_state.get('post', {}).get('cleaned') else [] }}"
+      loop: "{{ [fresh_pair_checkpoint.get('0', {}).get('port'), fresh_pair_checkpoint.get('1', {}).get('port')] | reject('equalto', none) | list if not fresh_state.get('post',
+        {}).get('cleaned') else [] }}"
       register: fresh_bindings
       failed_when: false
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
     - name: "[12] [SAVE] Save fresh VM binding evidence"
       ansible.builtin.copy:
-        dest: "{{ hostvars['localhost']['migration_run_dir'] }}/post-ovn-bindings.json"
+        dest: "{{ hostvars['localhost']['migration_run_dir'] | run_file('post-ovn-bindings.json') }}"
         mode: '0600'
-        content: "{{ {'status': ('PASS' if (fresh_bindings.results | default([]) | length == 2 and fresh_bindings.results | map(attribute='rc') | select('equalto', 0) | list | length == 2) else 'UNAVAILABLE'), 'results': fresh_bindings.results | default([])} | to_nice_json }}"
+        content: "{{ {'status': ('PASS' if (fresh_bindings.results | default([]) | length == 2 and fresh_bindings.results | map(attribute='rc') | select('equalto',
+          0) | list | length == 2) else 'UNAVAILABLE'), 'results': fresh_bindings.results | default([])} | to_nice_json }}"
 
 
 - name: "Phase 12 - Stop host observers and collect diagnostics"
@@ -151,9 +157,12 @@
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - {{ migration_run_dir | quote }} <<'PYCODE'
+        import sys
+        sys.path.insert(0, '{{ playbook_dir }}/../scripts')
+        from run_layout import run_path, run_glob
         import pathlib, sys, os, signal
         root = pathlib.Path(sys.argv[1])
-        p = root/'collector.pid'
+        p = run_path(root, 'collector.pid')
         if p.exists():
             pid = int(p.read_text())
             cmd = pathlib.Path('/proc')/str(pid)/'cmdline'
@@ -198,7 +207,7 @@
       failed_when: false
       when: validation_workloads_enabled | bool
 
-    - name: "[12] Stop Pair A capture, fetch PCAP and calculate metrics"
+    - name: "[12] Stop Group A capture, fetch PCAP and calculate metrics"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -212,8 +221,11 @@
       ansible.builtin.shell: |
         set -euo pipefail
         python3 - {{ migration_run_dir | quote }} {{ (capture_finish_result.stderr | default('')) | quote }} <<'PYCODE'
+        import sys
+        sys.path.insert(0, '{{ playbook_dir }}/../scripts')
+        from run_layout import run_path, run_glob
         import json, pathlib, sys
-        root=pathlib.Path(sys.argv[1]); path=root/'tenant-dataplane-probe.json'
+        root=pathlib.Path(sys.argv[1]); path=run_path(root, 'tenant-dataplane-probe.json')
         value=json.loads(path.read_text()) if path.exists() else {}
         if value.get('evidence_source')!='compute-tap-pcap': value={}
         value.update(status='UNAVAILABLE',evidence_source='compute-tap-pcap',measurement_workload='Pair A',

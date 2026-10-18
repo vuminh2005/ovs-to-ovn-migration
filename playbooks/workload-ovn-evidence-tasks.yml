@@ -1,17 +1,16 @@
----
-- name: "[PAIR B] Collect read-only Pair B OVN evidence"
+- name: "[GROUP B] Collect read-only Group B OVN evidence"
   hosts: localhost
   gather_facts: false
   become: true
   tasks:
-    - name: "[PAIR B] Read Pair B logical port, DHCP and binding state"
+    - name: "[GROUP B] Read Group B logical port, DHCP and binding state"
       ansible.builtin.script:
         cmd: "../scripts/ovn_workload_evidence.py {{ evidence_port | quote }} {{ evidence_nb | quote }} {{ evidence_sb | quote }}"
         executable: python3
       delegate_to: "{{ evidence_host }}"
       register: ovn_evidence
       changed_when: false
-    - name: "[PAIR B] [SAVE] Save Pair B OVN evidence"
+    - name: "[GROUP B] [SAVE] Save Group B OVN evidence"
       ansible.builtin.copy:
         dest: "{{ evidence_path }}"
         content: "{{ ovn_evidence.stdout }}"

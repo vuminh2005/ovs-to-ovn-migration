@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Resolve exact inventory -> Nova -> Neutron identities before workload writes."""
+from run_layout import run_path
 import json
 import pathlib
 import sys
@@ -74,7 +75,7 @@ def main():
     cloud.compute.default_microversion = '2.74'
     result = resolve(cloud, json.loads(sys.argv[2]))
     from workload_validation import save
-    save(root/'validation-placement.json', result)
+    save(run_path(root, 'validation-placement.json'), result)
     print(json.dumps(result))
 
 

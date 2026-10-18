@@ -260,6 +260,12 @@
       register: reset_local_probes
       changed_when: reset_local_probes.rc == 0 and (reset_local_probes.stdout | from_json).stopped | length > 0
 
+    - name: Verify the controller N-S listener port was released before Kolla destroy
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/scripts/ns_endpoint.py", "{{ ns_endpoint_ip }}", "{{ ns_tcp_port | int }}"]
+      changed_when: false
+      when: ns_enabled | default(false) | bool
+
     - name: Stop and archive checkpointed N-S TCP captures before Kolla destroy
       ansible.builtin.command:
         argv:

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """POC validation orchestration; state is checkpointed after each owned creation."""
+from run_layout import run_path
 import argparse
 import base64
 import fcntl
@@ -244,7 +245,7 @@ def probe_metrics(rows, start, end, interval):
 
 
 def read_evidence(root, name):
-    path = root/name
+    path = run_path(root, name)
     return json.loads(path.read_text()) if path.exists() else {}
 
 
@@ -304,10 +305,10 @@ class Validation:
         import openstack
         self.cloud = openstack.connect()
         self.root = root
-        self.cfg = json.loads((root/'validation-config.json').read_text())
+        self.cfg = json.loads((run_path(root, 'validation-config.json')).read_text())
         if self.cfg.get('placement_enabled'):
             self.cloud.compute.default_microversion = '2.74'
-        self.path = root/'validation-resources.json'
+        self.path = run_path(root, 'validation-resources.json')
         self.state = json.loads(self.path.read_text()) if self.path.exists() else {}
         if not self.state:
             self.state['schema_version'] = 2
@@ -352,7 +353,7 @@ class Validation:
         checks = {stage: {key: self.placement(vm) for key, vm in self.pair(stage).items()}
                   for stage in stages}
         good = all(r['status'] == 'PASS' for pair in checks.values() for r in pair.values())
-        save(self.root/'workload-placement.json', {'status': 'PASS' if good else 'FAIL', 'pairs': checks})
+        save(run_path(self.root, 'workload-placement.json'), {'status': 'PASS' if good else 'FAIL', 'pairs': checks})
         if not good:
             raise RuntimeError('Nova host/hypervisor and Neutron binding host differ from placement checkpoint')
 
@@ -560,12 +561,12 @@ class Validation:
         all_rows = {}
         for i in range(2):
             vm = s[str(i)].get('record_vm', stage+str(i))
-            path = self.root/(vm+'-console-records.json')
+            path = run_path(self.root, vm+'-console-records.json')
             text = self.console_output(s[str(i)]['server'], deadline)
-            with (self.root/(vm+'-records.lock')).open('a') as lock:
+            with (run_path(self.root, vm+'-records.lock')).open('a') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 old = json.loads(path.read_text()) if path.exists() else []
-                (self.root/(vm+'-console-latest.log')).write_text(text)
+                (run_path(self.root, vm+'-console-latest.log')).write_text(text)
                 merged = {json.dumps(r, sort_keys=True): r for r in old + records(text, self.cfg['run'], vm)}
                 rows = list(merged.values())
                 save(path, rows)
@@ -591,7 +592,7 @@ class Validation:
         return window
 
     def checkpoint_start(self):
-        path = self.root/'validation-window.json'
+        path = run_path(self.root, 'validation-window.json')
         window = read_evidence(self.root, path.name)
         if getattr(self,'cfg',{}).get('capture_enabled'):
             Capture(self).start()
@@ -660,15 +661,15 @@ class Validation:
         # later sequence growth; that batch itself can never satisfy the gate.
         deadline = time.monotonic()+self.cfg['timeout']
         anchors = self.anchors(stage, deadline=deadline)
-        save(self.root/(stage+'-freshness-anchors.json'), anchors)
+        save(run_path(self.root, stage+'-freshness-anchors.json'), anchors)
         while True:
             rows = self.collect(stage, deadline=deadline)
             for key in anchors:
                 if anchors[key] is None:
                     anchors[key] = freshness_anchor(rows[key])
-                    save(self.root/(stage+'-freshness-anchors.json'), anchors)
+                    save(run_path(self.root, stage+'-freshness-anchors.json'), anchors)
             checks = self.check(stage, anchors, rows)
-            save(self.root/(stage+'-workload-checks.json'), checks)
+            save(run_path(self.root, stage+'-workload-checks.json'), checks)
             network_type = 'vxlan' if stage == 'pre' and self.cfg.get('initial') else 'geneve'
             modern_ready = (self.state.get('schema_version') != 2 or
                             all(r.get('mtu') == 'PASS' and (stage != 'pre' or self.cfg.get('initial') or
@@ -718,11 +719,11 @@ class Validation:
             if not initial and not self.cfg.get('capture_enabled'):
                 # Packet-only recovery boundary: health/MTU never enter this gate.
                 self.checkpoint_recovery(rows, anchors)
-            save(self.root/('measure-readiness.json' if initial else 'measure-post-checks.json'),
+            save(run_path(self.root, 'measure-readiness.json' if initial else 'measure-post-checks.json'),
                  {'status':'PASS' if good else 'IN_PROGRESS', 'guests':checks})
             if good:
                 if initial and not read_evidence(self.root, 'measure-baseline.json'):
-                    save(self.root/'measure-baseline.json', self.baseline('measure',rows))
+                    save(run_path(self.root, 'measure-baseline.json'), self.baseline('measure',rows))
                 return rows
             if time.monotonic()>=deadline:
                 raise TimeoutError('Pair-A small-packet recovery/identity/boot continuity unavailable; no MTU or metadata remediation allowed')
@@ -741,7 +742,7 @@ class Validation:
         end = sequence_anchor(rows['0'])
         if window.get('start_anchor') and end and not window.get('end_anchor'):
             window['end_anchor'] = end
-            save(self.root/'validation-window.json', window)
+            save(run_path(self.root, 'validation-window.json'), window)
         if window.get('end_anchor'):
             self.save_measurement(rows)
         return bool(window.get('end_anchor'))
@@ -759,7 +760,7 @@ class Validation:
             result.update(status='UNAVAILABLE', actual_dataplane_outage_seconds=None)
         if getattr(self,'state',{}).get('schema_version')==2 and (continuity is not True or window.get('measurement_workload')!='Pair A'):
             result.update(status='UNAVAILABLE',actual_dataplane_outage_seconds=None)
-        save(self.root/'tenant-dataplane-probe.json', result)
+        save(run_path(self.root, 'tenant-dataplane-probe.json'), result)
 
     def prepare_dhcp(self, target=False):
         name = 'dhcp-precutover-preparation.json' if target else 'dhcp-initial-preparation.json'
@@ -814,7 +815,7 @@ class Validation:
                             health.get('mtu_configuration')=='dhcp_mtu_enabled' and
                             'configured_static_mtu' in health and health['configured_static_mtu'] is None and health.get('dhcp_use_mtu') is True)
                         evidence[key]['classification'] = 'PASS' if good else ('REBOOT_REQUIRED' if eligible else 'FAIL')
-                save(self.root/name, {'status':'PASS' if all(r['status']=='PASS' for r in evidence.values()) else 'IN_PROGRESS',
+                save(run_path(self.root, name), {'status':'PASS' if all(r['status']=='PASS' for r in evidence.values()) else 'IN_PROGRESS',
                                      'anchors':baseline, 'anchor_monotonic':anchor_mono, 'guests':evidence})
                 if all(r['status']=='PASS' for r in evidence.values()):
                     if target and self.state.get('schema_version')==2:
@@ -822,7 +823,7 @@ class Validation:
                     return
                 if time.monotonic() >= deadline:
                     if target and self.state.get('schema_version')==2:
-                        save(self.root/'existing-mtu-automatic.json', {'status':'FAIL','guests':evidence,
+                        save(run_path(self.root, 'existing-mtu-automatic.json'), {'status':'FAIL','guests':evidence,
                             'anchors':baseline, 'anchor_monotonic':anchor_mono})
                         journal = {'automatic_mtu_convergence':'FAIL', 'remediation_required':any(r.get('classification')=='REBOOT_REQUIRED' for r in evidence.values()),
                                    'remediation_action':'none', 'status':'IN_PROGRESS', 'guests':{}}
@@ -832,7 +833,7 @@ class Validation:
                                 server=vm['server'], port=vm['port'], fixed_ips=vm['fixed_ips'],
                                 guest_mtu_before=row['health'].get('mtu') if row['health'] else None,
                                 target_mtu=self.cfg.get('target_mtu',1442), reboot_requested=False)
-                        save(self.root/'existing-mtu-remediation.json', journal)
+                        save(run_path(self.root, 'existing-mtu-remediation.json'), journal)
                         if all(r.get('classification') in ('PASS','REBOOT_REQUIRED') for r in evidence.values()):
                             self.remediate(journal)
                             return
@@ -841,23 +842,23 @@ class Validation:
                     raise TimeoutError(message)
                 time.sleep(2)
         except Exception as exc:
-            save(self.root/name, {'status':'FAIL', 'reason':str(exc), 'anchors':locals().get('baseline',{}),
+            save(run_path(self.root, name), {'status':'FAIL', 'reason':str(exc), 'anchors':locals().get('baseline',{}),
                                  'anchor_monotonic':locals().get('anchor_mono',{}), 'guests':locals().get('evidence',{})})
             raise
 
     def complete_automatic(self, evidence, rows):
-        save(self.root/'existing-mtu-automatic.json', {'status':'PASS','guests':evidence})
+        save(run_path(self.root, 'existing-mtu-automatic.json'), {'status':'PASS','guests':evidence})
         baseline = self.baseline('pre',rows)
         details = {k:dict(row, original_boot=baseline[k]['boot'],post_remediation_boot=baseline[k]['boot'],
                          guest_mtu_before=row['health']['mtu'], guest_mtu_after=row['health']['mtu'],
                          target_mtu=self.cfg.get('target_mtu',1442), **self.identity_evidence(self.pair('pre')[k])) for k,row in evidence.items()}
         identity_ok = all(row[k]=='PASS' for row in details.values() for k in
                           ('server_uuid_preservation','port_uuid_preservation','fixed_ip_preservation'))
-        save(self.root/'existing-mtu-remediation.json', {'automatic_mtu_convergence':'PASS',
+        save(run_path(self.root, 'existing-mtu-remediation.json'), {'automatic_mtu_convergence':'PASS',
              'remediation_required':False, 'remediation_action':'none', 'status':'PASS' if identity_ok else 'FAIL', 'guests':details})
         if not identity_ok:
             raise RuntimeError('Pair-B resource preservation failed after automatic MTU convergence; refusing DB freeze')
-        save(self.root/'existing-migration-baseline.json', baseline)
+        save(run_path(self.root, 'existing-migration-baseline.json'), baseline)
 
     def identity_evidence(self, vm):
         server = self.cloud.compute.get_server(vm['server'])
@@ -921,7 +922,7 @@ class Validation:
             time.sleep(2)
 
     def remediate(self, journal):
-        path = self.root/'existing-mtu-remediation.json'
+        path = run_path(self.root, 'existing-mtu-remediation.json')
         try:
             for key in ('0','1'):
                 entry = journal['guests'][key]
@@ -958,7 +959,7 @@ class Validation:
             expected = {k:dict(server=r['server'],port=r['port'],fixed_ips=r['fixed_ips'],
                               boot=r.get('post_remediation_boot') or r['original_boot']) for k,r in journal['guests'].items()}
             self.verify_precutover(expected)
-            save(self.root/'existing-migration-baseline.json',expected)
+            save(run_path(self.root, 'existing-migration-baseline.json'),expected)
             ready = read_evidence(self.root,'dhcp-precutover-preparation.json')['guests']
             for key,entry in journal['guests'].items():
                 entry.update(post_remediation_boot=expected[key]['boot'], guest_mtu_after=ready[key]['health']['mtu'],
@@ -997,17 +998,17 @@ class Validation:
                 good = good and self.placement(vm, server, port)['status'] == 'PASS'
                 ready[key]={'status':'PASS' if good else 'FAIL','health':health,'boot':current}
             if all(r['status']=='PASS' for r in ready.values()):
-                save(self.root/'dhcp-precutover-preparation.json',{'status':'PASS','guests':ready})
+                save(run_path(self.root, 'dhcp-precutover-preparation.json'),{'status':'PASS','guests':ready})
                 return
             if time.monotonic()>=deadline:
-                save(self.root/'dhcp-precutover-preparation.json',{'status':'FAIL','guests':ready})
+                save(run_path(self.root, 'dhcp-precutover-preparation.json'),{'status':'FAIL','guests':ready})
                 raise TimeoutError('Pair-B pre-cutover identity/boot/MTU/DHCP/metadata readiness failed; refusing DB freeze')
             time.sleep(2)
 
     def ovn_evidence(self, key):
         vm=self.pair('pre')[key]
-        path=self.root/('existing'+key+'-ovn-dhcp.json')
-        extra=self.root/'ovn-evidence-transport.json'
+        path=run_path(self.root, 'existing'+key+'-ovn-dhcp.json')
+        extra=run_path(self.root, 'ovn-evidence-transport.json')
         save(extra,dict(evidence_port=vm['port'],evidence_nb=self.cfg['ovn_nb'],evidence_sb=self.cfg['ovn_sb'],
                         evidence_host=self.cfg['ovn_cli_host'],evidence_path=str(path)))
         helper=pathlib.Path(__file__).parent.parent/'playbooks/workload-ovn-evidence-tasks.yml'
@@ -1084,7 +1085,7 @@ class Validation:
             return
         expected=read_evidence(self.root,'existing-migration-baseline.json')
         if set(expected)!={'0','1'}: raise RuntimeError('Missing authoritative Pair-B migration baseline')
-        anchor_path=self.root/'existing-post-cutover-anchor.json'
+        anchor_path=run_path(self.root, 'existing-post-cutover-anchor.json')
         fence=read_evidence(self.root,anchor_path.name)
         deadline=time.monotonic()+self.cfg.get('post_cutover_timeout',self.cfg.get('dhcp_timeout',180))
         if not fence:
@@ -1106,13 +1107,13 @@ class Validation:
                 ovn=self.post_ovn_health(key)
                 evidence[key]=self.post_guest_evidence(key,rows,fence['anchors'],fence['anchor_monotonic'],expected,ovn)
             good=all(e['status']=='PASS' for e in evidence.values())
-            path=self.root/'existing-post-cutover-automatic.json'
+            path=run_path(self.root, 'existing-post-cutover-automatic.json')
             if not read_evidence(self.root,path.name).get('status') in ('PASS','FAIL'):
                 save(path,dict(status='PASS' if good else 'IN_PROGRESS',guests=evidence,**fence))
             if good:
-                save(self.root/'existing-post-cutover-readiness.json',dict(status='PASS',dhcp_ready='PASS',metadata_route_ready='PASS',metadata_ready='PASS',guests=evidence))
+                save(run_path(self.root, 'existing-post-cutover-readiness.json'),dict(status='PASS',dhcp_ready='PASS',metadata_route_ready='PASS',metadata_ready='PASS',guests=evidence))
                 if not journal:
-                    save(self.root/'existing-post-cutover-remediation.json',dict(status='PASS',remediation_required=False,remediation_action='none',guests=evidence))
+                    save(run_path(self.root, 'existing-post-cutover-remediation.json'),dict(status='PASS',remediation_required=False,remediation_action='none',guests=evidence))
                 return
             if time.monotonic()>=deadline:
                 if read_evidence(self.root,path.name).get('status')!='FAIL':
@@ -1123,11 +1124,11 @@ class Validation:
                         fixed_ips=expected[k]['fixed_ips'],original_boot=expected[k]['boot'],
                         metadata_gateway_before=(e.get('health') or {}).get('metadata_gateway'),
                         guest_mtu_before=(e.get('health') or {}).get('mtu'),target_mtu=self.cfg.get('target_mtu',1442),reboot_requested=False) for k,e in evidence.items()})
-                save(self.root/'existing-post-cutover-remediation.json',journal)
+                save(run_path(self.root, 'existing-post-cutover-remediation.json'),journal)
                 if all(e['classification'] in ('PASS','POST_CUTOVER_REBOOT_REQUIRED') for e in evidence.values()):
                     self.post_remediate(journal)
                     return
-                save(self.root/'existing-post-cutover-readiness.json',dict(status='FAIL',reason='Post-cutover DHCP/metadata convergence failed; OVN/identity/guest safety conditions not proven',guests=evidence))
+                save(run_path(self.root, 'existing-post-cutover-readiness.json'),dict(status='FAIL',reason='Post-cutover DHCP/metadata convergence failed; OVN/identity/guest safety conditions not proven',guests=evidence))
                 raise TimeoutError('DHCP/metadata convergence after OVN migration timed out; not eligible for guest reboot')
             time.sleep(2)
 
@@ -1162,7 +1163,7 @@ class Validation:
             time.sleep(2)
 
     def post_remediate(self, journal):
-        path=self.root/'existing-post-cutover-remediation.json'
+        path=run_path(self.root, 'existing-post-cutover-remediation.json')
         try:
             if set(journal.get('guests',{}))!={'0','1'} or any(e.get('classification') not in ('PASS','POST_CUTOVER_REBOOT_REQUIRED') for e in journal['guests'].values()):
                 raise RuntimeError('Both Pair-B classifications must be safe before any post-cutover reboot')
@@ -1190,18 +1191,18 @@ class Validation:
                              boot=e.get('post_remediation_boot') or e['original_boot']) for k,e in journal['guests'].items()}
             old=read_evidence(self.root,'existing-post-cutover-baseline.json')
             if old and old!=expected: raise RuntimeError('Post-cutover baseline changed; refusing rebase')
-            save(self.root/'existing-post-cutover-baseline.json',expected)
+            save(run_path(self.root, 'existing-post-cutover-baseline.json'),expected)
             self.wait('pre')
             journal.update(status='PASS'); save(path,journal)
-            save(self.root/'existing-post-cutover-readiness.json',dict(status='PASS',dhcp_ready='PASS',metadata_route_ready='PASS',metadata_ready='PASS',guests=journal['guests']))
+            save(run_path(self.root, 'existing-post-cutover-readiness.json'),dict(status='PASS',dhcp_ready='PASS',metadata_route_ready='PASS',metadata_ready='PASS',guests=journal['guests']))
         except Exception as exc:
             journal.update(status='FAIL',reason=str(exc)); save(path,journal)
-            save(self.root/'existing-post-cutover-readiness.json',dict(status='FAIL',reason=str(exc),guests=journal['guests']))
+            save(run_path(self.root, 'existing-post-cutover-readiness.json'),dict(status='FAIL',reason=str(exc),guests=journal['guests']))
             raise
 
     def cleanup(self, stage):
         s = self.state[stage]
-        evidence_path = self.root/(stage+'-cleanup.json')
+        evidence_path = run_path(self.root, stage+'-cleanup.json')
         evidence = read_evidence(self.root, evidence_path.name) or {'status': 'IN_PROGRESS', 'deleted': []}
         evidence.setdefault('deleted', [])
         # Journal a completed operation before moving to the next owned UUID.
@@ -1301,7 +1302,7 @@ def main():
                 if extended and extended.ns:
                     extended.console_rows(extended.state['ns']['vms']['0'], 'OVN_NS_JSON ')
             except Exception as exc:
-                with (v.root/'console-collector-errors.log').open('a') as f:
+                with (run_path(v.root, 'console-collector-errors.log')).open('a') as f:
                     f.write(str(exc)+'\n')
             time.sleep(v.cfg['console_interval'])
     elif args.action == 'capture-finish':
@@ -1316,7 +1317,7 @@ def main():
                 extended.matrix_finish()
             except Exception as exc:
                 if not read_evidence(v.root, 'ew-matrix-results.json'):
-                    save(v.root/'ew-matrix-results.json', dict(status='UNAVAILABLE', reason=str(exc)))
+                    save(run_path(v.root, 'ew-matrix-results.json'), dict(status='UNAVAILABLE', reason=str(exc)))
         if primary_error:
             raise primary_error
         return int(primary['status'] != 'PASS')
@@ -1384,8 +1385,8 @@ def main():
         v.create('pre')
         rows = v.wait('pre')
         if not read_evidence(v.root,'existing-initial-baseline.json'):
-            save(v.root/'existing-initial-baseline.json',v.baseline('pre',rows))
-        save(v.root/'initial-freshness-anchors.json', read_evidence(v.root, 'pre-freshness-anchors.json'))
+            save(run_path(v.root, 'existing-initial-baseline.json'),v.baseline('pre',rows))
+        save(run_path(v.root, 'initial-freshness-anchors.json'), read_evidence(v.root, 'pre-freshness-anchors.json'))
         v.prepare_dhcp()
         if pair_d.enabled:
             v.create('tcp')
@@ -1427,7 +1428,7 @@ def main():
             except Exception as exc:
                 result = read_evidence(v.root, 'ns-results.json')
                 result.update(status='FAIL', reason=str(exc))
-                save(v.root/'ns-results.json', result)
+                save(run_path(v.root, 'ns-results.json'), result)
                 failures.append(str(exc))
         if getattr(v,'state',{}).get('schema_version')==2 and not v.state.get('historical_dual_pair'):
             try:
@@ -1436,7 +1437,7 @@ def main():
                 v.wait_measure()
             except Exception as exc:
                 failures.append(str(exc))
-        save(v.root/'workload-errors.json', failures)
+        save(run_path(v.root, 'workload-errors.json'), failures)
         return int(bool(failures))
     return 0
 

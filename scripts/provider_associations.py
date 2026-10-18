@@ -39,12 +39,13 @@ def verification(rows):
 
 
 def verify_snapshot(root):
+    from run_layout import run_path
     try:
-        result = verification(json.loads((root/'provider-associations.after.json').read_text()))
+        result = verification(json.loads((run_path(root, 'provider-associations.after.json')).read_text()))
     except (OSError, ValueError, TypeError):
         result = dict(status='FAIL', legacy_provider_count=None, legacy_providers=[],
                       reason='Missing or malformed post-migration provider association snapshot')
-    dest = root/'provider-associations-verification.json'
+    dest = run_path(root, 'provider-associations-verification.json')
     temp = dest.with_suffix('.tmp')
     with open(temp, 'w', opener=lambda path, flags: os.open(path, flags, 0o600)) as stream:
         json.dump(result, stream, indent=2, sort_keys=True)

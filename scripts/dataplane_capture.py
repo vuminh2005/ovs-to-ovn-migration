@@ -15,6 +15,11 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 
+# The staged resolver lives beside capture evidence. Do not add bytecode files
+# there; recognize known caches left by older staged helpers when starting.
+sys.dont_write_bytecode = True
+from run_layout import run_path
+
 
 def save(path, value):
     tmp = path.with_suffix('.tmp')
@@ -251,9 +256,24 @@ def resolve_tap(cfg):
     return tap
 
 
+def unexpected_capture_files(root):
+    unexpected = []
+    allowed = {'dataplane_capture.py', 'run_layout.py', 'start.lock'}
+    for path in root.iterdir():
+        if path.name in allowed and path.is_file() and not path.is_symlink():
+            continue
+        if path.name == '__pycache__' and path.is_dir() and not path.is_symlink():
+            if all(p.is_file() and not p.is_symlink() and re.fullmatch(
+                r'(?:dataplane_capture|run_layout)\.cpython-\d+(?:\.opt-\d+)?\.pyc', p.name)
+                for p in path.iterdir()):
+                continue
+        unexpected.append(path.name)
+    return sorted(unexpected)
+
+
 def _agent_start(root, cfg):
     root.mkdir(parents=True,exist_ok=True,mode=0o700)
-    path=root/'capture-state.json'
+    path=run_path(root, 'capture-state.json')
     if path.exists():
         state=json.loads(path.read_text())
         if any(state['config'].get(k)!=cfg.get(k) for k in ('server','port','source_ip','peer_ip','run')):
@@ -266,14 +286,14 @@ def _agent_start(root, cfg):
         raise RuntimeError('Capture intent already exists but process state is ambiguous/stopped; refusing duplicate capture')
     if cfg.get('allow_create') is False:
         raise RuntimeError('Controller capture intent exists but compute journal is absent; refusing ambiguous replacement')
-    if (root/'measure0.pcap').exists() or (root/'stop-request').exists():
+    if (run_path(root, 'measure0.pcap')).exists() or (run_path(root, 'stop-request')).exists():
         raise RuntimeError('Orphaned capture evidence exists without journal; refusing overwrite')
-    if any(p.name not in ('dataplane_capture.py','start.lock') for p in root.iterdir()):
+    if unexpected_capture_files(root):
         raise RuntimeError('Capture directory contains non-owned files; refusing capture/cleanup ownership')
     tap=resolve_tap(cfg)
-    state=dict(status='START_INTENT',config=cfg,tap=tap,path=str(root/'measure0.pcap'),intent_at=time.time())
+    state=dict(status='START_INTENT',config=cfg,tap=tap,path=str(run_path(root, 'measure0.pcap')),intent_at=time.time())
     save(path,state)  # before launch; ambiguous launch cannot erase/replace evidence
-    with (root/'supervisor.log').open('ab') as log:
+    with (run_path(root, 'supervisor.log')).open('ab') as log:
         subprocess.Popen([sys.executable,str(pathlib.Path(__file__).resolve()),'supervise',str(root)],
                          stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
     deadline=time.monotonic()+10
@@ -287,17 +307,17 @@ def _agent_start(root, cfg):
 
 def agent_start(root, cfg):
     root.mkdir(parents=True,exist_ok=True,mode=0o700)
-    with (root/'start.lock').open('a') as lock:
+    with (run_path(root, 'start.lock')).open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
         return _agent_start(root,cfg)
 
 
 def supervise(root):
-    path=root/'capture-state.json'; state=json.loads(path.read_text()); cfg=state['config']
+    path=run_path(root, 'capture-state.json'); state=json.loads(path.read_text()); cfg=state['config']
     state['supervisor']=identity(os.getpid()); state['supervisor_gap']=False
     try:
         verify_saved_tap(cfg, state['tap'])
-        with (root/'tcpdump.log').open('wb') as log:
+        with (run_path(root, 'tcpdump.log')).open('wb') as log:
             child=subprocess.Popen(['tcpdump','-U','-n','-s','0','-i',state['tap'],'-w',state['path'],
                                     f"icmp and host {cfg['source_ip']} and host {cfg['peer_ip']}"],
                                    stdin=subprocess.DEVNULL,stdout=log,stderr=log)
@@ -308,7 +328,7 @@ def supervise(root):
                 now=time.monotonic()
                 state['supervisor_gap'] |= now-previous>3
                 previous=now
-                if (root/'stop-request').exists() and not stopping:
+                if (run_path(root, 'stop-request')).exists() and not stopping:
                     child.send_signal(signal.SIGINT); stopping=True
                 state['heartbeat_at']=time.time(); save(path,state); time.sleep(.25)
             state.update(stopped_at=time.time(),returncode=child.returncode,status='STOPPED' if stopping and child.returncode==0 else 'FAILED')
@@ -320,7 +340,7 @@ def supervise(root):
                     except ValueError:
                         reason+=f' (signal {-child.returncode})'
                 state['reason']=reason
-        match=re.search(r'(\d+) packets dropped by kernel', (root/'tcpdump.log').read_text())
+        match=re.search(r'(\d+) packets dropped by kernel', (run_path(root, 'tcpdump.log')).read_text())
         state['dropped_packets']=int(match[1]) if match else None
         save(path,state)
     except Exception as exc:
@@ -329,19 +349,19 @@ def supervise(root):
 
 
 def agent_snapshot(root, stop=False):
-    path=root/'capture-state.json'; state=json.loads(path.read_text())
+    path=run_path(root, 'capture-state.json'); state=json.loads(path.read_text())
     if state['status']=='RUNNING':
         if not alive(state.get('supervisor')) or not alive(state.get('tcpdump')):
             raise RuntimeError('Exact capture process lost; evidence preserved, replacement prohibited')
         verify_saved_tap(state['config'], state.get('tap'))
         if stop:
-            (root/'stop-request').touch(mode=0o600)
+            (run_path(root, 'stop-request')).touch(mode=0o600)
             deadline=time.monotonic()+15
             while state['status']=='RUNNING' and time.monotonic()<deadline:
                 time.sleep(.1); state=json.loads(path.read_text())
             if state['status']!='STOPPED': raise RuntimeError('Capture did not stop cleanly')
     elif state['status']!='STOPPED':
-        raise RuntimeError('Capture state ambiguous/failed; evidence preserved: '+state.get('reason','')+'; '+((root/'tcpdump.log').read_text()[-1000:] if (root/'tcpdump.log').exists() else ''))
+        raise RuntimeError('Capture state ambiguous/failed; evidence preserved: '+state.get('reason','')+'; '+((run_path(root, 'tcpdump.log')).read_text()[-1000:] if (run_path(root, 'tcpdump.log')).exists() else ''))
     try:
         rows,problems=echo_rows(pathlib.Path(state['path']),state['config']['source_ip'],state['config']['peer_ip'],live=state['status']=='RUNNING')
         # An outstanding newest request is normal; recovery must be recent,
@@ -376,23 +396,23 @@ def inventory_compute_host(inventory, binding_host):
 class Capture:
     """Controller transport via the existing Ansible inventory, no cloud API after start."""
     def __init__(self, validation):
-        self.v=validation; self.path=validation.root/'pair-a-capture.json'
+        self.v=validation; self.path=run_path(validation.root, 'pair-a-capture.json')
 
     def checkpoint(self):
         return json.loads(self.path.read_text()) if self.path.exists() else {}
 
     def transport(self, action, checkpoint):
-        extra=self.v.root/'capture-transport.json'
+        extra=run_path(self.v.root, 'capture-transport.json')
         save(extra,dict(capture_action=action,capture_checkpoint=checkpoint,capture_root=str(self.v.root)))
         helper=pathlib.Path(__file__).parent.parent/'playbooks/dataplane-capture-tasks.yml'
         completed=subprocess.run(['ansible-playbook','-i',self.v.cfg['inventory'],str(helper),'-e','@'+str(extra)],
                                  stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,timeout=self.v.cfg.get('timeout',300))
-        log=self.v.root/('capture-transport-'+action+'.log')
+        log=run_path(self.v.root, 'capture-transport-'+action+'.log')
         log.write_text(completed.stdout+'\n'+completed.stderr); log.chmod(0o600)
         if completed.returncode:
             raise RuntimeError('Compute capture '+action+' failed; see '+str(log)+': '+(completed.stdout+completed.stderr)[-2000:])
         if action=='remove': return {}
-        return json.loads((self.v.root/'capture-remote-state.json').read_text())
+        return json.loads((run_path(self.v.root, 'capture-remote-state.json')).read_text())
 
     def start(self):
         checkpoint=self.checkpoint()
@@ -449,7 +469,7 @@ class Capture:
         return remote
 
     def anchor(self, end=False):
-        path=self.v.root/'validation-window.json'
+        path=run_path(self.v.root, 'validation-window.json')
         window=json.loads(path.read_text()) if path.exists() else {}
         name='pcap_end' if end else 'pcap_start'
         if window.get(name): return window[name]
@@ -475,18 +495,18 @@ class Capture:
         except (RuntimeError,TimeoutError) as exc:
             anchor_error=str(exc)
         self.snapshot(stop=True)  # transport fetches PCAP and tcpdump diagnostics
-        cp=self.checkpoint(); window=json.loads((self.v.root/'validation-window.json').read_text())
-        result=pcap_metrics(self.v.root/'measure0.pcap',cp,window,self.v.cfg['interval'])
+        cp=self.checkpoint(); window=json.loads((run_path(self.v.root, 'validation-window.json')).read_text())
+        result=pcap_metrics(run_path(self.v.root, 'measure0.pcap'),cp,window,self.v.cfg['interval'])
         if anchor_error:
             result.update(status='UNAVAILABLE',packet_loss_percent=None,actual_dataplane_outage_seconds=None,reason=anchor_error)
         # Boot identity is independently validated, not reconstructed from PCAP.
-        checks=json.loads((self.v.root/'measure-post-checks.json').read_text()) if (self.v.root/'measure-post-checks.json').exists() else {}
+        checks=json.loads((run_path(self.v.root, 'measure-post-checks.json')).read_text()) if (run_path(self.v.root, 'measure-post-checks.json')).exists() else {}
         boots=checks.get('guests',{})
         result['pair_a_boot_continuity']=('PASS' if set(boots)=={'0','1'} and all(r.get('boot_continuity')=='PASS' for r in boots.values()) else
                                        'FAIL' if any(r.get('boot_continuity')=='FAIL' for r in boots.values()) else 'UNAVAILABLE')
         # Boot diagnostics affect workload validity/cleanup independently. The
         # authoritative request session itself is checked for ICMP discontinuity.
-        save(self.v.root/'tenant-dataplane-probe.json',result)
+        save(run_path(self.v.root, 'tenant-dataplane-probe.json'),result)
         return result
 
 

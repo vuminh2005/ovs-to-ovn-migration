@@ -30,7 +30,7 @@ else:sys.exit(9)
         docker.chmod(0o700)
         self.env=dict(os.environ,PATH=str(directory)+':'+os.environ['PATH'])
         plays=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
-        task=next(t for p in plays for t in p['tasks'] if t['name']=='Verify NB logical topology and SB datapaths')
+        task=next(t for p in plays for t in p['tasks'] if t['name']=='[07] Check OVN logical topology and datapaths')
         self.shell=task['ansible.builtin.shell'].replace("{{ hostvars['localhost']['ovn_nb_connection_runtime'] }}",'tcp:controller:6641').replace("{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}",'tcp:controller:6642')
 
     def run_check(self,case='valid',original=False):

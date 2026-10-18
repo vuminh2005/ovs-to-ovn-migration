@@ -7,6 +7,11 @@
 
 # Reset lặp lại cụm 4 node về ML2/OVS
 
+Cập nhật 18/10/2026 trên nền b87: reset đọc checkpoint N-S ở cả run phẳng và
+run chia thư mục, rồi xác nhận cổng listener đã được giải phóng trước Kolla
+destroy. Nếu run mới lỗi `Address already in use`, cài đủ ZIP cập nhật rồi
+chạy reset như bên dưới; xem [chi tiết lỗi đã xác nhận](b87-update-20261018.md).
+
 Cập nhật 16/10/2026: reset dọn thư mục preparation có ownership sau destroy
 và chuẩn bị OpenFlow15 trong baseline OVS trước workload. Observer được dừng theo
 process hiện tại trên mỗi host; reset không yêu cầu run cũ PASS hay archive/config
@@ -42,7 +47,7 @@ Chạy sau một lần migration/demo khi muốn xóa workload và dựng lại 
 Có thể chạy khi cụm đang OVS hoặc OVN. Lab vừa in `OVS_4NODE_BASELINE_READY` chưa
 cần chạy reset lại ngay. Hướng dẫn mở rộng EW/N-S mới nằm trong `ns-ew-matrix.md`.
 
-Reset destroy toàn bộ Kolla/OpenStack nested trên 4 node. Instance (kể cả Pair D
+Reset destroy toàn bộ Kolla/OpenStack nested trên 4 node. Instance (kể cả Group D
 tạo thủ công), network, subnet, router, security group và Glance image/flavor cũ
 sẽ mất theo state của cloud bị destroy. Image/flavor Ubuntu validation được
 chuẩn bị lại sau deploy. Không phải rollback bảo toàn workload.

@@ -1,4 +1,3 @@
----
 - name: "Phase 13 - Finalize workloads and publish migration report"
   hosts: localhost
   gather_facts: false
@@ -45,7 +44,8 @@
         executable: /bin/bash
       changed_when: false
       failed_when: false
-      when: (lookup('file', migration_run_dir + '/runtime.json', errors='ignore') | default('{}', true) | from_json).get('preexisting_preservation_enabled', false) or lookup('fileglob', migration_run_dir + '/source-topology-before.json') | length > 0
+      when: (lookup('file', (migration_run_dir | run_file('runtime.json')), errors='ignore') | default('{}', true) | from_json).get('preexisting_preservation_enabled',
+        false) or lookup('fileglob', (migration_run_dir | run_file('source-topology-before.json'))) | length > 0
 
     - name: "[13] Update reports with workload cleanup results"
       ansible.builtin.shell: |

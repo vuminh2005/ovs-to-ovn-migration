@@ -25,6 +25,7 @@ class CollectorProcessTests(unittest.TestCase):
         self.remote = self.root/'observer'
         self.remote.mkdir()
         shutil.copy2(ROOT/'scripts/migration_diagnostics.py', self.remote/'migration_diagnostics.py')
+        shutil.copy2(ROOT/'scripts/run_layout.py', self.remote/'run_layout.py')
         binary = self.root/'bin'
         binary.mkdir()
         fake = binary/'docker'

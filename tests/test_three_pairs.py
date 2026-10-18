@@ -455,8 +455,8 @@ class ThreePairsTests(unittest.TestCase):
         import yaml
         s=self.scenario()
         tasks=yaml.safe_load((ROOT/'playbooks/11-validate.yml').read_text())[0]['tasks']
-        shell=next(t['ansible.builtin.shell'] for t in tasks if t['name']=='Compare critical resource identity sets before and after migration')
-        code=shell.split("python3 - <<'PY'\n",1)[1].rsplit('\nPY',1)[0].replace('{{ migration_run_dir }}',str(self.root))
+        shell=next(t['ansible.builtin.shell'] for t in tasks if t['name']=='[11] Compare resource identities before and after migration')
+        code=shell.split("python3 - <<'PY'\n",1)[1].rsplit('\nPY',1)[0].replace('{{ migration_run_dir }}',str(self.root)).replace('{{ playbook_dir }}',str(ROOT/'playbooks'))
         ids={'networks':['post-net0','post-net1'],'subnets':['post-sub0','post-sub1'],
              'routers':['post-router'],'servers':['fresh0','fresh1'],'compute-ports':['fresh-port0','fresh-port1']}
         for kind,added in ids.items():
@@ -513,7 +513,7 @@ class ThreePairsTests(unittest.TestCase):
     def test_freeze_guard_precedes_downtime_and_neutron_stop(self):
         import yaml
         plays=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
-        guard_play=next(p for p in plays if any('before any Neutron freeze' in t['name'] for t in p['tasks']))
+        guard_play=next(p for p in plays if any('Check Group B MTU and workload readiness' in t['name'] for t in p['tasks']))
         first=guard_play['tasks'][0]
         self.assertIn('precutover-ready',first['ansible.builtin.shell'])
         self.assertNotIn('failed_when',first)
