@@ -83,7 +83,7 @@ validation_flavor: "{{ lookup('env', 'MIGRATION_VALIDATION_FLAVOR') | default(''
 validation_name_prefix: validation
 validation_pre_cidrs: ['10.231.0.0/24', '10.231.1.0/24']
 validation_post_cidrs: ['10.232.0.0/24', '10.232.1.0/24']
-validation_timeout_seconds: 300
+validation_timeout_seconds: 400
 validation_probe_lifetime_seconds: 14400
 validation_console_poll_seconds: 2
 # ~65 minutes of VM1 packet/health records at the default 5 packets/s.
