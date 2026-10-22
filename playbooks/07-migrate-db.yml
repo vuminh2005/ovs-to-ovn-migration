@@ -10,7 +10,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - phase-entry
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '07'
@@ -34,7 +34,7 @@
 
     - name: "[07] [SAVE] Save cutover inputs and timeouts"
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../scripts/cutover_preparation.py", prepare, "{{ hostvars['localhost']['migration_run_dir'] }}", --image, "{{ neutron_server_image.stdout
+        argv: [python3, "{{ playbook_dir }}/../scripts/migration/cutover_preparation.py", prepare, "{{ hostvars['localhost']['migration_run_dir'] }}", --image, "{{ neutron_server_image.stdout
               }}", --base, "{{ binding_timeout_base_seconds | int }}", --per-port, "{{ binding_timeout_seconds_per_port | int }}", --maximum, "{{ binding_timeout_max_seconds
               | int }}"]
       delegate_to: localhost
@@ -66,7 +66,7 @@
     - name: "[07] [SAVE] Stage router backend association helper"
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}/provider_associations.py"
-        content: "{{ lookup('file', playbook_dir + '/../scripts/provider_associations.py') }}"
+        content: "{{ lookup('file', playbook_dir + '/../scripts/migration/provider_associations.py') }}"
         mode: '0600'
       run_once: true
 
@@ -107,7 +107,7 @@
     - ../group_vars/all.yml
   tasks:
     - name: "[07] Enable OpenFlow15 on br-int"
-      ansible.builtin.include_tasks: openflow-preparation-tasks.yml
+      ansible.builtin.include_tasks: tasks/openflow-preparation-tasks.yml
       vars:
         openflow_protocols: "{{ br_int_protocols }}"
         openflow_evidence_directory: "{{ hostvars['localhost']['migration_run_dir'] }}"
@@ -124,7 +124,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} precutover-ready {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} precutover-ready {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
@@ -133,7 +133,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} anchor-check {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} anchor-check {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
@@ -142,7 +142,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '07'
@@ -187,7 +187,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} d-arm {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} d-arm {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
@@ -204,7 +204,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} ns-arm {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} ns-arm {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
@@ -345,7 +345,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/provider_associations.py"
+          - "{{ playbook_dir }}/../scripts/migration/provider_associations.py"
           - verify
           - --run-dir
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
@@ -383,7 +383,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '07'

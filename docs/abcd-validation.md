@@ -1,6 +1,6 @@
 # Chạy migration với A/B/C/D trên lab 4 node
 
-Nền hiện tại là commit `b87da3d`, cùng [bản cập nhật ngày 18/10](b87-update-20261018.md).
+Nền hiện tại là commit `b87da3d`, cùng [bản cập nhật ngày 18/10](history/b87-update-20261018.md).
 Lab đã nghiệm thu: controller, network1, compute1, compute2; `eth1` MTU 1450,
 transport ping 1450 byte qua ba node thành công. Profile workload là VXLAN
 1400 → Geneve 1392. Network2 nằm ngoài inventory đang dùng.
@@ -104,7 +104,7 @@ Nova 2.74 qua compute adapter đang xác thực; không cần nâng cấp SDK tr
 Nếu phase 04 dừng tại request tạo VM đầu tiên, cập nhật mã rồi chạy:
 
 ```bash
-ansible-playbook -i /root/multinode retry-validation-preparation.yml \
+ansible-playbook -i /root/multinode archive/playbooks/retry-validation-preparation.yml \
     -e migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>
 ```
 
@@ -158,7 +158,7 @@ không tự rollback. SG/network/router bên ngoài checkpoint không bị xóa.
 Nếu đã qua cutover và gate late-resume hiện có chấp nhận checkpoint, tiếp tục:
 
 ```bash
-ansible-playbook -i /root/multinode resume-after-cleanup.yml \
+ansible-playbook -i /root/multinode playbooks/recovery/resume-after-cleanup.yml \
     -e 'migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>'
 ```
 

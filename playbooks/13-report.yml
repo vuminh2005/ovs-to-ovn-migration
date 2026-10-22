@@ -9,7 +9,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - report-start
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
       run_once: true
@@ -18,7 +18,7 @@
     - name: "[13] Build initial JSON and text reports"
       ansible.builtin.shell: |
         set -euo pipefail
-        python3 {{ (playbook_dir + '/../scripts/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }}
+        python3 {{ (playbook_dir + '/../scripts/reporting/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }}
       args:
         executable: /bin/bash
       register: migration_report_output
@@ -28,7 +28,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} finalize {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} finalize {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       register: validation_finalize
@@ -39,7 +39,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/source_topology.py') | quote }} verify {{ migration_run_dir | quote }} --scope after-workload-cleanup
+        python3 {{ (playbook_dir + '/../scripts/migration/source_topology.py') | quote }} verify {{ migration_run_dir | quote }} --scope after-workload-cleanup
       args:
         executable: /bin/bash
       changed_when: false
@@ -50,7 +50,7 @@
     - name: "[13] Update reports with workload cleanup results"
       ansible.builtin.shell: |
         set -euo pipefail
-        python3 {{ (playbook_dir + '/../scripts/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }}
+        python3 {{ (playbook_dir + '/../scripts/reporting/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }}
       args:
         executable: /bin/bash
       register: migration_report_output
@@ -60,7 +60,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} capture-cleanup {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} capture-cleanup {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
@@ -69,7 +69,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - finish
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
       run_once: true
@@ -78,7 +78,7 @@
     - name: "[13] Update reports with final timing results"
       ansible.builtin.shell: |
         set -euo pipefail
-        python3 {{ (playbook_dir + '/../scripts/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }}
+        python3 {{ (playbook_dir + '/../scripts/reporting/migration_report.py') | quote }} {{ migration_run_dir | quote }} {{ migration_run_id | quote }} {{ kolla_inventory_runtime | quote }}
       args:
         executable: /bin/bash
       register: migration_report_output

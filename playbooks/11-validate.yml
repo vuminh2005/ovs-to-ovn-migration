@@ -10,7 +10,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '11'
@@ -22,7 +22,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/live_recovery.py') | quote }} {{ migration_run_dir | quote }} --timeout {{ post_restore_observation_timeout_seconds | int }}
+        python3 {{ (playbook_dir + '/../scripts/validation/live_recovery.py') | quote }} {{ migration_run_dir | quote }} --timeout {{ post_restore_observation_timeout_seconds | int }}
       args:
         executable: /bin/bash
       changed_when: false
@@ -32,7 +32,7 @@
 
     - name: "[11] Resume diagnostic sampling after traffic recovery"
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", snapshot, "{{ migration_run_dir }}", --label, post-traffic-recovery]
+        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics/diagnostics_control.py", snapshot, "{{ migration_run_dir }}", --label, post-traffic-recovery]
       changed_when: false
       failed_when: false
       when: migration_diagnostics_enabled | bool
@@ -58,6 +58,7 @@
         python3 - <<'PY'
         import sys
         sys.path.insert(0, '{{ playbook_dir }}/../scripts')
+        from _paths import configure; configure()
         from run_layout import run_path, run_glob
         import json, pathlib, sys
         root = pathlib.Path("{{ migration_run_dir }}")
@@ -110,7 +111,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/source_topology.py') | quote }} verify {{ migration_run_dir | quote }} --scope after-migration
+        python3 {{ (playbook_dir + '/../scripts/migration/source_topology.py') | quote }} verify {{ migration_run_dir | quote }} --scope after-migration
       args:
         executable: /bin/bash
       changed_when: false
@@ -191,7 +192,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '11'

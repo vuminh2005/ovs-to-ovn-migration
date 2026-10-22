@@ -11,7 +11,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '05'
@@ -33,7 +33,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/prepare_migration_images.py"
+          - "{{ playbook_dir }}/../scripts/migration/prepare_migration_images.py"
           - "{{ migration_run_dir }}"
           - --kolla-ansible
           - "{{ kolla_ansible_bin_runtime }}"
@@ -68,7 +68,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '05'

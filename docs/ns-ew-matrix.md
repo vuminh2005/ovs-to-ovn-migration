@@ -122,19 +122,17 @@ reboot hay tự tạo lại VM đo.
 
 ## Triển khai và chạy
 
-Đưa ZIP mới vào `/root` trên controller. ZIP có thư mục gốc
-`ovs-to-ovn-migration-ns`, để giữ bản code trước đó:
+Dùng source đầy đủ trong `/root/ovs-to-ovn-migration` theo [README](../README.md).
+ZIP hiện hành có thư mục gốc `ovs-to-ovn-migration`. Kiểm tra cú pháp trước khi chạy:
 
 ```bash
-python3 -m zipfile -e /root/playbook-ns-ew-matrix.zip /root
-cd /root/ovs-to-ovn-migration-ns
+cd /root/ovs-to-ovn-migration
 source /root/venvs/kolla-2024.1/bin/activate
-
 ansible-playbook -i /root/multinode reset-lab-to-ovs.yml --syntax-check
 ansible-playbook -i /root/multinode migrate-to-ovn.yml --syntax-check
 ```
 
-Lab hiện tại là OVN, do đó reset trước. Reset xóa workload inner hiện tại và
+Khi lab đang là OVN và cần một chu kỳ mới, reset trước. Reset xóa workload inner hiện tại và
 dựng lại nguồn OVS; các migration backup cũ được giữ mặc định. Evidence baseline
 N-S đã được người dùng lưu ngoài lab.
 

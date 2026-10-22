@@ -1,29 +1,22 @@
-# Tài liệu
+# Tài liệu hiện hành
 
 | Nội dung | Hướng dẫn |
 |---|---|
-| Cài đặt và chạy | [README chính](../README.md) |
-| Demo sau reset | [demo.md](demo.md) |
-| Reset bốn node | [reset-four-nodes.md](reset-four-nodes.md) |
-| Thứ tự chuẩn bị, cutover và phục hồi | [cutover-workflow.md](cutover-workflow.md) |
-| Workload EW/N-S và cấu hình lab | [ns-ew-matrix.md](ns-ew-matrix.md) |
-| Group A/B/C/D | [abcd-validation.md](abcd-validation.md) |
-| Bản cập nhật b87, lỗi listener và layout run | [b87-update-20261018.md](b87-update-20261018.md) |
-| Audit bản sửa | [audit.md](audit.md) |
-| Evidence và đường dẫn report | [report-evidence.md](report-evidence.md) |
-| Observers và giới hạn đo lường | [ns-observability.md](ns-observability.md) |
-| PCAP TCP N-S | [ns-tcp-diagnostics.md](ns-tcp-diagnostics.md) |
-| Phân tích session TCP held | [ns-held-session-diagnostics.md](ns-held-session-diagnostics.md) |
-| Khôi phục image/phase 05 | [image-cache-recovery.md](image-cache-recovery.md) |
-| Khôi phục sau DB migration | [post-db-recovery.md](post-db-recovery.md) |
-| Quota | [quota-fix-recovery.md](quota-fix-recovery.md) |
-| Scope Kolla globals | [globals-scope-fix.md](globals-scope-fix.md) |
+| Migrate/reset và kiểm thử | [README chính](../README.md) |
+| Cấu trúc code và cách thêm file | [structure.md](structure.md) |
+| Audit bản này | [audit-current.md](audit-current.md) |
+| Đường dẫn cũ → mới | [path-map.tsv](path-map.tsv) |
+| Reset / demo | [reset-four-nodes.md](reset-four-nodes.md), [demo.md](demo.md) |
+| Kịch bản demo chi tiết | [huong-dan-demo-ovs-ovn.md](demo/huong-dan-demo-ovs-ovn.md), [demo-2-co-buoc-optional.md](demo/demo-2-co-buoc-optional.md) |
+| Chuẩn bị và cutover | [cutover-workflow.md](cutover-workflow.md) |
+| Workload và phép đo | [ns-ew-matrix.md](ns-ew-matrix.md), [abcd-validation.md](abcd-validation.md) |
+| Evidence / observers | [report-evidence.md](report-evidence.md), [ns-observability.md](ns-observability.md) |
+| TCP N-S | [ns-tcp-diagnostics.md](ns-tcp-diagnostics.md), [ns-held-session-diagnostics.md](ns-held-session-diagnostics.md) |
+| Các route resume | [recovery](../playbooks/recovery/README.md) |
+| Image/phase 05 và sau DB migrate | [image-cache-recovery.md](recovery/image-cache-recovery.md), [post-db-recovery.md](recovery/post-db-recovery.md) |
 | RabbitMQ khi reset | [reset-rabbitmq-mitigation.md](reset-rabbitmq-mitigation.md) |
+| Retry và ghi chú sự cố cũ | [archive](../archive/README.md) |
 
-`history/` chứa patch và ghi chú kiểm tra từ các bản trước. Đây là tài liệu
-lịch sử; dùng hướng dẫn hiện hành ở trên để chạy bản này.
-
-Các entrypoint migrate/reset/resume/retry vẫn ở thư mục gốc. `playbooks/`
-chứa các phase và helper Ansible; `scripts/` chứa các module chạy cùng nhau;
-`tests/fixtures/` chỉ chứa dữ liệu kiểm thử. Việc gom tài liệu không đổi
-đường dẫn triển khai hoặc import Python.
+`history/` giữ README cũ, patch và báo cáo theo phiên bản để đối chiếu. Dùng
+README chính khi chạy bản hiện hành. Hướng dẫn cài lẻ file từ ZIP cũ được lưu
+để tham khảo, không áp dụng vào run đang dùng một phiên bản source khác.

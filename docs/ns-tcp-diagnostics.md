@@ -57,7 +57,7 @@ Bản này xây từ `playbook-ns-ew-matrix.zip` đã có lưu lỗi socket đ�
   PASS; capture PASS không làm phiên held FAIL thành PASS.
 - Chỉ chạy qua test/syntax ở môi trường phát triển; chưa chạy bản này trong lab.
 
-## Chạy trên controller sau khi đưa ZIP vào repo và push
+## Chạy trên controller với source đầy đủ
 
 Reset xóa cloud/workload hiện tại và dựng lại OVS. Cờ false giữ backup cũ.
 Nếu chưa có tcpdump, cài trước reset: `apt-get install -y tcpdump`.
@@ -67,9 +67,8 @@ Nếu chưa có tcpdump, cài trước reset: `apt-get install -y tcpdump`.
     set -euo pipefail
     source /root/venvs/kolla-2024.1/bin/activate
     cd /root/ovs-to-ovn-migration
-    git pull --ff-only
-    test -f scripts/ns_diagnostics.py
-    test -f scripts/ns_evidence_summary.py
+    test -f scripts/diagnostics/ns_diagnostics.py
+    test -f scripts/reporting/ns_evidence_summary.py
     command -v tcpdump
     ansible-playbook -i /root/multinode reset-lab-to-ovs.yml --syntax-check
     ansible-playbook -i /root/multinode migrate-to-ovn.yml --syntax-check
@@ -85,7 +84,7 @@ Nếu kết thúc MIGRATED_VALIDATION_INCOMPLETE, giữ run đó và đọc bằ
 không tự reset tiếp. Điền thư mục run mới đúng như báo cáo in ra:
 
 ```bash
-python3 scripts/ns_evidence_summary.py /root/ovs-to-ovn-backup/RUN_MOI
+python3 scripts/reporting/ns_evidence_summary.py /root/ovs-to-ovn-backup/RUN_MOI
 ```
 
 File quan trọng trong thư mục run:
@@ -105,7 +104,7 @@ Bản đầu chặn mọi file ngoài hai helper và start.lock. Import helper t
 bị coi là dữ liệu lạ. Bản sửa tắt tạo bytecode ở agent và chỉ chấp nhận cache
 .pyc của hai helper nếu đã tồn tại. PCAP/log/symlink và file lạ vẫn bị chặn.
 
-`retry-ns-diagnostics-preparation.yml` dành riêng cho phase 04 chưa hoàn tất:
+`archive/playbooks/retry-ns-diagnostics-preparation.yml` dành riêng cho phase 04 chưa hoàn tất:
 Group A/EW matrix có thể đã chạy, nhưng capture endpoint, VM N-S và local N-S
 probe phải chưa từng khởi động. Guard chặn mọi marker phase 05 trở đi, freeze,
 DB migration và cutover. Agent inspect kiểm tra không có journal/PCAP/log
@@ -113,7 +112,7 @@ khởi động trước khi cho phép một lần launch. Intent lỗi được 
 không xóa file cũ hoặc nối lại held. Run, config, port/VM EW và capture ICMP
 được giữ nguyên. Playbook tiếp tục phase 04–13, không bootstrap run mới hay reset.
 
-Không dùng retry-validation-preparation.yml cũ: nó chỉ hỗ trợ lỗi tạo VM
+Không dùng archive/playbooks/retry-validation-preparation.yml cũ: nó chỉ hỗ trợ lỗi tạo VM
 đầu tiên. Không chạy lại precheck fresh-cloud vì run này đã tạo external
 network/FIP được sở hữu bởi checkpoint. Retry mới kiểm tra OVS source, API,
 inventory, placement/config cũ và source agent; phase 04 kiểm tra lại VM/port.
@@ -125,9 +124,8 @@ Sau khi cập nhật repo:
     set -euo pipefail
     source /root/venvs/kolla-2024.1/bin/activate
     cd /root/ovs-to-ovn-migration
-    git pull --ff-only
-    ansible-playbook -i /root/multinode retry-ns-diagnostics-preparation.yml --syntax-check
-    ansible-playbook -i /root/multinode retry-ns-diagnostics-preparation.yml \
+    ansible-playbook -i /root/multinode archive/playbooks/retry-ns-diagnostics-preparation.yml --syntax-check
+    ansible-playbook -i /root/multinode archive/playbooks/retry-ns-diagnostics-preparation.yml \
         -e migration_resume_run_dir=/root/ovs-to-ovn-backup/20261013-233510
 )
 ```
@@ -176,8 +174,7 @@ giữ bằng chứng run cũ dù cloud/workload hiện tại bị xóa.
     set -euo pipefail
     source /root/venvs/kolla-2024.1/bin/activate
     cd /root/ovs-to-ovn-migration
-    git pull --ff-only
-    test -f playbooks/ns-source-profile-tasks.yml
+    test -f playbooks/tasks/ns-source-profile-tasks.yml
     ansible-playbook -i /root/multinode reset-lab-to-ovs.yml --syntax-check
     ansible-playbook -i /root/multinode migrate-to-ovn.yml --syntax-check
     ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \

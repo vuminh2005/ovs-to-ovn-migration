@@ -41,13 +41,13 @@ cũ được bảo toàn. Cũng chưa có bằng chứng đủ để kết luậ
 
 ## Bản sửa chẩn đoán
 
-`scripts/ns_probe.py` giữ nguyên lỗi terminal đầu tiên và lưu `terminal_event`
+`scripts/probes/ns_probe.py` giữ nguyên lỗi terminal đầu tiên và lưu `terminal_event`
 với operation, exception, errno, sequence, epoch/monotonic và endpoints của
 socket nếu còn đọc được. Các vòng lặp sau vẫn tăng bộ đếm lỗi, không reconnect
 held và không ghi đè sự kiện này. Timeout echo vẫn có thể phục hồi trên cùng
 socket như trước.
 
-`scripts/extended_validation.py` giữ held_broken/terminal_event trong kết quả.
+`scripts/validation/extended_validation.py` giữ held_broken/terminal_event trong kết quả.
 Báo cáo TXT hiển thị lỗi đang mở và lỗi socket. Khi đọc probe cũ chưa có event,
 báo cáo chỉ gọi đó là lỗi đã ghi lại, không khẳng định là lỗi đầu tiên.
 

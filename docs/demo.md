@@ -1,6 +1,6 @@
 # Demo ML2/OVS → ML2/OVN với tài nguyên do reset chuẩn bị
 
-Bản cập nhật 17/10/2026. Dùng toàn bộ `final.zip` mới trên controller. Các
+Bản cập nhật 17/10/2026. Dùng toàn bộ source hiện hành trên controller; xem [README](../README.md). Các
 lệnh dưới đây chưa được chạy trên lab khi soạn tài liệu.
 
 Reset dựng sẵn external và bộ demo. Migration tiếp tục chạy đầy đủ A/B/C/D,
@@ -246,6 +246,8 @@ RUN_DIR=$(python3 - <<'PY'
 from pathlib import Path
 import sys
 sys.path.insert(0, 'scripts')
+from _paths import configure
+configure()
 from run_layout import run_path
 print(max(p for p in Path('/root/ovs-to-ovn-backup').iterdir()
           if p.is_dir() and run_path(p, 'runtime.json').is_file()))

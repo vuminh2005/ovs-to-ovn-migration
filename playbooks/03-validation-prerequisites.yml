@@ -9,7 +9,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '03'
@@ -37,7 +37,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/validation_prerequisites.py') | quote }} {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/validation_prerequisites.py') | quote }} {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
@@ -51,7 +51,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '03'

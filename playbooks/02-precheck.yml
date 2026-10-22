@@ -11,7 +11,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '02'
@@ -73,7 +73,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/source_topology.py') | quote }} before {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/migration/source_topology.py') | quote }} before {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       changed_when: false
@@ -168,7 +168,7 @@
     - ../group_vars/ns-lab.yml
   tasks:
     - name: "[02] Check effective SNAT experiment settings"
-      ansible.builtin.include_tasks: ns-source-profile-tasks.yml
+      ansible.builtin.include_tasks: tasks/ns-source-profile-tasks.yml
       vars:
         ns_profile_evidence_directory: "{{ hostvars['localhost']['migration_run_dir'] }}"
       when:
@@ -242,7 +242,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/validation_placement.py') | quote }} {{ migration_run_dir | quote }} {{ validation_placement_request | to_json | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/validation_placement.py') | quote }} {{ migration_run_dir | quote }} {{ validation_placement_request | to_json | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
@@ -259,7 +259,7 @@
   tasks:
     - name: "[02] [SAVE] Install uplink inspection helper"
       ansible.builtin.copy:
-        src: ../scripts/ns_underlay.py
+        src: ../scripts/reset/ns_underlay.py
         dest: /root/ns-underlay-check.py
         mode: '0700'
       when: validation_ns_enabled | bool
@@ -299,7 +299,7 @@
 
     - name: "[02] Check controller N-S listener port is free"
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../scripts/ns_endpoint.py", "{{ ns_endpoint_ip }}", "{{ ns_tcp_port | int }}"]
+        argv: [python3, "{{ playbook_dir }}/../scripts/validation/ns_endpoint.py", "{{ ns_endpoint_ip }}", "{{ ns_tcp_port | int }}"]
       changed_when: false
       when: validation_ns_enabled | bool
 
@@ -326,7 +326,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '02'

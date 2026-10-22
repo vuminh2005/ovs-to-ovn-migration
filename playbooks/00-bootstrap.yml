@@ -43,7 +43,7 @@
 
     - name: "[00] Create organized run data directories"
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../scripts/run_layout.py", init, "{{ migration_run_dir }}"]
+        argv: [python3, "{{ playbook_dir }}/../scripts/common/run_layout.py", init, "{{ migration_run_dir }}"]
       changed_when: false
 
     - name: "[00] [SAVE] Save runtime settings"
@@ -70,7 +70,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '00'
@@ -95,7 +95,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '00'

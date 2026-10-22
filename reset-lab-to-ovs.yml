@@ -63,7 +63,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ (reset_kolla_venv + '/bin/activate') | quote }}
-        python3 {{ (playbook_dir + '/scripts/reset_validation.py') | quote }} scope {{ reset_kolla_inventory | quote }}
+        python3 {{ (playbook_dir + '/scripts/reset/reset_validation.py') | quote }} scope {{ reset_kolla_inventory | quote }}
       args:
         executable: /bin/bash
       changed_when: false
@@ -105,7 +105,7 @@
         reset_backup_root_runtime: "{{ reset_backup_root }}"
 
     - name: Check shared external and console demo settings before destructive work
-      ansible.builtin.include_tasks: playbooks/reset-demo-preflight-tasks.yml
+      ansible.builtin.include_tasks: playbooks/tasks/reset-demo-preflight-tasks.yml
 
     - name: Preserve the full four-node Kolla inventory
       ansible.builtin.copy:
@@ -185,7 +185,7 @@
 
     - name: Install read-only underlay identity helper before destructive reset
       ansible.builtin.copy:
-        src: scripts/ns_underlay.py
+        src: scripts/reset/ns_underlay.py
         dest: /root/ns-underlay-check.py
         mode: '0700'
       when: inventory_hostname in groups['network']
@@ -253,7 +253,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/scripts/reset_local_probes.py"
+          - "{{ playbook_dir }}/scripts/reset/reset_local_probes.py"
           - "{{ reset_backup_root_runtime }}"
           - "{{ reset_run_dir }}/local-probes-stop.json"
           - --interrupt-legacy-client
@@ -262,7 +262,7 @@
 
     - name: Verify the controller N-S listener port was released before Kolla destroy
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/scripts/ns_endpoint.py", "{{ ns_endpoint_ip }}", "{{ ns_tcp_port | int }}"]
+        argv: [python3, "{{ playbook_dir }}/scripts/validation/ns_endpoint.py", "{{ ns_endpoint_ip }}", "{{ ns_tcp_port | int }}"]
       changed_when: false
       when: ns_enabled | default(false) | bool
 
@@ -270,7 +270,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/scripts/ns_diagnostics.py"
+          - "{{ playbook_dir }}/scripts/diagnostics/ns_diagnostics.py"
           - reset-stop
           - "{{ reset_backup_root_runtime }}"
           - "{{ reset_run_dir }}/ns-diagnostic-captures-stop.json"
@@ -282,7 +282,7 @@
           - ansible-playbook
           - -i
           - "{{ reset_kolla_inventory }}"
-          - "{{ playbook_dir }}/playbooks/reset-host-observers.yml"
+          - "{{ playbook_dir }}/playbooks/transport/reset-host-observers.yml"
           - -e
           - "{{ {'reset_observer_evidence_dir': reset_run_dir, 'reset_diagnostics_directory': reset_diagnostics_directory} | to_json }}"
       register: reset_host_observers
@@ -380,7 +380,7 @@
     - group_vars/reset.yml
   tasks:
     - name: Validate ownership before removing any run preparation directory
-      ansible.builtin.script: scripts/cutover_preparation.py cleanup /tmp
+      ansible.builtin.script: scripts/migration/cutover_preparation.py cleanup /tmp
       args:
         executable: python3
       register: reset_preparation_cleanup
@@ -816,7 +816,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/scripts/reset_rabbitmq_recovery.py"
+          - "{{ playbook_dir }}/scripts/reset/reset_rabbitmq_recovery.py"
           - verify-workers
           - "{{ reset_run_dir }}"
           - --workers
@@ -828,7 +828,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/scripts/reset_rabbitmq_recovery.py"
+          - "{{ playbook_dir }}/scripts/reset/reset_rabbitmq_recovery.py"
           - verify-conductor-workers
           - "{{ reset_run_dir }}"
           - --workers
@@ -840,7 +840,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/scripts/reset_rabbitmq_health.py"
+          - "{{ playbook_dir }}/scripts/reset/reset_rabbitmq_health.py"
           - "{{ reset_run_dir }}/rabbitmq-health.json"
           - --log
           - "{{ reset_rabbitmq_log_path }}"
@@ -879,7 +879,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/scripts/reset_rabbitmq_recovery.py"
+          - "{{ playbook_dir }}/scripts/reset/reset_rabbitmq_recovery.py"
           - recover
           - "{{ reset_run_dir }}"
           - --workers
@@ -947,7 +947,7 @@
     - group_vars/ns-lab.yml
   tasks:
     - name: Prepare additive OpenFlow15 baseline before creating any workload
-      ansible.builtin.include_tasks: playbooks/openflow-preparation-tasks.yml
+      ansible.builtin.include_tasks: playbooks/tasks/openflow-preparation-tasks.yml
       vars:
         openflow_protocols: "{{ reset_br_int_protocols }}"
         openflow_evidence_directory: "{{ hostvars['localhost']['reset_run_dir'] }}"
@@ -1017,7 +1017,7 @@
         executable: /bin/bash
       changed_when: false
     - name: Verify the opt-in source SNAT profile before declaring reset ready
-      ansible.builtin.include_tasks: playbooks/ns-source-profile-tasks.yml
+      ansible.builtin.include_tasks: playbooks/tasks/ns-source-profile-tasks.yml
       vars:
         ns_profile_evidence_directory: "{{ hostvars['localhost']['reset_run_dir'] }}"
       when:
@@ -1146,7 +1146,7 @@
         set -euo pipefail
         source {{ (reset_kolla_venv + '/bin/activate') | quote }}
         source /etc/kolla/admin-openrc.sh
-        python3 {{ (playbook_dir + '/scripts/reset_validation.py') | quote }} finish {{ reset_run_dir | quote }}
+        python3 {{ (playbook_dir + '/scripts/reset/reset_validation.py') | quote }} finish {{ reset_run_dir | quote }}
       args:
         executable: /bin/bash
       register: reset_completion

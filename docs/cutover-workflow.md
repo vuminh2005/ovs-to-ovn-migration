@@ -43,7 +43,7 @@ Sau `post-traffic-recovery` mới bật sampling bổ sung khoảng 2 giây/lầ
 
 ## Chờ traffic hiện có
 
-`scripts/live_recovery.py` đọc console của VM/probe và JSONL controller đang có,
+`scripts/validation/live_recovery.py` đọc console của VM/probe và JSONL controller đang có,
 đồng thời kiểm tra snapshot các capture EW matrix đang chạy. Mỗi stream phải
 tiến lên sau lần đọc đầu, có chuỗi thành công và không còn failure mở. Kiểm tra
 boot/probe/ping/session identity giữ nguyên; held bị gãy không được reconnect.
@@ -89,7 +89,7 @@ report/backup migration. Evidence cleanup ở snapshot reset. Sau OVS deploy,
 reset thêm và xác minh OpenFlow15 trước khi dựng workload; chuẩn bị trước
 freeze vẫn kiểm tra lại để hỗ trợ baseline OVS chưa chạy reset bản mới.
 
-`resume-after-db.yml` yêu cầu checkpoint preparation gốc và không lặp lại DB
+`playbooks/recovery/resume-after-db.yml` yêu cầu checkpoint preparation gốc và không lặp lại DB
 migration, freeze hay ARM. Bản này dành cho **run mới**; không ghép code mới vào
 run cũ đã freeze mà thiếu `cutover-preparation.json`. Các hướng dẫn cài riêng
 vài file để cứu run cũ trong tài liệu lịch sử không áp dụng cho bản thay đổi

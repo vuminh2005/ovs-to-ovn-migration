@@ -10,7 +10,7 @@
 Cập nhật 18/10/2026 trên nền b87: reset đọc checkpoint N-S ở cả run phẳng và
 run chia thư mục, rồi xác nhận cổng listener đã được giải phóng trước Kolla
 destroy. Nếu run mới lỗi `Address already in use`, cài đủ ZIP cập nhật rồi
-chạy reset như bên dưới; xem [chi tiết lỗi đã xác nhận](b87-update-20261018.md).
+chạy reset như bên dưới; xem [chi tiết lỗi đã xác nhận](history/b87-update-20261018.md).
 
 Cập nhật 16/10/2026: reset dọn thư mục preparation có ownership sau destroy
 và chuẩn bị OpenFlow15 trong baseline OVS trước workload. Observer được dừng theo
@@ -70,7 +70,7 @@ reset ở `local-probes-stop.json`: `signaled` ghi signal đã gửi, `stopped` 
 ghi process đã xác nhận thoát, `remaining` ghi process vẫn sống.
 
 Nếu checkpoint đã mất, reset còn tìm trực tiếp process chạy đúng file
-`scripts/ns_probe.py` trong bản dự án đang dùng, với action `serve`/`client`
+`scripts/probes/ns_probe.py` trong bản dự án đang dùng, với action `serve`/`client`
 và đường dẫn tuyệt đối `<reset_backup_root>/<run>/ns/snat-server.json` hoặc
 `fip-client.json` tương ứng. Các file cấu hình còn tồn tại phải khớp run,
 output và chế độ controller. Cấu hình đã mất cùng thư mục run vẫn có thể
@@ -96,7 +96,7 @@ tạo lại. Snapshot/evidence trước vẫn được giữ. Có thể kiểm t
 trước khi chạy lại, với một đường dẫn evidence mới trong snapshot đã có:
 
 ```bash
-python3 scripts/reset_local_probes.py /root/ovs-to-ovn-backup \
+python3 scripts/reset/reset_local_probes.py /root/ovs-to-ovn-backup \
     /root/kolla-reset-snapshots/<UTC-run-id>/local-probes-stop-retry.json \
     --interrupt-legacy-client
 ```
@@ -151,7 +151,7 @@ inventory giữa destroy/deploy.
    phải có MTU 1400. Network tạm được xóa sau kiểm tra.
 7. Kiểm tra cloud không có instance/network/subnet/router, đúng hai Nova computes
    enabled/up và sáu Neutron agents alive/enabled.
-8. Chuẩn bị Ubuntu 24.04 bằng `scripts/validation_prerequisites.py` của baseline:
+8. Chuẩn bị Ubuntu 24.04 bằng `scripts/validation/validation_prerequisites.py` của baseline:
    tải từ Canonical khi cần, xác minh SHA256SUMS, upload image
    `ovn-validation-ubuntu-24.04`, chờ ACTIVE; tạo `ovn-validation.small`
    (1 vCPU, 1024 MB RAM, 8 GB disk). Không khôi phục image/flavor EW.
@@ -183,7 +183,7 @@ phần prerequisites bằng snapshot của lần chạy đó:
 ```bash
 source /root/venvs/kolla-2024.1/bin/activate
 source /etc/kolla/admin-openrc.sh
-python3 scripts/reset_validation.py finish \
+python3 scripts/reset/reset_validation.py finish \
     /root/kolla-reset-snapshots/<UTC-run-id>
 ```
 
@@ -212,7 +212,7 @@ kiểm tra. Nguyên nhân trực tiếp khiến reset dừng là gate dựa trê
 Thiếu toàn bộ log quanh 17:57 nên chưa xác định được race/bug nội bộ nào gây
 lần declare thất bại; không được gọi đó là cache cũ hay khẳng định đã vá RabbitMQ.
 
-Gate mới dùng `scripts/reset_rabbitmq_health.py`, chỉ đọc trạng thái:
+Gate mới dùng `scripts/reset/reset_rabbitmq_health.py`, chỉ đọc trạng thái:
 
 - RabbitMQ application phải running và không có local alarm.
 - Tất cả quorum queue hiện có phải running; `conductor` và `scheduler` phải là
@@ -287,7 +287,7 @@ lưu evidence mới để giữ nguyên file FAIL cũ:
 
 ```bash
 cd /root/ovs-to-ovn-migration
-python3 scripts/reset_rabbitmq_health.py \
+python3 scripts/reset/reset_rabbitmq_health.py \
   /root/kolla-reset-snapshots/20261014T112120609523272/rabbitmq-health-recheck.json
 ```
 

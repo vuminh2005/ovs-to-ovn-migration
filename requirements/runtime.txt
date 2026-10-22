@@ -1,0 +1,3 @@
+# Controller helpers only. Keep Kolla/Neutron container dependencies managed by Kolla.
+openstacksdk==4.21.0
+PyYAML==6.0.3

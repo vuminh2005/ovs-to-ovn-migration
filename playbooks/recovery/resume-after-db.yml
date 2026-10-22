@@ -1,0 +1,107 @@
+- name: Recover only a completed DB migration before dataplane cutover
+  hosts: localhost
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  vars_files:
+    - ../../group_vars/all.yml
+  tasks:
+    - name: Require explicit checkpoint and the full original inventory
+      ansible.builtin.assert:
+        that:
+          - migration_resume_run_dir is match('^/')
+          - ansible_inventory_sources | length == 1
+          - ansible_limit | default('') | length == 0
+          - not ansible_check_mode
+    - name: Require committed successful DB migration and no cutover markers
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../../scripts/recovery/post_db_recovery.py", inspect, "{{ migration_resume_run_dir }}", --inventory, "{{ ansible_inventory_sources[0]
+              }}"]
+      register: post_db_checkpoint
+      changed_when: false
+    - name: Require original pre-freeze preparation before resuming cutover
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../../scripts/migration/cutover_preparation.py", verify, "{{ migration_resume_run_dir }}"]
+      changed_when: false
+    - name: Restore the same run runtime and endpoints without repeating freeze or migration
+      ansible.builtin.set_fact:
+        post_db_runtime: "{{ (post_db_checkpoint.stdout | from_json).runtime }}"
+        post_db_workload: "{{ (post_db_checkpoint.stdout | from_json).workload_config }}"
+        migration_run_dir: "{{ (post_db_checkpoint.stdout | from_json).root }}"
+        migration_run_id: "{{ (post_db_checkpoint.stdout | from_json).runtime.run_id }}"
+        kolla_inventory_runtime: "{{ (post_db_checkpoint.stdout | from_json).runtime.inventory }}"
+        kolla_ansible_bin_runtime: "{{ (post_db_checkpoint.stdout | from_json).runtime.kolla_ansible }}"
+        kolla_globals_path: "{{ (post_db_checkpoint.stdout | from_json).runtime.globals }}"
+        openrc_path: "{{ (post_db_checkpoint.stdout | from_json).runtime.openrc }}"
+        ovn_cli_host_runtime: "{{ (post_db_checkpoint.stdout | from_json).runtime.ovn_cli_host }}"
+        db_sync_host_runtime: "{{ (post_db_checkpoint.stdout | from_json).runtime.db_sync_host }}"
+        ovn_nb_connection_runtime: "{{ (post_db_checkpoint.stdout | from_json).nb }}"
+        ovn_sb_connection_runtime: "{{ (post_db_checkpoint.stdout | from_json).sb }}"
+        source_network_count_runtime: "{{ (post_db_checkpoint.stdout | from_json).source_network_count }}"
+        chassis_hosts_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | list }}"
+        chassis_count_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | length }}"
+        validation_workloads_enabled: "{{ (post_db_checkpoint.stdout | from_json).workloads_enabled }}"
+    - name: Require unchanged topology before resuming the original streams
+      ansible.builtin.assert:
+        that:
+          - groups['control'] | sort == post_db_runtime.control_hosts | sort
+          - groups['network'] | sort == post_db_runtime.network_hosts | sort
+          - groups['compute'] | sort == post_db_runtime.compute_hosts | sort
+    - name: Restore workload validation settings from the original checkpoint
+      ansible.builtin.set_fact:
+        target_geneve_mtu: "{{ post_db_workload.target_mtu }}"
+        validation_allow_post_cutover_guest_reboot: "{{ post_db_workload.allow_post_cutover_guest_reboot | bool }}"
+        validation_post_cutover_dhcp_timeout_seconds: "{{ post_db_workload.post_cutover_timeout | int }}"
+        validation_ns_enabled: "{{ post_db_workload.get('ns', {}).get('enabled', false) | bool }}"
+      when: validation_workloads_enabled | bool
+
+- name: Verify Neutron remains frozen on every original control host
+  hosts: control
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require neutron-server to remain stopped before OVN takeover
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker inspect neutron_server | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is False'
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+- name: Recheck migrated topology before continuing into phase 08
+  hosts: localhost
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Verify NB logical topology and SB datapaths without an early-closing reader
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker exec ovn_northd ovn-nbctl --db={{ ovn_nb_connection_runtime | quote }} show | grep -E 'switch|router' >/dev/null
+        test "$(docker exec ovn_northd ovn-sbctl --db={{ ovn_sb_connection_runtime | quote }} list Datapath_Binding | grep -c '^_uuid')" -gt 0
+      args:
+        executable: /bin/bash
+      delegate_to: "{{ ovn_cli_host_runtime }}"
+      changed_when: false
+    - name: Record recovery pause without modifying the original measurement timestamps
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../../scripts/recovery/post_db_recovery.py", record, "{{ migration_run_dir }}", --inventory, "{{ kolla_inventory_runtime }}"]
+      changed_when: true
+    - name: Complete phase 07 only after migrated topology is verified
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../../scripts/common/phase_schema.py", mark, "{{ migration_run_dir }}", '07', end]
+      changed_when: false
+
+    - name: Restore diagnostic observation segments before resumed cutover
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../../scripts/diagnostics/diagnostics_control.py", ensure, "{{ migration_run_dir }}"]
+      changed_when: false
+      when: lookup('fileglob', (migration_run_dir | run_file('diagnostics-config.json'))) | length > 0
+
+- import_playbook: ../08-cutover.yml
+- import_playbook: ../09-cleanup.yml
+- import_playbook: ../10-restore-neutron.yml
+- import_playbook: ../11-validate.yml
+- import_playbook: ../12-workload-validation.yml
+- import_playbook: ../13-report.yml

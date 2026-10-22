@@ -10,7 +10,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '08'
@@ -21,7 +21,7 @@
       changed_when: false
     - name: "[08] Verify original cutover checkpoint"
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../scripts/cutover_preparation.py", verify, "{{ hostvars['localhost']['migration_run_dir'] }}"]
+        argv: [python3, "{{ playbook_dir }}/../scripts/migration/cutover_preparation.py", verify, "{{ hostvars['localhost']['migration_run_dir'] }}"]
       register: prepared_cutover_checkpoint
       changed_when: false
     - name: "[08] Load original port checkpoint and timeout"
@@ -73,7 +73,7 @@
     - ../group_vars/all.yml
   tasks:
     - name: "[08] Verify prepared OpenFlow support on br-int"
-      ansible.builtin.include_tasks: openflow-preparation-tasks.yml
+      ansible.builtin.include_tasks: tasks/openflow-preparation-tasks.yml
       vars:
         openflow_protocols: "{{ br_int_protocols }}"
         openflow_check_only: true
@@ -164,7 +164,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/ns_diagnostics.py"
+          - "{{ playbook_dir }}/../scripts/diagnostics/ns_diagnostics.py"
           - post-cutover
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
       delegate_to: localhost
@@ -177,7 +177,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '08'

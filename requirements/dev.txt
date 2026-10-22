@@ -1,0 +1,6 @@
+-r runtime.txt
+# Isolated offline audit environment; do not upgrade a deployed Kolla venv with this file.
+ansible-core==2.16.19
+pytest==8.4.2
+SQLAlchemy==2.1.6
+ruff==0.17.1

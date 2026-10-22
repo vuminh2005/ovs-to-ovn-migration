@@ -9,7 +9,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '06'
@@ -63,7 +63,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} prepare-dhcp {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} prepare-dhcp {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
@@ -133,14 +133,14 @@
         mode: '0600'
     - name: "[06] Start Northbound and Southbound change monitors"
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", start, "{{ migration_run_dir }}", --role, central]
+        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics/diagnostics_control.py", start, "{{ migration_run_dir }}", --role, central]
       changed_when: false
       when: migration_diagnostics_enabled | bool
     - name: "[06] [TIMER] End phase 06"
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '06'

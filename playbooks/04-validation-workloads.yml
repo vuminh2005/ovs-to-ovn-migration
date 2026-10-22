@@ -11,7 +11,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '04'
@@ -79,7 +79,7 @@
           ns_endpoint_ip, 'old_port': ns_tcp_port | int, 'new_port': ns_tcp_new_port | int} | to_nice_json }}"
     - name: "[04] Start host observers"
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", start, "{{ migration_run_dir }}", --role, core]
+        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics/diagnostics_control.py", start, "{{ migration_run_dir }}", --role, core]
       changed_when: false
       when: migration_diagnostics_enabled | bool
 
@@ -87,7 +87,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} pre {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} pre {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
@@ -104,21 +104,21 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        nohup python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} collect {{ migration_run_dir | quote }} > {{ ((migration_run_dir | run_file('collector.log'))) | quote }} 2>&1 < /dev/null &
+        nohup python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} collect {{ migration_run_dir | quote }} > {{ ((migration_run_dir | run_file('collector.log'))) | quote }} 2>&1 < /dev/null &
         echo "$!" > {{ ((migration_run_dir | run_file('collector.pid'))) | quote }}
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
     - name: "[04] [SAVE] Refresh resource baseline after workload creation"
-      ansible.builtin.include_tasks: validation-snapshot-tasks.yml
+      ansible.builtin.include_tasks: tasks/validation-snapshot-tasks.yml
       when: validation_workloads_enabled | bool
 
     - name: "[04] [SAVE] Record source network segments"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/network_semantics.py') | quote }} before {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/migration/network_semantics.py') | quote }} before {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
 
@@ -126,7 +126,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '04'

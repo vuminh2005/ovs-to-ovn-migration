@@ -9,7 +9,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '12'
@@ -55,7 +55,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/network_semantics.py') | quote }} after {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/migration/network_semantics.py') | quote }} after {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       register: semantics_result
@@ -67,6 +67,7 @@
         python3 - {{ migration_run_dir | quote }} {{ (validation_allow_post_cutover_guest_reboot | bool | string) | quote }} {{ validation_post_cutover_dhcp_timeout_seconds | int }} {{ {'ovn_nb': ovn_nb_connection_runtime, 'ovn_sb': ovn_sb_connection_runtime, 'ovn_cli_host': ovn_cli_host_runtime, 'inventory': kolla_inventory_runtime} | to_json | quote }} <<'PYCODE'
         import sys
         sys.path.insert(0, '{{ playbook_dir }}/../scripts')
+        from _paths import configure; configure()
         from run_layout import run_path, run_glob
         import json, pathlib, sys
         root=pathlib.Path(sys.argv[1]); path=run_path(root, 'validation-config.json')
@@ -84,7 +85,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} post {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} post {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       register: workload_result
@@ -141,7 +142,7 @@
   tasks:
     - name: "[12] Stop observers and collect evidence on success or failure"
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics_control.py", stop, "{{ migration_run_dir }}"]
+        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics/diagnostics_control.py", stop, "{{ migration_run_dir }}"]
       changed_when: false
       failed_when: false
       when: migration_diagnostics_enabled | bool
@@ -159,6 +160,7 @@
         python3 - {{ migration_run_dir | quote }} <<'PYCODE'
         import sys
         sys.path.insert(0, '{{ playbook_dir }}/../scripts')
+        from _paths import configure; configure()
         from run_layout import run_path, run_glob
         import pathlib, sys, os, signal
         root = pathlib.Path(sys.argv[1])
@@ -187,7 +189,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/ns_diagnostics.py"
+          - "{{ playbook_dir }}/../scripts/diagnostics/ns_diagnostics.py"
           - post-validation
           - "{{ migration_run_dir }}"
       register: ns_diag_snapshot_result
@@ -199,7 +201,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/ns_diagnostics.py"
+          - "{{ playbook_dir }}/../scripts/diagnostics/ns_diagnostics.py"
           - finish
           - "{{ migration_run_dir }}"
       register: ns_diag_finish_result
@@ -211,7 +213,7 @@
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
-        python3 {{ (playbook_dir + '/../scripts/workload_validation.py') | quote }} capture-finish {{ migration_run_dir | quote }}
+        python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} capture-finish {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
       register: capture_finish_result
@@ -223,6 +225,7 @@
         python3 - {{ migration_run_dir | quote }} {{ (capture_finish_result.stderr | default('')) | quote }} <<'PYCODE'
         import sys
         sys.path.insert(0, '{{ playbook_dir }}/../scripts')
+        from _paths import configure; configure()
         from run_layout import run_path, run_glob
         import json, pathlib, sys
         root=pathlib.Path(sys.argv[1]); path=run_path(root, 'tenant-dataplane-probe.json')
@@ -243,7 +246,7 @@
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/phase_schema.py"
+          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '12'
