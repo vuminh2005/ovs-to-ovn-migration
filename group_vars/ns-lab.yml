@@ -1,6 +1,7 @@
 ---
 # Addresses approved for this nested lab; this is an on-link endpoint, not Internet.
 ns_enabled: true
+# Reset-only expected address; migration discovers tunnel addresses per host.
 ns_underlay_ip: 10.1.0.90/24
 ns_underlay_mtu: 1450
 ns_endpoint_ip: 10.1.0.187

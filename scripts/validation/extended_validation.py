@@ -524,7 +524,9 @@ class Extended:
             ip=state['vms']['0']['ip'], port=ns['control_port'], router=state['router'])
         ack_path = run_path(self.root, 'ns-control-'+action.lower()+'.json')
         extra = run_path(self.root, 'ns-control-transport.json')
-        save(extra, dict(ns_control_payload=payload, ns_control_host=self.cfg['pair_d_network_host'],
+        from router_host import resolve as router_host
+        host = router_host(self.v, state['router'], action)
+        save(extra, dict(ns_control_payload=payload, ns_control_host=host,
             ns_control_ack_path=str(ack_path)))
         helper = playbook_path('ns-control-tasks.yml')
         result = subprocess.run(['ansible-playbook', '-i', self.cfg['inventory'], str(helper),

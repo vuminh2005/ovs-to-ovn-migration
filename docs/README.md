@@ -2,6 +2,7 @@
 
 | Nội dung | Hướng dẫn |
 |---|---|
+| Migration theo số host trong inventory / thông tin cần bổ sung | [node-independent-migration.md](node-independent-migration.md) |
 | Migrate/reset và kiểm thử | [README chính](../README.md) |
 | Bật tăng instance quota | [project-quota.md](project-quota.md) |
 | Cấu trúc code và cách thêm file | [structure.md](structure.md) |

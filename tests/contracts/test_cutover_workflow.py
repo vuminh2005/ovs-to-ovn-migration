@@ -28,7 +28,10 @@ class WorkflowTests(unittest.TestCase):
         phase08=str(plays('playbooks/08-cutover.yml'))
         self.assertIn('openflow_check_only',phase08)
         self.assertNotIn('ovs-vsctl set Bridge',phase08)
-        self.assertIn('sha256sum --check --status',phase08)
+        self.assertIn('ports_sha256',phase08)
+        self.assertIn('ovn_ready.py bindings',phase08)
+        self.assertIn("hashlib.sha256(raw).hexdigest() != cfg['ports_sha256']",
+                      (ROOT/'scripts/migration/ovn_ready.py').read_text())
         self.assertNotIn('anchor-start',phase08)
 
     def test_continuous_observers_and_special_conntrack_remain_but_checkpoint_dispatches_leave_cutover(self):

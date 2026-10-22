@@ -29,7 +29,7 @@ class GlobalsHostScopeTests(unittest.TestCase):
             plays=[dict(name='Prove play variable is absent from localhost hostvars',hosts='localhost',gather_facts=False,
                         vars_files=vars_files,tasks=[{'ansible.builtin.assert':{'that':["'kolla_globals_path' not in hostvars['localhost']"]}}]),
                    dict(name='Execute production per-host assertion',hosts='control:network:compute',gather_facts=False,
-                        vars_files=vars_files,vars=source['vars'],tasks=[task])]
+                        vars_files=vars_files,vars={**source['vars'], 'migration_external_interface': 'ns-ex'},tasks=[task])]
             playbook=root/'check.yml';playbook.write_text(yaml.safe_dump(plays,sort_keys=False))
             env=dict(os.environ,KOLLA_GLOBALS=str(globals_path),ANSIBLE_NOCOLOR='1')
             result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i',str(inventory),str(playbook)],

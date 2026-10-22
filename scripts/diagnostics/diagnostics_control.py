@@ -76,6 +76,12 @@ def operate(root, action, role=None, label='checkpoint'):
                 control=host in runtime.get('control_hosts', []), network=host in runtime.get('network_hosts', []),
                 chassis=host in runtime.get('compute_hosts', [])+runtime.get('network_hosts', []))
             config = effective_config(config)
+            topology_path = run_path(root, 'host-topology.json')
+            topology = json.loads(topology_path.read_text()).get(host, {}) if topology_path.exists() else {}
+            if topology:
+                config['tunnel_interface'] = topology['tunnel_interface']
+                if topology.get('external_interfaces'):
+                    config['external_interface'] = topology['external_interfaces'][0]
             remote = str(Path(cfg['directory'])/runtime['run_id']/(host+'-'+role))
             entry = dict(host=host, role=role, config=config, remote_directory=remote,
                 archive_name=host+'-'+role+'.tar.gz', archive_directory='diagnostics/'+host+'/'+role, segments=[])

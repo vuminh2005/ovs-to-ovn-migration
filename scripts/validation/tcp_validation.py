@@ -155,7 +155,9 @@ class PairD:
                        ip=pair['0']['ip'], port=self.v.cfg['tcp_control_port'])
         ack_filename = 'pair-d-trigger-ack.json' if action == 'ARM' else 'pair-d-control-precheck.json'
         extra = run_path(self.v.root, 'pair-d-transport.json')
-        self.save(extra.name, dict(pair_d_trigger=payload, pair_d_network_host=self.v.cfg['pair_d_network_host'],
+        from router_host import resolve as router_host
+        host = router_host(self.v, payload['router'], action)
+        self.save(extra.name, dict(pair_d_trigger=payload, pair_d_network_host=host,
                                   pair_d_root=str(self.v.root), pair_d_ack_filename=ack_filename))
         if action == 'ARM':
             self.save('pair-d-trigger.json', dict(status='INTENT', payload=payload, intent_at=time.time()))

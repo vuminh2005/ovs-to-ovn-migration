@@ -69,7 +69,7 @@ migration_resume_run_dir: "{{ lookup('env', 'OVS_TO_OVN_RESUME_RUN_DIR') | defau
 # contain cloud-init, Python3, ping, iproute2, systemd and ttyS0 support.
 validation_workloads_enabled: true
 # Both members of every pair must run on these distinct inventory computes.
-validation_pair_compute_hosts: ['compute1', 'compute2']
+validation_pair_compute_hosts: []  # Auto-select two ready inventory computes; explicit pair is supported.
 # Pair D uses the pre-migration topology with A/B. Manual demos are managed
 # outside the playbook; disable only automatic D with an extra variable.
 validation_pair_d_enabled: true
@@ -133,3 +133,8 @@ migration_diagnostics_external_interface: ns-ex
 
 # Workflow barrier only; original PCAP/monotonic evidence still defines downtime.
 post_restore_observation_timeout_seconds: 300
+
+# Node-independent migration settings; optional interface overrides belong in host_vars.
+# migration_tunnel_interface / migration_external_interface / migration_expected_tunnel_address
+# otherwise use the rendered Kolla settings and effective OVS agent tunnel IP.
+chassis_registration_timeout_seconds: 300

@@ -55,7 +55,9 @@ def inputs(root):
     if inventory.read_bytes() != (run_path(root, 'inventory.before')).read_bytes():
         raise ValueError('Inventory changed since migration backup')
     ports = (run_path(root, 'compute-port-ids.txt')).read_bytes()
-    return dict(run=run, inventory=str(inventory),
+    topology = run_path(root, 'host-topology.json')
+    extra = dict(topology_sha256=hashlib.sha256(topology.read_bytes()).hexdigest() if topology.exists() else None)
+    return dict(**extra, run=run, inventory=str(inventory),
                 inventory_sha256=hashlib.sha256(inventory.read_bytes()).hexdigest(),
                 ports_sha256=hashlib.sha256(ports).hexdigest(),
                 port_count=sum(bool(line.strip()) for line in ports.splitlines()),

@@ -12,3 +12,10 @@ compute2 ansible_host=10.0.0.171
 
 # Standard Kolla inventories also define ovn-controller and ovn-database groups
 # (often through children). V2 validates their presence before making changes.
+
+# This is the current lab example, not a host-count restriction for migration.
+# Use your full Kolla inventory; add any supported number of network/compute hosts.
+# A/B/C/D cross-compute validation needs at least two ready computes.
+# Optional per-host overrides: migration_tunnel_interface,
+# migration_external_interface, migration_expected_tunnel_address.
+# Reset remains restricted to the original four-node lab.

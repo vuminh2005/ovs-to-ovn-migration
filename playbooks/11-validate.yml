@@ -170,11 +170,13 @@
       changed_when: false
 
     - name: "[11] Check underlay and OVN external bridge mapping"
-      ansible.builtin.command:
-        argv: [python3, /root/ns-underlay-check.py, deployed, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int, 'physnet': ns_physnet, 'ovn': true}
-              | to_json }}"]
+      ansible.builtin.script:
+        cmd: "../scripts/migration/host_network.py target {{ {'tunnel_interface': migration_saved_host.tunnel_interface, 'external': 'external_bridge' in migration_saved_host, 'external_interfaces': migration_saved_host.get('external_interfaces', []), 'physnet': migration_saved_host.get('physnet', ns_physnet), 'expected': migration_saved_host} | to_json | quote }}"
+        executable: python3
+      vars:
+        migration_saved_host: "{{ (lookup('file', (hostvars['localhost']['migration_run_dir'] | run_file('host-topology.json'))) | from_json)[inventory_hostname] }}"
       changed_when: false
-      when: validation_ns_enabled | bool
+      when: lookup('fileglob', (hostvars['localhost']['migration_run_dir'] | run_file('host-topology.json'))) | length > 0
 
 - name: "Phase 11 - Check OVN metadata agents"
   hosts: neutron-ovn-metadata-agent

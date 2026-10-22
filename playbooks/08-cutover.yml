@@ -30,6 +30,7 @@
 
 - name: "Phase 08 - Stop legacy agents on network hosts"
   hosts: network
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -48,6 +49,7 @@
 
 - name: "Phase 08 - Stop legacy OVS agents on compute hosts"
   hosts: compute
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -82,6 +84,7 @@
 
 - name: "Phase 08 - Deploy OVN controller and metadata agents"
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -103,12 +106,22 @@
 
 - name: "Phase 08 - Wait for OVN to take over existing VM ports"
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
     - ../group_vars/all.yml
   tasks:
     - name: "[08] Check expected hosts are registered in OVN"
+      ansible.builtin.script:
+        cmd: "../scripts/migration/ovn_ready.py chassis {{ {'sb': ovn_sb_connection_runtime, 'hosts': lookup('file', (migration_run_dir | run_file('host-topology.json'))) | from_json, 'timeout': chassis_registration_timeout_seconds | int, 'poll': binding_poll_interval_seconds | float} | to_json | quote }}"
+        executable: python3
+      run_once: true
+      changed_when: false
+      delegate_to: "{{ ovn_cli_host_runtime }}"
+      when: lookup('fileglob', (migration_run_dir | run_file('host-topology.json'))) | length > 0
+
+    - name: "[08] Check chassis count for historical checkpoints without host identities"
       ansible.builtin.shell: |
         set -euo pipefail
         actual=$(docker exec ovn_northd ovn-sbctl --db='{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}' list Chassis | grep -c '^_uuid')
@@ -118,27 +131,12 @@
       run_once: true
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"
+      when: lookup('fileglob', (migration_run_dir | run_file('host-topology.json'))) | length == 0
+
     - name: "[08] Wait for all existing VM ports to bind and become up"
-      ansible.builtin.shell: |
-        set -euo pipefail
-        ports={{ hostvars['localhost']['cutover_preparation_runtime'].ports_path | quote }}
-        printf '%s  %s\n' {{ hostvars['localhost']['cutover_preparation_runtime'].ports_sha256 | quote }} "$ports" | sha256sum --check --status
-        deadline=$(( $(date +%s) + {{ hostvars['localhost']['cutover_preparation_runtime'].binding_timeout | int }} ))
-        while true; do
-          bad=0
-          while read -r port; do
-            [ -n "$port" ] || continue
-            out=$(docker exec ovn_northd ovn-sbctl --db='{{ hostvars['localhost']['ovn_sb_connection_runtime'] }}' \
-              --columns=logical_port,chassis,up find Port_Binding logical_port="$port")
-            echo "$out" | grep -E '^chassis[[:space:]]*:[[:space:]]*[0-9a-f-]+' >/dev/null || bad=$((bad+1))
-            echo "$out" | grep -E '^up[[:space:]]*:[[:space:]]*true' >/dev/null || bad=$((bad+1))
-          done < "$ports"
-          [ "$bad" -eq 0 ] && exit 0
-          [ "$(date +%s)" -lt "$deadline" ] || exit 1
-          sleep {{ binding_poll_interval_seconds }}
-        done
-      args:
-        executable: /bin/bash
+      ansible.builtin.script:
+        cmd: "../scripts/migration/ovn_ready.py bindings {{ {'sb': ovn_sb_connection_runtime, 'ports_path': cutover_preparation_runtime.ports_path, 'ports_sha256': cutover_preparation_runtime.ports_sha256, 'timeout': cutover_preparation_runtime.binding_timeout | int, 'poll': binding_poll_interval_seconds | float} | to_json | quote }}"
+        executable: python3
       run_once: true
       changed_when: false
       delegate_to: "{{ ovn_cli_host_runtime }}"

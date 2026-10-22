@@ -1,3 +1,7 @@
+> Cập nhật migration theo inventory ngày 23/10/2026 được ghi riêng tại
+> [node-independent-migration.md](node-independent-migration.md). Các số liệu 655 test
+> dưới đây thuộc bản nền ngày 22/10, không phải lượt kiểm tra của bản cập nhật.
+
 # Audit source — 22/10/2026
 
 ## Bản được kiểm tra và phạm vi

@@ -1,0 +1,62 @@
+{
+  "date": "2026-10-23",
+  "base_file": "ovs-to-ovn-migration-audited.zip",
+  "base_library_version": 3,
+  "base_sha256": "92d5f039c533d2d6191843b8f5b7b6ae6ca68d58586a958d33a54c1a08a80afe",
+  "validation": {
+    "full_suite": "672 passed, 587 warnings in 160.36s (0:02:40)",
+    "final_checkpoint_and_recovery_regression": "45 passed, 12 warnings in 18.71s",
+    "ansible_syntax": "16/16 entrypoints PASS",
+    "static_paths_syntax": "PASS",
+    "ruff": "PASS",
+    "live_openstack_migration_executed": false,
+    "simulated_real_ansible_profiles": [
+      "1 control + 1 network + 2 compute, original interfaces and nested MTU",
+      "1 control + 3 network + 16 compute, alternate interfaces/MTU",
+      "3 network namespace transports"
+    ]
+  },
+  "byte_identical_files_sha256": {
+    "group_vars/quota.yml": "dd81997849f813a7fa26e030e92ee814641d4612f1811537afe00365938ad988",
+    "migrate-to-ovn.yml": "08e015fb82897bf891a29162b3d5f226bfaf57b9608d83ea3e1604a553004d10",
+    "reset-lab-to-ovs.yml": "62ae475da3ea70e85623869619cd85d9ab63dfe5ff6f2ef479ec311c71f8b749",
+    "scripts/diagnostics/ns_icmp_reconcile.py": "32bd14bf803f9aaf556fd07be930e2ed13ac3dce0e0d3177282c98853dbd7896",
+    "scripts/probes/guest_probe.py": "15fba10daaf94047aa2cc6d73b3c8d17f1b9cbc4c60a61742c2a1347eb2102cd",
+    "scripts/probes/ns_icmp.py": "7271de634c8d9af7309fe7345ab5c8ae35a8ef545272c29d855f07becde39bbf",
+    "scripts/probes/ns_probe.py": "4f4a9b195afe45147c26630262fa6029be3e3b97dd484b859992eb4ddc9c1870",
+    "scripts/probes/tcp_guest_probe.py": "e05720878a025d416a6ffbf0bbc14d37a39fa710c496ffbfef932c1c3099fee7",
+    "scripts/reporting/migration_report.py": "85ce6ee71d2fbd0f9b2ffa51f3bd1e129f7d5223656d7a495aa28b7e1bcebd64",
+    "scripts/reporting/report_format.py": "bca03e0bd2fb1115e1357da2b466a452ee84bc4e61e516f3341f3be87c20e4dc"
+  },
+  "changed_files": [
+    "README.md",
+    "docs/README.md",
+    "docs/audit-current.md",
+    "group_vars/all.yml",
+    "group_vars/ns-lab.yml",
+    "inventory.example",
+    "playbooks/02-precheck.yml",
+    "playbooks/04-validation-workloads.yml",
+    "playbooks/08-cutover.yml",
+    "playbooks/11-validate.yml",
+    "scripts/_paths.py",
+    "scripts/diagnostics/diagnostics_control.py",
+    "scripts/migration/cutover_preparation.py",
+    "scripts/validation/extended_validation.py",
+    "scripts/validation/tcp_validation.py",
+    "scripts/validation/validation_placement.py",
+    "tests/contracts/test_cutover_workflow.py",
+    "tests/contracts/test_globals_host_scope.py",
+    "tests/contracts/test_play_targets.py",
+    "tests/migration/test_cutover_preparation.py"
+  ],
+  "added_files": [
+    "docs/node-independent-migration.md",
+    "playbooks/transport/router-host-tasks.yml",
+    "scripts/migration/host_network.py",
+    "scripts/migration/ovn_ready.py",
+    "scripts/validation/router_host.py",
+    "tests/migration/test_dynamic_topology.py",
+    "docs/node-independent-validation.json"
+  ]
+}

@@ -28,6 +28,10 @@
           - "'ovn-controller' in groups"
           - "'ovn-database' in groups"
           - "'neutron-ovn-metadata-agent' in groups"
+          - "groups['ovn-database'] | length > 0"
+          - "groups.get('ovn-northd', []) | length > 0"
+          - "chassis_hosts_runtime | difference(groups['ovn-controller']) | length == 0"
+          - "groups['compute'] | difference(groups['neutron-ovn-metadata-agent']) | length == 0"
         fail_msg: "Inventory is missing standard Kolla control/network/compute/OVN groups."
 
     - name: "[02] Read Kolla-Ansible version"
@@ -91,8 +95,9 @@
     - ../group_vars/all.yml
     - ../group_vars/ns-lab.yml
   vars:
-    validation_effective_tunnel_interface: "{{ ('br-underlay' if inventory_hostname in groups['network'] else 'eth1') if validation_ns_enabled | bool else hostvars['localhost']['source_kolla_globals'].tunnel_interface
-      }}"
+    migration_host_globals: "{{ lookup('template', kolla_globals_path) | from_yaml }}"
+    validation_effective_tunnel_interface: "{{ migration_tunnel_interface | default(tunnel_interface | default(migration_host_globals.tunnel_interface), true) }}"
+    validation_effective_external_interface: "{{ migration_external_interface | default(neutron_external_interface | default(migration_host_globals.neutron_external_interface | default('')), true) }}"
   tasks:
     - name: "[02] Check Ubuntu 24.04 on migration hosts"
       ansible.builtin.assert:
@@ -114,31 +119,29 @@
       ansible.builtin.assert:
         that:
           - (lookup('template', kolla_globals_path) | from_yaml).tunnel_interface == validation_effective_tunnel_interface
-          - inventory_hostname not in groups['network'] or (lookup('template', kolla_globals_path) | from_yaml).neutron_external_interface == 'ns-ex'
+          - inventory_hostname not in groups['network'] or (lookup('template', kolla_globals_path) | from_yaml).neutron_external_interface == validation_effective_external_interface
       when:
         - validation_ns_enabled | bool
         - inventory_hostname in (groups['network'] + groups['compute'])
 
-    - name: "[02] Read tunnel MTU and IPv4 address"
-      ansible.builtin.command:
-        argv: [ip, -j, -4, addr, show, dev, "{{ validation_effective_tunnel_interface }}"]
-      register: validation_tunnel_interface
+    - name: "[02] Inspect effective networking and persistent chassis identity"
+      ansible.builtin.script:
+        cmd: "../scripts/migration/host_network.py source {{ {'tunnel_interface': validation_effective_tunnel_interface, 'external': (inventory_hostname in groups['network']) and (validation_ns_enabled | bool), 'external_interfaces': validation_effective_external_interface.split(',') | map('trim') | reject('equalto', '') | list, 'physnet': ns_physnet, 'expected_address': migration_expected_tunnel_address | default(''), 'source_config': migration_source_ovs_config | default('/etc/kolla/neutron-openvswitch-agent/openvswitch_agent.ini')} | to_json | quote }}"
+        executable: python3
+      register: migration_network_inspection
       changed_when: false
-      when:
-        - validation_workloads_enabled | bool
-        - inventory_hostname in (groups['network'] + groups['compute'])
+      when: inventory_hostname in (groups['network'] + groups['compute'])
+
+    - name: "[02] Publish effective per-host topology"
+      ansible.builtin.set_fact:
+        migration_host_topology: "{{ migration_network_inspection.stdout | from_json }}"
+        validation_tunnel_ip: "{{ (migration_network_inspection.stdout | from_json).tunnel_ip }}"
+      when: inventory_hostname in (groups['network'] + groups['compute'])
 
     - name: "[02] Check transport MTU for source VXLAN traffic"
       ansible.builtin.assert:
         that:
-          - (validation_tunnel_interface.stdout | from_json)[0].mtu | int >= (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int) + 50
-      when:
-        - validation_workloads_enabled | bool
-        - inventory_hostname in (groups['network'] + groups['compute'])
-
-    - name: "[02] Set tunnel addresses for connectivity checks"
-      ansible.builtin.set_fact:
-        validation_tunnel_ip: "{{ ((validation_tunnel_interface.stdout | from_json)[0].addr_info | selectattr('family', 'equalto', 'inet') | list)[0].local }}"
+          - migration_host_topology.tunnel_mtu | int >= (target_geneve_mtu | int) + (mtu_delta_vxlan_to_geneve | int) + 50
       when:
         - validation_workloads_enabled | bool
         - inventory_hostname in (groups['network'] + groups['compute'])
@@ -184,8 +187,9 @@
     - ../group_vars/all.yml
     - ../group_vars/ns-lab.yml
   vars:
-    validation_effective_tunnel_interface: "{{ ('br-underlay' if inventory_hostname in groups['network'] else 'eth1') if validation_ns_enabled | bool else hostvars['localhost']['source_kolla_globals'].tunnel_interface
-      }}"
+    migration_host_globals: "{{ lookup('template', kolla_globals_path) | from_yaml }}"
+    validation_effective_tunnel_interface: "{{ migration_tunnel_interface | default(tunnel_interface | default(migration_host_globals.tunnel_interface), true) }}"
+    validation_effective_external_interface: "{{ migration_external_interface | default(neutron_external_interface | default(migration_host_globals.neutron_external_interface | default('')), true) }}"
   tasks:
     - name: "[02] Check all tunnel paths without fragmentation"
       ansible.builtin.command:
@@ -194,13 +198,6 @@
       loop: "{{ ((groups['network'] + groups['compute']) | unique | list) | difference([inventory_hostname]) }}"
       when: validation_workloads_enabled | bool
       changed_when: false
-    - name: "[02] Check tcpdump on both workload computes"
-      ansible.builtin.command: tcpdump --version
-      when:
-        - validation_workloads_enabled | bool
-        - inventory_hostname in validation_pair_compute_hosts
-      changed_when: false
-
 - name: "Phase 02 - Resolve workload compute placement"
   hosts: localhost
   any_errors_fatal: true
@@ -210,20 +207,36 @@
     - ../group_vars/all.yml
     - ../group_vars/ns-lab.yml
   tasks:
+    - name: "[02] Assemble expected chassis and per-host network settings"
+      ansible.builtin.set_fact:
+        migration_topology_runtime: "{{ migration_topology_runtime | default({}) | combine({item: hostvars[item].migration_host_topology}) }}"
+      loop: "{{ chassis_hosts_runtime }}"
+
+    - name: "[02] Reject duplicate chassis identities and tunnel addresses before freeze"
+      ansible.builtin.assert:
+        that:
+          - migration_topology_runtime.values() | map(attribute='system_id') | unique | length == chassis_hosts_runtime | length
+          - migration_topology_runtime.values() | map(attribute='tunnel_ip') | unique | length == chassis_hosts_runtime | length
+
+    - name: "[02] [SAVE] Save original host topology for cutover and resume"
+      ansible.builtin.copy:
+        dest: "{{ migration_run_dir | run_file('host-topology.json') }}"
+        content: "{{ migration_topology_runtime | to_nice_json }}"
+        mode: '0600'
+
     - name: "[02] Validate workload topology and TCP test settings"
       ansible.builtin.assert:
         that:
-          - validation_pair_compute_hosts | length == 2
-          - validation_pair_compute_hosts | unique | length == 2
+          - validation_pair_compute_hosts | length in [0, 2]
+          - validation_pair_compute_hosts | unique | length == validation_pair_compute_hosts | length
           - validation_pair_compute_hosts | difference(groups['compute']) | length == 0
-          - not (validation_pair_d_enabled | bool) or groups['network'] | length == 1
           - "[validation_tcp_old_port, validation_tcp_new_port, validation_tcp_control_port] | unique | length == 3"
           - validation_tcp_old_port | int > 1024 and validation_tcp_old_port | int <= 65535
           - validation_tcp_new_port | int > 1024 and validation_tcp_new_port | int <= 65535
           - validation_tcp_control_port | int > 1024 and validation_tcp_control_port | int <= 65535
           - validation_tcp_interval_seconds | float >= 0.1
           - validation_tcp_timeout_seconds | float > 0
-        fail_msg: Workload validation needs two compute targets; automatic D requires one network node and three distinct TCP ports.
+        fail_msg: Workload validation needs two compute targets; automatic D requires resolvable source routers and three distinct TCP ports.
       when: validation_workloads_enabled | bool
     - name: "[02] Prepare compute identity lookup"
       ansible.builtin.set_fact:
@@ -236,7 +249,7 @@
       ansible.builtin.set_fact:
         validation_placement_request: "{{ validation_placement_request | combine({'identities': {item: [hostvars[item]['ansible_hostname'], hostvars[item]['ansible_fqdn']]}},
           recursive=true) }}"
-      loop: "{{ validation_pair_compute_hosts }}"
+      loop: "{{ groups['compute'] }}"
       when: validation_workloads_enabled | bool
     - name: "[02] Match Nova computes to source OVS hosts"
       ansible.builtin.shell: |
@@ -245,6 +258,14 @@
         python3 {{ (playbook_dir + '/../scripts/validation/validation_placement.py') | quote }} {{ migration_run_dir | quote }} {{ validation_placement_request | to_json | quote }}
       args:
         executable: /bin/bash
+      when: validation_workloads_enabled | bool
+      register: validation_placement_result
+      changed_when: false
+
+    - name: "[02] Check tcpdump on the resolved workload computes"
+      ansible.builtin.command: tcpdump --version
+      delegate_to: "{{ item }}"
+      loop: "{{ (validation_placement_result.stdout | default('{}') | from_json).values() | map(attribute='inventory_host') | list }}"
       when: validation_workloads_enabled | bool
       changed_when: false
 
@@ -257,21 +278,9 @@
     - ../group_vars/all.yml
     - ../group_vars/ns-lab.yml
   tasks:
-    - name: "[02] [SAVE] Install uplink inspection helper"
-      ansible.builtin.copy:
-        src: ../scripts/reset/ns_underlay.py
-        dest: /root/ns-underlay-check.py
-        mode: '0700'
-      when: validation_ns_enabled | bool
-    - name: "[02] Check uplink addressing and bridge mapping"
-      ansible.builtin.command:
-        argv: [python3, /root/ns-underlay-check.py, deployed, "{{ {'address': ns_underlay_ip, 'mtu': ns_underlay_mtu | int, 'physnet': ns_physnet, 'ovn': false}
-              | to_json }}"]
-      changed_when: false
-      when: validation_ns_enabled | bool
     - name: "[02] Check connectivity to controller endpoint"
       ansible.builtin.command:
-        argv: [ping, -I, br-underlay, -c, '3', -W, '2', "{{ ns_endpoint_ip }}"]
+        argv: [ping, -I, "{{ migration_host_topology.tunnel_interface }}", -c, '3', -W, '2', "{{ ns_endpoint_ip }}"]
       changed_when: false
       when: validation_ns_enabled | bool
 

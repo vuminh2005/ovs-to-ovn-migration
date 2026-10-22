@@ -20,11 +20,31 @@ import sys
 
 def resolve(cloud, request):
     aliases = request['pair_hosts']
-    if len(aliases) != 2 or len(set(aliases)) != 2 or any(a not in request['compute_hosts'] for a in aliases):
-        raise RuntimeError('Pair placement requires two distinct inventory compute hosts')
     services = list(cloud.compute.services(binary='nova-compute'))
     hypervisors = list(cloud.compute.hypervisors(details=True))
     agents = list(cloud.network.agents(agent_type='Open vSwitch agent'))
+    if not aliases:
+        candidates = []
+        for alias in sorted(request['compute_hosts']):
+            try:
+                # Reuse the same exact identity/readiness checks for every candidate.
+                names = {alias, *request['identities'].get(alias, [])}
+                candidate_services = [s for s in services if s.host in names]
+                candidate_agents = [a for a in agents if a.host in names]
+                nodes = [h for h in hypervisors if h.service_details and
+                         candidate_services and h.service_details.get('host') == candidate_services[0].host]
+                if (len(candidate_services) == len(candidate_agents) == len(nodes) == 1 and
+                    candidate_services[0].status == nodes[0].status == 'enabled' and
+                    candidate_services[0].state == nodes[0].state == 'up' and
+                    candidate_agents[0].is_alive and candidate_agents[0].is_admin_state_up):
+                    candidates.append(alias)
+            except (AttributeError, KeyError):
+                continue
+        if len(candidates) < 2:
+            raise RuntimeError('Cross-compute validation needs at least two ready computes; disable workloads explicitly for migration without these measurements')
+        aliases = candidates[:2]
+    if len(aliases) != 2 or len(set(aliases)) != 2 or any(a not in request['compute_hosts'] for a in aliases):
+        raise RuntimeError('Pair placement requires two distinct inventory compute hosts')
     result = {}
     for index, alias in enumerate(aliases):
         names = {alias, *request['identities'][alias]}

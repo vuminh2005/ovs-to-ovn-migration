@@ -58,6 +58,18 @@ class PreparationTests(unittest.TestCase):
             with self.subTest(name=name),self.assertRaises(ValueError): c.verify(self.root)
             path.write_bytes(old)
 
+    def test_original_host_topology_is_part_of_the_immutable_preparation(self):
+        topology = self.root/'host-topology.json'
+        topology.write_text('{"node-a":{"system_id":"original"}}')
+        value = self.prepare()
+        self.assertEqual(value['topology_sha256'], hashlib.sha256(topology.read_bytes()).hexdigest())
+        topology.write_text('{"node-a":{"system_id":"replacement"}}')
+        with self.assertRaisesRegex(ValueError, 'does not match'):
+            c.verify(self.root)
+        topology.unlink()
+        with self.assertRaisesRegex(ValueError, 'does not match'):
+            c.verify(self.root)
+
     def owned(self, run):
         path=self.parent/('ovs-to-ovn-preparation-'+run); path.mkdir()
         (path/'owner.json').write_text(json.dumps(dict(run=run,directory=str(path),

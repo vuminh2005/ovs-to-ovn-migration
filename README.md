@@ -1,5 +1,9 @@
 # OpenStack ML2/OVS → ML2/OVN migration
 
+Cập nhật 23/10/2026: migration theo vai trò inventory, hỗ trợ nhiều network/compute
+không khóa số node. Xem [thay đổi, thông tin còn thiếu và tương thích lab 4 node](docs/node-independent-migration.md).
+Reset vẫn dành riêng lab 4 node; cấu hình N-S mặc định vẫn là profile lab.
+
 Playbook cho lab Kolla-Ansible 2024.1, giữ workflow Phase 00–13 và bộ đo
 E-W/N-S của bản `playbook new stage.zip`. Bản audit ngày 22/10/2026 sắp xếp
 lại source, cập nhật import/path và bổ sung kiểm tra cấu trúc; kết quả kiểm
@@ -64,7 +68,7 @@ Mặc định reset và migration không thay đổi quota project (`increase_qu
 không giới hạn, không đổi cores/RAM. Xem [hướng dẫn quota](docs/project-quota.md).
 Capacity vẫn kiểm tra sức chứa workload theo quota thực tế.
 
-Giữ nguyên profile lab trong `group_vars/all.yml`, `group_vars/ns-lab.yml` và
+Các giá trị mặc định giữ profile lab trong `group_vars/all.yml`, `group_vars/ns-lab.yml` và
 `group_vars/reset.yml`: Kolla 18.8, Ubuntu 24.04, một controller, network1 và
 hai compute. Hướng dẫn [reset](docs/reset-four-nodes.md), [demo](docs/demo.md)
 và [workflow](docs/cutover-workflow.md) giải thích các điều kiện cụ thể.

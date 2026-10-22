@@ -1,0 +1,17 @@
+---
+- name: Inspect every network host for source router namespaces
+  hosts: network
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Read source router namespaces without Neutron API calls
+      ansible.builtin.command: ip netns list
+      register: router_namespaces
+      changed_when: false
+    - name: "[SAVE] Save complete host observation"
+      ansible.builtin.copy:
+        dest: "{{ router_host_observations }}/host-{{ inventory_hostname | hash('sha256') }}.json"
+        content: "{{ {'host': inventory_hostname, 'namespaces': router_namespaces.stdout_lines} | to_nice_json }}"
+        mode: '0600'
+      delegate_to: localhost

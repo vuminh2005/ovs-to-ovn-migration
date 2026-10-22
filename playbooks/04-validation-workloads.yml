@@ -62,7 +62,7 @@
           true) | from_json).get('shared_external'), 'physnet': ns_physnet, 'mtu': ns_underlay_mtu | int, 'tenant_cidr': ns_tenant_cidr, 'outbound_ip': ns_outbound_ip,
           'inbound_ip': ns_inbound_ip, 'port': ns_tcp_port | int, 'new_port': ns_tcp_new_port | int, 'control_port': ns_tcp_control_port | int, 'icmp_enabled':
           ns_icmp_enabled | bool, 'icmp_sender_logging_enabled': true, 'icmp_sender_export_enabled': true}, 'placement_enabled': true, 'placement': validation_placement_runtime,
-          'pair_d_enabled': validation_pair_d_enabled | bool, 'pair_d_network_host': groups['network'][0], 'tcp_old_port': validation_tcp_old_port | int, 'tcp_new_port':
+          'topology_discovery': true, 'network_hosts': groups['network'], 'pair_d_enabled': validation_pair_d_enabled | bool, 'pair_d_network_host': '', 'tcp_old_port': validation_tcp_old_port | int, 'tcp_new_port':
           validation_tcp_new_port | int, 'tcp_control_port': validation_tcp_control_port | int, 'tcp_interval': validation_tcp_interval_seconds | float, 'tcp_timeout':
           validation_tcp_timeout_seconds | float, 'image': validation_prerequisites_runtime.image.id, 'flavor': validation_prerequisites_runtime.flavor.id, 'prefix':
           validation_name_prefix, 'cidrs': {'pre': validation_pre_cidrs, 'post': validation_post_cidrs}, 'interval': dataplane_probe_interval_seconds | float, 'lifetime':

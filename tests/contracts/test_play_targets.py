@@ -33,7 +33,7 @@ class PlayTargetTests(unittest.TestCase):
                     if play['hosts'] == 'localhost' and ('ansible.builtin.set_fact' in task or
                             task.get('name', '').startswith(('Persist ', 'Mark '))):
                         self.assertNotIn('delegate_to', task)
-        self.assertEqual(count, 10)
+        self.assertEqual(count, 11)
 
 
 if __name__ == '__main__':
