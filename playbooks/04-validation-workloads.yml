@@ -6,6 +6,7 @@
   vars_files:
     - ../group_vars/all.yml
     - ../group_vars/ns-lab.yml
+    - ../group_vars/quota.yml
   tasks:
     - name: "[04] [TIMER] Start phase 04"
       ansible.builtin.command:
@@ -18,6 +19,14 @@
           - start
       run_once: true
       changed_when: false
+
+    - name: "[04] Increase instance quota only when explicitly enabled"
+      ansible.builtin.include_tasks: tasks/project-quota-tasks.yml
+      vars:
+        quota_helper: "{{ playbook_dir }}/../scripts/common/project_quota.py"
+        quota_openrc: "{{ openrc_path }}"
+        quota_evidence_directory: "{{ migration_run_dir }}"
+      when: increase_quota | bool
 
     - name: "[04] Check validation prerequisites and topology"
       ansible.builtin.assert:

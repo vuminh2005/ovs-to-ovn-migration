@@ -139,6 +139,7 @@ class OpenFlowTests(unittest.TestCase):
             value=o.prepare('OpenFlow13,OpenFlow15')
             self.assertTrue(value['changed']); self.assertIn('OpenFlow10',self.protocols)
             self.assertEqual(value['before']['uuid'],value['after']['uuid'])
+            self.assertFalse(o.prepare('OpenFlow13,OpenFlow15')['changed'])
             self.assertFalse(o.prepare('OpenFlow13,OpenFlow15',check=True)['changed'])
         self.assertEqual(sum('set' in args for args in self.calls),1)
         self.assertFalse(any(set(args)&{'del-flows','del-br','del-port','set-controller'} for args in self.calls))

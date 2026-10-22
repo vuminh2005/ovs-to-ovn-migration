@@ -61,6 +61,26 @@ class WorkflowTests(unittest.TestCase):
         self.assertGreater(of,cleanup)
         self.assertLess(of,names.index('Verify neutron_openvswitch_agent is running'))
 
+    def test_quota_changes_require_opt_in_and_capacity_remains_read_only(self):
+        reset=(ROOT/'reset-lab-to-ovs.yml').read_text()
+        source=(ROOT/'scripts/validation/extended_validation.py').read_text()
+        self.assertNotIn('quota20',reset+source)
+        self.assertNotIn('update_quota_set',source)
+        self.assertNotIn('Set only instance quota',reset)
+        defaults=yaml.safe_load((ROOT/'group_vars/quota.yml').read_text())
+        self.assertIs(defaults['increase_quota'],False)
+        self.assertEqual(defaults['instance_quota_limit'],20)
+        for filename in ('reset-lab-to-ovs.yml','playbooks/04-validation-workloads.yml'):
+            data=plays(filename)
+            policy=next(t for p in data for t in p.get('tasks',[])
+                if 'project-quota-tasks.yml' in t.get('ansible.builtin.include_tasks',''))
+            self.assertEqual(policy['when'],'increase_quota | bool')
+        reset_plays=yaml.safe_load(reset)
+        play=next(p for p in reset_plays if p['name']=='Verify source ML2 OVS service containers')
+        self.assertEqual(play['hosts'],'network:compute')
+        task=next(t for t in play['tasks'] if t['name']=='Prepare additive OpenFlow15 baseline before creating any workload')
+        self.assertIs(task['vars']['openflow_check_only'],False)
+
     def test_txt_renderer_and_helpers_are_byte_identical_to_supplied_final_zip(self):
         self.assertEqual(hashlib.sha256((ROOT/'scripts/reporting/report_format.py').read_text().partition('\ndef terminal_summary(')[0].encode()).hexdigest(),
             '3ca3e49f1507dfdf18bcfbfed48139051d98b194580be06be16344e588a62157')

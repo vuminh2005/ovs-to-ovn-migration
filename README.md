@@ -54,6 +54,16 @@ source /etc/kolla/admin-openrc.sh
 ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
+Reset bật và xác minh OpenFlow15 trên `br-int` của network/compute trước khi
+tạo workload. Phase 07 chỉ bổ sung protocol còn thiếu trước downtime; nếu đã
+đủ thì không ghi cấu hình. Phase 08 chỉ xác minh, không thay đổi protocol.
+
+Mặc định reset và migration không thay đổi quota project (`increase_quota: false`).
+Để nâng instance quota lên tối thiểu 20, thêm `-e increase_quota=true` vào lệnh.
+Đổi mức yêu cầu bằng `-e instance_quota_limit=30`. Không hạ quota cao hơn hoặc
+không giới hạn, không đổi cores/RAM. Xem [hướng dẫn quota](docs/project-quota.md).
+Capacity vẫn kiểm tra sức chứa workload theo quota thực tế.
+
 Giữ nguyên profile lab trong `group_vars/all.yml`, `group_vars/ns-lab.yml` và
 `group_vars/reset.yml`: Kolla 18.8, Ubuntu 24.04, một controller, network1 và
 hai compute. Hướng dẫn [reset](docs/reset-four-nodes.md), [demo](docs/demo.md)

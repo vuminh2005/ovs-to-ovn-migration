@@ -12,8 +12,9 @@ cũ trong ZIP là tài liệu lịch sử, không phải patch cần áp dụng 
 ## Thay đổi đã thực hiện
 
 1. Reset dựng uplink N-S bền vững trên network1, trước reboot/deploy.
-2. Quota project đang xác thực là `instances=20`; cores/RAM được đọc trước và
-   sau, chỉ request thay đổi instances. Pre-provision tính cả hai VM tạo sau
+2. Quota project mặc định chỉ đọc. Tùy chọn `increase_quota=true` cho phép nâng
+   instance quota lên tối thiểu `instance_quota_limit` (mặc định 20), trước workload.
+   Pre-provision tính cả hai VM tạo sau
    migration và kiểm tra quota cores/RAM, RAM/disk còn cấp phát trên từng compute.
 3. Thêm đúng hai VM để hoàn thiện ba tình huống ICMP còn thiếu; dùng chung hai
    VM đo liên tục, không dùng VM DHCP/MTU có thể reboot.
@@ -165,7 +166,8 @@ Evidence giữ trong migration run directory, gồm:
 - `extended-resources.json`: UUID/role/placement và local process identity.
 - `ns/`: log listener SNAT và cumulative summaries client FIP trên controller.
 - `ns-outer-policy.json`: thông tin gateway phục vụ kiểm tra policy outer.
-- `quota-instances.json`, `workload-capacity.json`: quota và dự toán cấp phát.
+- `workload-capacity.json`: quota hiện có và dự toán cấp phát. `quota-instances.json`
+  ghi before/after khi bật tùy chọn tăng quota, hoặc có thể tồn tại trong run lịch sử.
 - `migration-report.txt/.json`: kết quả chung với tên mô tả phép đo.
 
 Collector dùng Nova console cho NS guest, không phụ thuộc SSH/ProxyJump đang

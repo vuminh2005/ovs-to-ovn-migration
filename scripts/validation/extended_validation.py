@@ -52,24 +52,6 @@ def add_ping_files(data, cfg):
     return data
 
 
-def quota20(cloud, root):
-    project = cloud.session.get_project_id()
-    if not project:
-        raise RuntimeError('Workload authentication must be project scoped')
-    before = cloud.compute.get_quota_set(project)
-    original = {k: getattr(before, k) for k in ('instances', 'cores', 'ram')}
-    # SDK 3.x expects a QuotaSet/URI attribute; SDK 4.x accepts project IDs.
-    # Explicit project_id retains the supported compatibility path in both.
-    cloud.compute.update_quota_set(project, project_id=project, instances=20)
-    after = cloud.compute.get_quota_set(project)
-    row = dict(project=project, before=original,
-               after={k: getattr(after, k) for k in ('instances', 'cores', 'ram')})
-    row['status'] = 'PASS' if after.instances == 20 and after.cores == original['cores'] and after.ram == original['ram'] else 'FAIL'
-    save(run_path(root, 'quota-instances.json'), row)
-    if row['status'] != 'PASS':
-        raise RuntimeError('Quota verification failed: only instances may change')
-
-
 class Extended:
     def __init__(self, validation):
         self.v = validation
@@ -95,7 +77,11 @@ class Extended:
     def capacity(self):
         if not (self.matrix or self.ns):
             return
-        quota20(self.cloud, self.root)
+        project = self.cloud.session.get_project_id()
+        if not project:
+            raise RuntimeError('Workload authentication must be project scoped')
+        # Read the configured quota once; migration never changes project limits.
+        quota_set = self.cloud.compute.get_quota_set(project)
         flavor = self.cloud.compute.find_flavor(self.cfg['flavor'], ignore_missing=False)
         servers = list(self.cloud.compute.servers(all_projects=False))
         owned = [s for s in servers if (s.metadata or {}).get('ovn_migration_run') == self.cfg['run']]
@@ -106,7 +92,7 @@ class Extended:
         for key, demand, used in [('instances', count, len(servers)),
                                   ('cores', remaining*flavor.vcpus, limits.total_cores_used),
                                   ('ram', remaining*flavor.ram, limits.total_ram_used)]:
-            quota = getattr(self.cloud.compute.get_quota_set(self.cloud.session.get_project_id()), key)
+            quota = getattr(quota_set, key)
             needed = used+remaining if key == 'instances' else used+demand
             checks[key] = dict(quota=quota, projected=needed, status='PASS' if quota == -1 or needed <= quota else 'FAIL')
         nodes = list(self.cloud.compute.hypervisors(details=True))

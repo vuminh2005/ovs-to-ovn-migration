@@ -16,9 +16,41 @@ evidence phải FAIL/UNAVAILABLE. Đây không phải kết quả chạy migrati
 
 ## Kết quả và thay đổi
 
+### Tùy chọn tăng quota theo yêu cầu mới
+
+Thêm `group_vars/quota.yml`: `increase_quota: false`, `instance_quota_limit: 20`.
+Reset và phase 04 gọi task quota chỉ khi bật cờ. Helper chung đọc/PUT/đọc lại
+quota của project đang xác thực, chỉ sửa instances và không hạ mức cao hơn hoặc
+không giới hạn. Capacity trong `extended_validation.py` vẫn chỉ đọc quota.
+Evidence được ghi khi bật tùy chọn. Xem [lệnh chạy](project-quota.md).
+
+Test có các trường hợp default tắt, bật mức mặc định/tùy chỉnh, quota đã đủ,
+unlimited, thiếu project scope, lỗi quyền và xác minh cores/RAM. Các task reset
+và migration thực tế được chạy qua Ansible local; SDK HTTP test kiểm tra payload
+chỉ chứa instances và đúng project URL. OpenFlow và gateway workflow không đổi.
+
+### Cập nhật sau lỗi reset trên lab
+
+Reset dừng tại task quota do Python nhúng chỉ thêm `scripts/` vào `sys.path`
+rồi import `extended_validation` theo layout phẳng. Đợt audit đầu chưa bắt
+được dạng bootstrap truyền đường dẫn qua argv này. Theo yêu cầu mới, đã bỏ
+toàn bộ task đổi quota khỏi reset và bỏ helper/đường gọi tự đổi quota trong
+migration. Capacity chỉ đọc quota project một lần và vẫn dừng khi thiếu.
+
+Static checker nay kiểm tra bootstrap trước mọi import helper trong Python
+nhúng; regression test tái lập đúng mẫu lỗi argv. SDK/HTTP test chứng minh
+capacity chỉ GET quota và không PUT, cả khi quota đủ và thiếu.
+
+Reset khai báo rõ chế độ chuẩn bị OpenFlow (`openflow_check_only: false`) cho
+network/compute trước workload. Helper giữ bridge/protocol cũ, chỉ ghi protocol
+khi thiếu; test bổ sung chứng minh prepare chạy lặp không ghi lại. Phase 08
+vẫn chỉ kiểm tra, không thay đổi tên task hoặc thứ tự.
+
+### Đợt sắp xếp source ban đầu
+
 | Mức | Phát hiện | Xử lý |
 |---|---|---|
-| Vừa | `migration_report.py` thực thi đọc/ghi ngay khi import; `network_semantics.py` đọc argv và có thể mở kết nối cloud ngay khi import | Đưa thực thi vào `main()` và guard `__main__`; giữ phép tính/điều kiện và CLI hợp lệ. Kiểm tra import cả 47 module từ cwd khác, thêm test before/after semantics |
+| Vừa | `migration_report.py` thực thi đọc/ghi ngay khi import; `network_semantics.py` đọc argv và có thể mở kết nối cloud ngay khi import | Đưa thực thi vào `main()` và guard `__main__`; giữ phép tính/điều kiện và CLI hợp lệ. Kiểm tra import cả 48 module từ cwd khác, thêm test before/after semantics |
 | Vừa | Đường dẫn source phụ thuộc sibling/`parent.parent`, rải trong Python, YAML, plugin và Python inline; dễ gãy khi thêm/di chuyển file | Registry `_paths.py`, cập nhật call site và static path checks; test thật chuỗi Python → Ansible → staged helper |
 | Vừa | Đổi vị trí `ns_probe.py` có thể làm reset bỏ sót orphan được khởi chạy ở vị trí cũ khi checkpoint đã bị xóa | Chỉ nhận thêm đường dẫn cũ của cùng checkout; vẫn kiểm tra argv/config/backup scope, identity và pidfd; không nhận probe của checkout khác |
 | Nhẹ | 47 helper và 52 module test ban đầu nằm phẳng; tên file khó thể hiện trách nhiệm | Chia tám nhóm source và tám nhóm test; dùng đường dẫn ROOT chung cho test và import liên nhóm rõ ràng |
@@ -34,8 +66,9 @@ retry hoặc lịch sử chỉ vì chúng không nằm trong luồng mặc đị
 
 - `group_vars/all.yml`, `group_vars/ns-lab.yml`, `group_vars/reset.yml` và
   `inventory.example` giống bản gốc từng byte.
-- Tên play, tên task và thứ tự task của cả 14 phase giữ nguyên, gồm task
-  OpenFlow phase 08. Không thêm gateway synchronization/readiness gate.
+- Tên play của cả 14 phase và thứ tự các task cũ giữ nguyên, gồm task OpenFlow
+  phase 08. Phase 04 thêm một task tăng quota có cờ bật rõ ràng trước workload.
+  Không thêm gateway synchronization/readiness gate.
 - `run_layout.py` giống bản gốc từng byte: không chuyển dữ liệu run hay nâng
   schema của checkpoint lịch sử.
 - `report_format.py` giống bản gốc từng byte. Các khóa Pair A–D, format TXT,
@@ -48,10 +81,10 @@ retry hoặc lịch sử chỉ vì chúng không nằm trong luồng mặc đị
 
 ## Kiểm chứng
 
-**643 test PASS, không có test bỏ qua; 15/15 entrypoint/transport qua kiểm tra
-cú pháp Ansible.** 569 cảnh báo là deprecation của dependency trong bộ test.
-Bản mới có 119 file Python và 38 YAML; static checks đối chiếu 264 tham chiếu
-source, 58 liên kết tài liệu hiện hành, 114 khối Bash và 14 khối Python nhúng.
+**655 test PASS, không có test bỏ qua; 15/15 entrypoint/transport qua kiểm tra
+cú pháp Ansible.** 575 cảnh báo là deprecation của dependency trong bộ test.
+Bản mới có 122 file Python và 40 YAML; static checks đối chiếu 270 tham chiếu
+source, 62 liên kết tài liệu hiện hành, 114 khối Bash và 13 khối Python nhúng.
 
 Kết quả máy đọc nằm trong [audit-validation.json](audit-validation.json).
 Lệnh tái lập từ venv đã activate:
@@ -65,7 +98,10 @@ pytest -q
 
 - Bộ gốc có 636 test. Lượt đầu thiếu `ansible-playbook` trong PATH gây ba lỗi
   môi trường; chạy lại các ca tương ứng với đúng PATH đều PASS.
-- Bản mới bổ sung bảy test, giữ toàn bộ test cũ. Bao gồm isolated import,
+- Đợt audit đầu bổ sung bảy test. Đợt sửa quota thay bốn test chỉnh quota
+  bằng test chỉ đọc và bổ sung ba regression test. Đợt quota opt-in bổ sung
+  chín test policy/Ansible/SDK HTTP. Tổng hiện tại là 655.
+  Phạm vi gồm isolated import,
   remote/guest bundles, old-path orphan ownership, callback abort cho mọi route,
   network semantics CLI và task include OpenFlow ở cả root/reset lẫn phase.
 - 15 entrypoint/transport qua Ansible syntax check; migration entrypoint import

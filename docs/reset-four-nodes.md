@@ -108,8 +108,11 @@ PID. Không bỏ qua gate hoặc dùng `pkill` theo tên chung.
 
 Network1 giữ IP `10.1.0.90/24` và MAC của eth1 trên `br-underlay`;
 Netplan và service veth tạo lại `ns-uplink ↔ ns-ex` qua reboot. Tunnel trên
-network1 dùng `br-underlay`, hai compute dùng `eth1`. Sau deploy reset đặt
-quota **instances=20**, giữ quota cores/RAM và kiểm tra lại.
+network1 dùng `br-underlay`, hai compute dùng `eth1`. Sau deploy reset chuẩn
+bị OpenFlow15 trên `br-int` trước workload, giữ các protocol hiện có. Reset
+mặc định không thay đổi quota. Có thể bật `-e increase_quota=true` để nâng
+instance quota lên tối thiểu 20; `-e instance_quota_limit=30` đổi mức yêu cầu.
+Xem [cách dùng chung cho reset/migration](project-quota.md).
 
 ## Lệnh chạy cho lần reset sau
 

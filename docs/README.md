@@ -3,6 +3,7 @@
 | Nội dung | Hướng dẫn |
 |---|---|
 | Migrate/reset và kiểm thử | [README chính](../README.md) |
+| Bật tăng instance quota | [project-quota.md](project-quota.md) |
 | Cấu trúc code và cách thêm file | [structure.md](structure.md) |
 | Audit bản này | [audit-current.md](audit-current.md) |
 | Đường dẫn cũ → mới | [path-map.tsv](path-map.tsv) |

@@ -950,6 +950,7 @@
       ansible.builtin.include_tasks: playbooks/tasks/openflow-preparation-tasks.yml
       vars:
         openflow_protocols: "{{ reset_br_int_protocols }}"
+        openflow_check_only: false
         openflow_evidence_directory: "{{ hostvars['localhost']['reset_run_dir'] }}"
 
     - name: Verify neutron_openvswitch_agent is running
@@ -1034,6 +1035,7 @@
   vars_files:
     - group_vars/reset.yml
     - group_vars/ns-lab.yml
+    - group_vars/quota.yml
   tasks:
     - name: Verify persistent uplink and effective source Kolla bridge mapping
       ansible.builtin.command:
@@ -1041,19 +1043,14 @@
       delegate_to: network1
       changed_when: false
 
-    - name: Set only instance quota to 20 in the authenticated workload project
-      ansible.builtin.shell: |
-        set -euo pipefail
-        source {{ (reset_kolla_venv + '/bin/activate') | quote }}
-        source /etc/kolla/admin-openrc.sh
-        python3 - {{ (playbook_dir + '/scripts') | quote }} {{ reset_run_dir | quote }} <<'PYCODE'
-        import sys, pathlib, openstack
-        sys.path.insert(0, sys.argv[1])
-        from extended_validation import quota20
-        quota20(openstack.connect(), pathlib.Path(sys.argv[2]))
-        PYCODE
-      args:
-        executable: /bin/bash
+    - name: Increase instance quota only when explicitly enabled
+      ansible.builtin.include_tasks: playbooks/tasks/project-quota-tasks.yml
+      vars:
+        quota_helper: "{{ playbook_dir }}/scripts/common/project_quota.py"
+        quota_openrc: /etc/kolla/admin-openrc.sh
+        quota_venv_activate: "{{ reset_kolla_venv }}/bin/activate"
+        quota_evidence_directory: "{{ reset_run_dir }}"
+      when: increase_quota | bool
 
     - name: Verify rendered Neutron MTU overrides on controller
       ansible.builtin.shell: |

@@ -1,0 +1,20 @@
+---
+# Included only for increase_quota=true; callers supply their controller paths.
+- name: "[QUOTA] Validate requested instance quota"
+  ansible.builtin.assert:
+    that:
+      - (instance_quota_limit | string) is match('^[1-9][0-9]*$')
+    fail_msg: instance_quota_limit must be a positive integer.
+
+- name: "[QUOTA] [SAVE] Increase only instance quota when below the requested limit"
+  ansible.builtin.shell: |
+    set -euo pipefail
+    if [ -n {{ quota_venv_activate | default('') | quote }} ]; then
+      source {{ quota_venv_activate | default('') | quote }}
+    fi
+    source {{ quota_openrc | quote }}
+    python3 {{ quota_helper | quote }} {{ quota_evidence_directory | quote }} --limit {{ instance_quota_limit | int }}
+  args:
+    executable: /bin/bash
+  register: instance_quota_operation
+  changed_when: instance_quota_operation.rc == 0 and (instance_quota_operation.stdout | from_json).changed | bool

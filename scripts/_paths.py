@@ -39,6 +39,7 @@ SCRIPT_FILES = {
     "post_db_recovery.py": "recovery/post_db_recovery.py",
     "pre_stage_recovery.py": "recovery/pre_stage_recovery.py",
     "prepare_migration_images.py": "migration/prepare_migration_images.py",
+    "project_quota.py": "common/project_quota.py",
     "provider_associations.py": "migration/provider_associations.py",
     "report_format.py": "reporting/report_format.py",
     "reset_demo.py": "reset/reset_demo.py",
@@ -59,6 +60,7 @@ SCRIPT_FILES = {
     "workload_validation.py": "validation/workload_validation.py",
 }
 PLAYBOOK_FILES = {
+    "project-quota-tasks.yml": "tasks/project-quota-tasks.yml",
     "dataplane-capture-tasks.yml": "transport/dataplane-capture-tasks.yml",
     "diagnostics-checkpoint-tasks.yml": "tasks/diagnostics-checkpoint-tasks.yml",
     "diagnostics-control.yml": "transport/diagnostics-control.yml",

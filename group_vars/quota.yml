@@ -1,0 +1,5 @@
+---
+# Opt in for this invocation; preserve existing instance/core/RAM quotas by default.
+increase_quota: false
+# Raise instances to at least this value. Never lower a larger or unlimited quota.
+instance_quota_limit: 20

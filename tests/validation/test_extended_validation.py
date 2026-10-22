@@ -14,7 +14,7 @@ import yaml
 
 from tests.support import ROOT
 sys.path.insert(0, str(ROOT/'scripts'))
-from extended_validation import Extended, FLOW_NAMES, quota20
+from extended_validation import Extended, FLOW_NAMES
 from ns_probe import Client, Stats, Wire
 from ns_underlay import netplan_update
 from workload_validation import save, validation_ready
@@ -188,20 +188,18 @@ class ExtensionTests(unittest.TestCase):
         self.assertEqual(result['status'], 'FAIL')
         self.assertIsNone(result['directions']['snat']['streams']['held']['attempts'])
 
-    def test_only_instance_quota_is_changed(self):
-        cloud = Mock()
-        cloud.session.get_project_id.return_value = 'project'
-        cloud.compute.get_quota_set.side_effect = [NS(instances=10, cores=20,ram=50000), NS(instances=20,cores=20,ram=50000)]
-        quota20(cloud, self.root)
-        cloud.compute.update_quota_set.assert_called_once_with('project', project_id='project', instances=20)
-        self.assertEqual(json.loads((self.root/'quota-instances.json').read_text())['status'], 'PASS')
+    def test_capacity_requires_project_scope_without_changing_quota(self):
+        self.v.cloud.session.get_project_id.return_value = None
+        with self.assertRaisesRegex(RuntimeError, 'project scoped'):
+            self.x.capacity()
+        self.v.cloud.compute.get_quota_set.assert_not_called()
+        self.v.cloud.compute.update_quota_set.assert_not_called()
 
-    def test_changed_cpu_quota_fails_verification(self):
-        cloud = Mock()
-        cloud.session.get_project_id.return_value = 'project'
-        cloud.compute.get_quota_set.side_effect = [NS(instances=10,cores=20,ram=50000), NS(instances=20,cores=40,ram=50000)]
-        with self.assertRaisesRegex(RuntimeError, 'only instances'):
-            quota20(cloud, self.root)
+    def test_disabled_extended_workloads_do_not_read_or_change_quota(self):
+        self.cfg['ew_matrix_enabled'] = False
+        self.x.capacity()
+        self.v.cloud.compute.get_quota_set.assert_not_called()
+        self.v.cloud.compute.update_quota_set.assert_not_called()
 
 
 class NetplanTests(unittest.TestCase):

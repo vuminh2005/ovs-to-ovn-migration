@@ -2,7 +2,7 @@
 
 | Nhóm | Chức năng |
 |---|---|
-| `common/` | Layout run, phase schema, diagnostic policy, ownership external dùng chung |
+| `common/` | Layout run, phase schema, diagnostic policy, shared ownership, instance quota opt-in |
 | `migration/` | Chuẩn bị cutover/OpenFlow/image, topology, provider associations, network semantics |
 | `validation/` | Điều phối workload, placement/capacity, DHCP/MTU, TCP, readiness và chờ phục hồi |
 | `probes/` | Chương trình chạy trong guest và helper điều khiển probe TCP/ICMP |

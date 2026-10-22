@@ -76,5 +76,7 @@ chung chỉ vì còn được kiểm tra cú pháp.
 
 Chạy bốn lệnh kiểm tra trong README. `check_project.py` kiểm tra mọi Python/YAML,
 duplicate key, tham chiếu source tĩnh, Bash/Python nhúng và liên kết tài liệu.
+Python nhúng import helper của project phải gọi `_paths.configure()` trước
+import; chỉ thêm thư mục `scripts/` vào `sys.path` không đủ với source đã nhóm.
 Nó không đánh giá đầy đủ Jinja runtime hay trạng thái cloud; Ansible integration
 và kiểm chứng lab giải quyết các lớp đó.

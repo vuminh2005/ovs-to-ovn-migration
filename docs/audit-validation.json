@@ -9,7 +9,7 @@
   },
   "reorganized_files": 128,
   "script_groups": 8,
-  "test_modules": 55,
+  "test_modules": 57,
   "environment": {
     "python": "3.12.14",
     "ansible_core": "2.16.19",
@@ -20,12 +20,12 @@
     "ruff": "0.17.1"
   },
   "pytest": {
-    "tests": 643,
+    "tests": 655,
     "failures": 0,
     "errors": 0,
     "skipped": 0,
-    "warnings": 569,
-    "reported_seconds": 166.37
+    "warnings": 575,
+    "reported_seconds": 167.71
   },
   "ansible_syntax": {
     "passed": 15,
@@ -45,17 +45,45 @@
     "scripts/ns_probe.py:Stats": true,
     "scripts/ns_probe.py:Client": true,
     "scripts/ns_probe.py:Server": true,
-    "all_phase_and_task_names_and_order": true
+    "all_phase_and_task_names_and_order": false,
+    "approved_new_phase_task": "[04] Increase instance quota only when explicitly enabled",
+    "phase_titles_and_existing_task_order_unchanged": true
   },
   "verification_scope": "Offline fixtures/local subprocesses only; no live SSH, migration, reset or OpenStack API calls against the lab.",
   "static_checks": {
     "status": "PASS",
-    "python_files": 119,
-    "yaml_files": 38,
-    "local_path_references": 264,
-    "document_links": 58,
+    "python_files": 122,
+    "yaml_files": 40,
+    "local_path_references": 270,
+    "document_links": 62,
     "bash_blocks": 114,
-    "embedded_python_blocks": 14,
+    "embedded_python_blocks": 13,
     "errors": []
-  }
+  },
+  "previous_validation": {
+    "pytest": {
+      "tests": 643,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "warnings": 569,
+      "reported_seconds": 166.37
+    },
+    "revision": "initial source reorganization"
+  },
+  "revision_reason": "Add opt-in instance quota increase for reset and migration: increase_quota=false, instance_quota_limit=20; preserve higher/unlimited instances and cores/RAM.",
+  "validation_history": [
+    {
+      "revision": "Remove automatic quota updates from reset and migration; read-only capacity check; explicit OpenFlow preparation during reset; detect missing bootstrap in embedded Python.",
+      "pytest": {
+        "tests": 646,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "warnings": 563,
+        "reported_seconds": 166.52
+      }
+    }
+  ],
+  "source_helpers": 48
 }

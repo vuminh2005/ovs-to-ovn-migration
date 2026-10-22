@@ -46,6 +46,25 @@ def mappings(value):
             yield from mappings(child)
 
 
+def inline_project_import_errors(tree):
+    """Inline Python has no source-file bootstrap: load grouped helpers first."""
+    modules = {p.stem for p in (ROOT/'scripts').glob('*/*.py')}
+    setup_names = {name.asname or name.name for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == '_paths'
+        for name in node.names if name.name == 'configure'}
+    setup_positions = [(node.lineno, node.col_offset) for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id in setup_names]
+    errors = []
+    for node in ast.walk(tree):
+        names = ([node.module.split('.')[0]] if isinstance(node, ast.ImportFrom) and node.module else
+                 [name.name.split('.')[0] for name in node.names] if isinstance(node, ast.Import) else [])
+        for name in set(names) & modules:
+            if not any(position < (node.lineno, node.col_offset) for position in setup_positions):
+                errors.append(f'inline import {name!r} at line {node.lineno} requires _paths.configure() first')
+    return errors
+
+
 def main():
     errors = []
     counts = dict(python_files=0, yaml_files=0, local_path_references=0,
@@ -123,7 +142,9 @@ def main():
                     continue
                 counts['embedded_python_blocks'] += 1
                 try:
-                    ast.parse('\n'.join(lines[i+1:end]))
+                    tree = ast.parse('\n'.join(lines[i+1:end]))
+                    for error in inline_project_import_errors(tree):
+                        fail(path, error)
                 except SyntaxError as exc:
                     fail(path, 'embedded Python: '+str(exc))
         text = path.read_text()
