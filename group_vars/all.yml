@@ -51,6 +51,7 @@ binding_timeout_base_seconds: 300
 binding_timeout_seconds_per_port: 2
 binding_timeout_max_seconds: 1800
 binding_poll_interval_seconds: 5
+metadata_readiness_timeout_seconds: 300
 
 # Automatic post-migration control-plane smoke test. It creates a temporary
 # network, asserts that it is Geneve, then deletes it. No VM/image/flavor is

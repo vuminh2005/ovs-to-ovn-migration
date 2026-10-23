@@ -1,5 +1,6 @@
 - name: "Phase 06 - Prepare OVN configuration and network MTU"
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -74,6 +75,28 @@
         {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} genconfig --tags neutron
       args:
         executable: /bin/bash
+
+    - name: "[06] Prepare disabled OVN metadata containers before API freeze"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../scripts/migration/prepare_metadata.py"
+          - "{{ migration_run_dir }}"
+          - --kolla-ansible
+          - "{{ kolla_ansible_bin_runtime }}"
+          - --inventory
+          - "{{ kolla_inventory_runtime }}"
+          - --globals
+          - "{{ kolla_globals_path }}"
+      register: metadata_preparation_result
+
+    - name: "[06] Require preparation for every configured metadata host"
+      ansible.builtin.assert:
+        that:
+          - (metadata_preparation_result.stdout | from_json).status == 'PASS'
+          - (metadata_preparation_result.stdout | from_json).hosts.keys() | list | sort == groups['neutron-ovn-metadata-agent'] | sort
+          - groups['neutron-ovn-metadata-agent'] | length > 0
+          - groups['neutron-ovn-metadata-agent'] | difference(chassis_hosts_runtime) | length == 0
 
 - name: "Phase 06 - Resolve generated OVN database endpoints"
   hosts: control

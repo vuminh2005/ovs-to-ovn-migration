@@ -16,7 +16,7 @@
 | Source | Trách nhiệm | Test |
 |---|---|---|
 | `scripts/common/` | Run layout, phase schema, diagnostic policy, shared-external ownership | `tests/common/`, shared-external tests |
-| `scripts/migration/` | Preparation/OpenFlow/image, provider associations, source topology, network semantics | `tests/migration/`, `tests/contracts/` |
+| `scripts/migration/` | Preparation/OpenFlow/image, chuyển giao metadata, provider associations, source topology, network semantics | `tests/migration/`, `tests/contracts/` |
 | `scripts/validation/` | Workload orchestration, placement, prerequisites, TCP, readiness, chờ phục hồi | `tests/validation/`, `tests/recovery/` |
 | `scripts/probes/` | Chương trình guest và TCP/ICMP control helpers | validation/diagnostics tests |
 | `scripts/diagnostics/` | PCAP, host observers, log transfer/reconcile, OVN evidence | `tests/diagnostics/` |

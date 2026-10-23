@@ -8,9 +8,10 @@ downtime tiết kiệm được trước khi chạy lại lab.
 
 | Vị trí | Công việc |
 |---|---|
+| Phase 06, trước freeze | Tạo cấu hình và container OVN metadata bằng Kolla; container giữ trạng thái `created`, service bị disable |
 | Phase 07, trước freeze | Lấy image Neutron, tạo thư mục helper có ownership, tính timeout binding, copy danh sách VM port đã chốt, thêm OpenFlow15 vào protocol set hiện có |
 | Ngay trước freeze | Chờ snapshot diagnostics `pre-freeze` thực hiện xong; kiểm tra readiness và capture/anchor Group A đang có |
-| Phase 07–10 sau freeze | DB migration/provider verification, ARM listener, stop agents, deploy controller/metadata, chờ binding, cleanup rồi restart Neutron như cũ |
+| Phase 07–10 sau freeze | DB migration/provider verification, ARM listener; phase 08 dừng metadata cũ rồi start metadata đã chuẩn bị, stop các agent còn lại, deploy controller, chờ binding, cleanup rồi restart Neutron |
 | Đầu phase 11, API đã phục hồi | Quan sát các probe đang chạy đến khi có thành công mới; sau đó bật sampling bổ sung và lấy snapshot diagnostics sau phục hồi |
 | Tiếp theo | Snapshot tài nguyên AFTER, so sánh, smoke test, validation/workload mới và remediation |
 
@@ -104,7 +105,8 @@ ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
 Giữ nguyên điều kiện xác nhận reset hiện có trong `group_vars/reset.yml`.
-Metadata deploy, thứ tự cleanup → restart Neutron, MTU/DHCP remediation, NAT
+Metadata được chuyển sang luồng [chuẩn bị trước freeze](metadata-preparation.md).
+Thứ tự cleanup → restart Neutron, MTU/DHCP remediation, NAT
 profile, source-port preservation và các tiêu chí chứng nhận traffic không đổi.
 
 ## External dùng chung và bộ demo (17/10/2026)

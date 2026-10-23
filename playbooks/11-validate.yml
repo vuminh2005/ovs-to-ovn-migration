@@ -133,6 +133,41 @@
         executable: /bin/bash
       when: validation_ephemeral_network | bool
 
+- name: "Phase 11 - Check prepared metadata after API and forwarding recovery"
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: "[11] Load metadata preparation when this run used create-only staging"
+      ansible.builtin.set_fact:
+        metadata_preparation_runtime: "{{ lookup('file', (migration_run_dir | run_file('metadata-preparation.json')), errors='ignore') | default('{}', true) | from_json }}"
+
+    - name: "[11] Verify metadata agents registered on their expected chassis"
+      ansible.builtin.script:
+        cmd: "../scripts/migration/ovn_ready.py metadata {{ {'sb': ovn_sb_connection_runtime, 'hosts': lookup('file', (migration_run_dir | run_file('host-topology.json'))) | from_json, 'metadata_hosts': groups['neutron-ovn-metadata-agent'], 'timeout': metadata_readiness_timeout_seconds | int, 'poll': binding_poll_interval_seconds | float} | to_json | quote }}"
+        executable: python3
+      changed_when: false
+      delegate_to: "{{ ovn_cli_host_runtime }}"
+      when: metadata_preparation_runtime.get('status') == 'PASS'
+
+- name: "Phase 11 - Check activated metadata service health"
+  hosts: neutron-ovn-metadata-agent
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: "[11] Check prepared metadata container health before workload validation"
+      ansible.builtin.script:
+        cmd: "../scripts/migration/metadata_handoff.py ready {{ {'run': hostvars['localhost']['migration_run_id'], 'expected': hostvars['localhost']['metadata_preparation_runtime'].hosts[inventory_hostname], 'timeout': metadata_readiness_timeout_seconds | int, 'poll': binding_poll_interval_seconds | float} | to_json | quote }}"
+        executable: python3
+      changed_when: false
+      when: hostvars['localhost']['metadata_preparation_runtime'].get('status') == 'PASS'
+
 - name: "Phase 11 - Check OVN replaces the legacy tunnel dataplane"
   hosts: network:compute
   gather_facts: false

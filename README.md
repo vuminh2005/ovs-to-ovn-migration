@@ -7,6 +7,12 @@ Reset vẫn dành riêng lab 4 node; cấu hình N-S mặc định vẫn là pro
 Đã sửa lỗi đọc OVS `external_ids` ở precheck và kiểm tra sau cutover.
 Xem [nguyên nhân và kiểm chứng](docs/host-network-fix.md).
 
+Metadata được chuẩn bị trước downtime ở phase 06: container chưa chạy, service
+bị disable. Phase 08 dừng metadata cũ trên từng host rồi start container đã
+chuẩn bị, trước deploy controller và không chờ chassis tại bước start. Xem
+[luồng chuyển giao metadata](docs/metadata-preparation.md). Bản sửa này chưa
+thay đổi gateway scheduling.
+
 Playbook cho lab Kolla-Ansible 2024.1, giữ workflow Phase 00–13 và bộ đo
 E-W/N-S của bản `playbook new stage.zip`. Bản audit ngày 22/10/2026 sắp xếp
 lại source, cập nhật import/path và bổ sung kiểm tra cấu trúc; kết quả kiểm
@@ -22,7 +28,7 @@ chứng nằm trong [báo cáo audit](docs/audit-current.md).
 | Resume có kiểm tra checkpoint | [playbooks/recovery/](playbooks/recovery/README.md) |
 | Task dùng lại / playbook vận chuyển helper | `playbooks/tasks/`, `playbooks/transport/` |
 | Python theo chức năng | [scripts/](scripts/README.md) |
-| Callback và filter Ansible | [plugins/](plugins/README.md) |
+| Callback, filter và adapter tạo container | [plugins/](plugins/README.md) |
 | Test theo chức năng | [tests/](tests/README.md) |
 | Retry chuyên biệt và tài liệu cũ | [archive/](archive/README.md), `docs/history/` |
 | Cấu trúc và bản đồ đường dẫn cũ → mới | [docs/structure.md](docs/structure.md), [docs/path-map.tsv](docs/path-map.tsv) |

@@ -112,6 +112,18 @@
         openflow_protocols: "{{ br_int_protocols }}"
         openflow_evidence_directory: "{{ hostvars['localhost']['migration_run_dir'] }}"
 
+- name: "Phase 07 - Verify metadata remains prepared without changing source service"
+  hosts: neutron-ovn-metadata-agent
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  tasks:
+    - name: "[07] Verify prepared metadata container and disabled service before freeze"
+      ansible.builtin.script:
+        cmd: "../scripts/migration/metadata_handoff.py verify {{ {'run': hostvars['localhost']['migration_run_id'], 'expected': (hostvars['localhost']['metadata_preparation_result'].stdout | from_json).hosts[inventory_hostname]} | to_json | quote }}"
+        executable: python3
+      changed_when: false
+
 - name: "Phase 07 - Check workloads before stopping Neutron API"
   hosts: localhost
   any_errors_fatal: true

@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import subprocess
 import time
+import uuid
 
 
 def decode(value):
@@ -15,6 +16,8 @@ def decode(value):
             return [decode(v) for v in value[1]]
         if value[0] in ('uuid', 'named-uuid'):
             return value[1]
+        if value[0] == 'map':
+            return dict(value[1])
     return value
 
 
@@ -57,6 +60,21 @@ def ports_missing(ports, rows):
     return missing
 
 
+def metadata_missing(expected, rows):
+    missing = []
+    for host, wanted in expected.items():
+        matches = [r for r in rows if r['name'] == wanted['system_id']]
+        if len(matches) != 1:
+            missing.append(host + ': missing/duplicate Chassis_Private identity')
+            continue
+        agent = matches[0]['external_ids'].get('neutron:ovn-metadata-id')
+        try:
+            uuid.UUID(agent)
+        except (ValueError, TypeError, AttributeError):
+            missing.append(host + ': metadata agent has not registered')
+    return missing
+
+
 def wait(cfg, mode):
     deadline = time.monotonic()+cfg['timeout']
     ports = []
@@ -68,6 +86,10 @@ def wait(cfg, mode):
     elif len({v['system_id'] for v in cfg['hosts'].values()}) != len(cfg['hosts']):
         raise RuntimeError('Duplicate OVS system-id across inventory hosts')
     missing = []
+    if mode == 'metadata':
+        if not cfg.get('metadata_hosts') or any(h not in cfg['hosts'] for h in cfg['metadata_hosts']):
+            raise ValueError('Metadata placements must have known chassis identities')
+        expected_metadata = {h: cfg['hosts'][h] for h in cfg['metadata_hosts']}
     while time.monotonic() < deadline:
         def read(table, columns):
             remaining = deadline-time.monotonic()
@@ -78,10 +100,14 @@ def wait(cfg, mode):
             if mode == 'chassis':
                 missing = chassis_missing(cfg['hosts'], read('Chassis', ['name', 'hostname', 'encaps']),
                     read('Encap', ['_uuid', 'type', 'ip']))
+            elif mode == 'metadata':
+                missing = metadata_missing(expected_metadata,
+                    read('Chassis_Private', ['name', 'external_ids']))
             else:
                 missing = ports_missing(ports, read('Port_Binding', ['logical_port', 'chassis', 'up']))
             if not missing:
-                return dict(status='PASS', checked=len(ports) if mode == 'bindings' else len(cfg['hosts']))
+                return dict(status='PASS', checked=(len(ports) if mode == 'bindings' else
+                    len(expected_metadata) if mode == 'metadata' else len(cfg['hosts'])))
         except (subprocess.SubprocessError, TimeoutError) as exc:
             missing = [str(exc)]
         remaining = deadline-time.monotonic()
@@ -92,7 +118,7 @@ def wait(cfg, mode):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('chassis', 'bindings'))
+    parser.add_argument('mode', choices=('chassis', 'bindings', 'metadata'))
     parser.add_argument('config')
     args = parser.parse_args()
     config = json.loads(args.config)

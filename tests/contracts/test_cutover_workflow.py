@@ -14,6 +14,23 @@ def tasks(name):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_metadata_is_prepared_before_freeze_and_started_without_waiting_for_controller(self):
+        phase06 = str(plays('playbooks/06-target-config.yml'))
+        self.assertTrue(plays('playbooks/06-target-config.yml')[0]['any_errors_fatal'])
+        self.assertIn('scripts/migration/prepare_metadata.py', phase06)
+        phase07 = tasks('playbooks/07-migrate-db.yml')
+        verify = next(i for i,t in enumerate(phase07) if 'metadata_handoff.py verify' in str(t))
+        freeze = next(i for i,t in enumerate(phase07) if t['name'] == '[07] [TIMER] Start Neutron API downtime')
+        self.assertLess(verify, freeze)
+        phase08 = tasks('playbooks/08-cutover.yml')
+        activate = next(i for i,t in enumerate(phase08) if 'metadata_handoff.py start' in str(t))
+        controller = next(i for i,t in enumerate(phase08) if t['name'] == '[08] Deploy OVN controller')
+        self.assertLess(activate, controller)
+        self.assertNotIn('deploy --tags neutron', str(phase08))
+        self.assertNotIn('metadata_handoff.py ready', str(phase08))
+        self.assertIn('metadata_handoff.py ready', str(tasks('playbooks/11-validate.yml')))
+        self.assertIn('ovn_ready.py metadata', str(tasks('playbooks/11-validate.yml')))
+
     def test_preparation_and_existing_capture_check_precede_freeze(self):
         rows=tasks('playbooks/07-migrate-db.yml')
         names=[row['name'] for row in rows]

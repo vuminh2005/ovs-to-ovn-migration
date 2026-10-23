@@ -18,6 +18,8 @@ SCRIPT_FILES = {
     "extended_validation.py": "validation/extended_validation.py",
     "host_network.py": "migration/host_network.py",
     "ovn_ready.py": "migration/ovn_ready.py",
+    "metadata_handoff.py": "migration/metadata_handoff.py",
+    "prepare_metadata.py": "migration/prepare_metadata.py",
     "router_host.py": "validation/router_host.py",
     "guest_probe.py": "probes/guest_probe.py",
     "live_recovery.py": "validation/live_recovery.py",

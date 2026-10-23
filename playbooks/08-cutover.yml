@@ -27,6 +27,31 @@
     - name: "[08] Load original port checkpoint and timeout"
       ansible.builtin.set_fact:
         cutover_preparation_runtime: "{{ prepared_cutover_checkpoint.stdout | from_json }}"
+        metadata_preparation_runtime: "{{ lookup('file', (migration_run_dir | run_file('metadata-preparation.json'))) | from_json }}"
+
+    - name: "[08] Require original metadata preparation and complete host coverage"
+      ansible.builtin.assert:
+        that:
+          - metadata_preparation_runtime.status == 'PASS'
+          - metadata_preparation_runtime.run == migration_run_id
+          - metadata_preparation_runtime.hosts.keys() | list | sort == groups['neutron-ovn-metadata-agent'] | sort
+
+- name: "Phase 08 - Activate prepared metadata immediately after its legacy agent stops"
+  hosts: neutron-ovn-metadata-agent
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  tasks:
+    - name: "[08] Verify metadata preparation on every host before any socket handoff"
+      ansible.builtin.script:
+        cmd: "../scripts/migration/metadata_handoff.py verify {{ {'run': hostvars['localhost']['migration_run_id'], 'expected': hostvars['localhost']['metadata_preparation_runtime'].hosts[inventory_hostname]} | to_json | quote }}"
+        executable: python3
+      changed_when: false
+
+    - name: "[08] Stop legacy metadata and start prepared OVN metadata without waiting for chassis"
+      ansible.builtin.script:
+        cmd: "../scripts/migration/metadata_handoff.py start {{ {'run': hostvars['localhost']['migration_run_id'], 'expected': hostvars['localhost']['metadata_preparation_runtime'].hosts[inventory_hostname]} | to_json | quote }}"
+        executable: python3
 
 - name: "Phase 08 - Stop legacy agents on network hosts"
   hosts: network
@@ -82,7 +107,7 @@
         openflow_evidence_stage: cutover-check
         openflow_evidence_directory: "{{ hostvars['localhost']['migration_run_dir'] }}"
 
-- name: "Phase 08 - Deploy OVN controller and metadata agents"
+- name: "Phase 08 - Deploy OVN controller while metadata agents await chassis"
   hosts: localhost
   any_errors_fatal: true
   gather_facts: false
@@ -94,13 +119,6 @@
       ansible.builtin.shell: |
         set -euo pipefail
         {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} deploy --tags ovn-controller
-      args:
-        executable: /bin/bash
-
-    - name: "[08] Deploy OVN metadata agents"
-      ansible.builtin.shell: |
-        set -euo pipefail
-        {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} deploy --tags neutron --limit neutron-ovn-metadata-agent
       args:
         executable: /bin/bash
 
