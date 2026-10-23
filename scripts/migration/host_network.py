@@ -17,8 +17,31 @@ def ovs(*args):
 
 
 def external_id(name):
-    value = json.loads(ovs('get', 'Open_vSwitch', '.', 'external_ids:'+name))
-    return value if isinstance(value, str) else ''
+    # `get` prints OVSDB text, whose strings need not be JSON-quoted.  Table
+    # formatting options apply to `list`/`find`, so request a JSON table and
+    # decode its OVSDB map instead of treating scalar `get` output as JSON.
+    raw = ovs('--format=json', '--columns=external_ids',
+              'list', 'Open_vSwitch', '.')
+    try:
+        table = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError('Invalid OVS external_ids JSON table') from exc
+    if (not isinstance(table, dict) or table.get('headings') != ['external_ids']
+            or not isinstance(table.get('data'), list) or len(table['data']) != 1
+            or not isinstance(table['data'][0], list) or len(table['data'][0]) != 1):
+        raise RuntimeError('Expected exactly one Open_vSwitch external_ids row')
+    encoded = table['data'][0][0]
+    if (not isinstance(encoded, list) or len(encoded) != 2
+            or encoded[0] != 'map' or not isinstance(encoded[1], list)):
+        raise RuntimeError('Invalid OVS external_ids map')
+    values = {}
+    for pair in encoded[1]:
+        if (not isinstance(pair, list) or len(pair) != 2
+                or not all(isinstance(value, str) for value in pair)
+                or pair[0] in values):
+            raise RuntimeError('Invalid or duplicate OVS external_ids entry')
+        values[pair[0]] = pair[1]
+    return values.get(name, '')
 
 
 def mappings(text):

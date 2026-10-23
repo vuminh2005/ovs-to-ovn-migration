@@ -36,8 +36,11 @@ class HostNetworkTests(unittest.TestCase):
             if args[0] == 'port-to-br':
                 self.assertEqual(args[1], cfg['external_interfaces'][0])
                 return 'external-br'
-            return json.dumps({'system-id':identity, 'ovn-encap-ip':ip,
-                               'ovn-bridge-mappings':'edge:external-br'}[args[-1].split(':')[-1]])
+            self.assertEqual(args, ('--format=json', '--columns=external_ids',
+                                    'list', 'Open_vSwitch', '.'))
+            return json.dumps(dict(headings=['external_ids'], data=[[
+                ['map', [['system-id', identity], ['ovn-encap-ip', ip],
+                         ['ovn-bridge-mappings', 'edge:external-br']]]]]))
         def get(section, key):
             return {'local_ip':'203.0.113.9' if bad_ip else ip,
                     'bridge_mappings':'edge:external-br'}[key]
@@ -235,7 +238,10 @@ class AnsibleHostTopologyTests(unittest.TestCase):
             docker.write_text('#!'+sys.executable+'\nimport json,os,sys,uuid\n'
                 'if "port-to-br" in sys.argv: print("br-ex")\n'
                 'elif sys.argv[-1]=="external_ids:system-id": '
-                'print(json.dumps(str(uuid.UUID(int=int(os.environ["SIM_INDEX"])))) )\n'
+                'print("chassis"+os.environ["SIM_INDEX"])\n'
+                'elif sys.argv[-5:]==["--format=json", "--columns=external_ids", "list", "Open_vSwitch", "."]: '
+                'print(json.dumps(dict(headings=["external_ids"], data=[[["map", '
+                '[["system-id", "chassis"+os.environ["SIM_INDEX"]]],]]])))\n'
                 'else: raise SystemExit(8)\n')
             for p in (ip, docker):
                 p.chmod(0o700)

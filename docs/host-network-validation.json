@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-23",
+  "base_library_version": 4,
+  "base_sha256": "13e7be48d00c8d4937b2791fb1dd97763b1091b28e35e6d2278aa0e255a5aaff",
+  "pytest": {
+    "name": "pytest",
+    "errors": "0",
+    "failures": "0",
+    "skipped": "0",
+    "tests": "680",
+    "time": "174.320",
+    "timestamp": "2026-10-23T01:48:15.860945+00:00",
+    "hostname": "159704b55703"
+  },
+  "final_affected_regression": "24 passed, 12 warnings in 5.92s",
+  "ansible_syntax": "16/16 entrypoints passed",
+  "ruff": "PASS",
+  "native_ovs": {
+    "status": "PASS",
+    "version": "ovs-vsctl (Open vSwitch) 3.3.9\nDB Schema 8.5.1",
+    "original_get_output": "network1",
+    "original_json_decode_failure_reproduced": true,
+    "checked_external_ids": [
+      "system-id",
+      "ovn-encap-ip",
+      "ovn-bridge-mappings"
+    ],
+    "missing_key_empty": true,
+    "quoted_uuid_also_passes": true,
+    "source_and_target_inspection": "PASS",
+    "ovs_configuration_unchanged": true,
+    "scope": "Private temporary OVSDB; real ovs-vsctl/ovsdb-server, simulated IP observation; no Docker or lab connection"
+  },
+  "live_lab_executed": false,
+  "modified_runtime_files": {
+    "scripts/migration/host_network.py": "68fce156994b8c1fe8226c6b6a9023d5a922c11110d07c88a1f9cd7650669846"
+  },
+  "static_checks": {
+    "status": "PASS",
+    "python_files": 127,
+    "yaml_files": 41,
+    "local_path_references": 273,
+    "document_links": 69,
+    "bash_blocks": 113,
+    "embedded_python_blocks": 13,
+    "errors": []
+  }
+}

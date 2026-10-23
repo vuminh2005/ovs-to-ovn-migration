@@ -5,6 +5,9 @@ Nguồn sửa: `ovs-to-ovn-migration-audited.zip`, phiên bản 3 ngày 22/10/20
 Số host được lấy theo vai trò, không có nhánh dành riêng 4 hoặc 20 node.
 Các giới hạn topology, phiên bản và tính năng nguồn vẫn được giữ.
 
+Bản cập nhật tiếp theo sửa parser OVS `external_ids` dùng chung ở Phase 02/11;
+xem [lỗi parser và kiểm chứng bằng OVS thật](host-network-fix.md).
+
 ## Thay đổi
 
 1. Phase 02 render cấu hình Kolla theo từng host, đọc `local_ip` và
