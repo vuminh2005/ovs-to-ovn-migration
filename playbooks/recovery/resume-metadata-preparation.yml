@@ -1,0 +1,120 @@
+---
+- name: Recover failed metadata preparation before API freeze
+  hosts: localhost
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  vars_files:
+    - ../../group_vars/all.yml
+  tasks:
+    - name: Require an explicit checkpoint and full original inventory
+      ansible.builtin.assert:
+        that:
+          - migration_resume_run_dir is match('^/')
+          - ansible_inventory_sources | length == 1
+          - ansible_limit | default('') | length == 0
+          - not ansible_check_mode
+
+    - name: Require an incomplete phase 06 with original MTU journal and live capture checkpoints
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../../scripts/recovery/metadata_recovery.py", inspect, "{{ migration_resume_run_dir }}", --inventory, "{{ ansible_inventory_sources[0] }}"]
+      register: metadata_checkpoint
+      changed_when: false
+
+    - name: Restore original runtime workload settings and measurement identity
+      ansible.builtin.set_fact:
+        metadata_runtime: "{{ (metadata_checkpoint.stdout | from_json).runtime }}"
+        metadata_workload: "{{ (metadata_checkpoint.stdout | from_json).workload_config }}"
+        migration_run_dir: "{{ (metadata_checkpoint.stdout | from_json).root }}"
+        migration_run_id: "{{ (metadata_checkpoint.stdout | from_json).runtime.run_id }}"
+        kolla_inventory_runtime: "{{ (metadata_checkpoint.stdout | from_json).runtime.inventory }}"
+        kolla_ansible_bin_runtime: "{{ (metadata_checkpoint.stdout | from_json).runtime.kolla_ansible }}"
+        kolla_globals_path: "{{ (metadata_checkpoint.stdout | from_json).runtime.globals }}"
+        openrc_path: "{{ (metadata_checkpoint.stdout | from_json).runtime.openrc }}"
+        ovn_cli_host_runtime: "{{ (metadata_checkpoint.stdout | from_json).runtime.ovn_cli_host }}"
+        db_sync_host_runtime: "{{ (metadata_checkpoint.stdout | from_json).runtime.db_sync_host }}"
+        chassis_hosts_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | list }}"
+        chassis_count_runtime: "{{ ((groups['network'] | default([])) + (groups['compute'] | default([]))) | unique | length }}"
+        source_network_count_runtime: "{{ (metadata_checkpoint.stdout | from_json).source_network_count }}"
+        validation_workloads_enabled: "{{ (metadata_checkpoint.stdout | from_json).workloads_enabled }}"
+        migration_diagnostics_enabled: "{{ (metadata_checkpoint.stdout | from_json).diagnostics_enabled }}"
+
+    - name: Require unchanged inventory topology and generated target selectors
+      ansible.builtin.assert:
+        that:
+          - groups['control'] | sort == metadata_runtime.control_hosts | sort
+          - groups['network'] | sort == metadata_runtime.network_hosts | sort
+          - groups['compute'] | sort == metadata_runtime.compute_hosts | sort
+          - (lookup('file', kolla_globals_path) | from_yaml).neutron_plugin_agent == 'ovn'
+          - (lookup('file', kolla_globals_path) | from_yaml).openstack_release | string == supported_openstack_release
+
+    - name: Restore workload options without recreating workloads or baselines
+      ansible.builtin.set_fact:
+        validation_pair_compute_hosts: "{{ [metadata_workload.placement['0'].inventory_host, metadata_workload.placement['1'].inventory_host] }}"
+        validation_pair_d_enabled: "{{ metadata_workload.pair_d_enabled | bool }}"
+        validation_ns_enabled: "{{ metadata_workload.get('ns', {}).get('enabled', false) | bool }}"
+        validation_ew_matrix_enabled: "{{ metadata_workload.get('ew_matrix_enabled', false) | bool }}"
+        target_geneve_mtu: "{{ metadata_workload.target_mtu | int }}"
+        validation_allow_pre_cutover_guest_reboot: "{{ metadata_workload.allow_pre_cutover_guest_reboot | bool }}"
+        validation_allow_post_cutover_guest_reboot: "{{ metadata_workload.allow_post_cutover_guest_reboot | bool }}"
+        validation_post_cutover_dhcp_timeout_seconds: "{{ metadata_workload.post_cutover_timeout | int }}"
+      when: validation_workloads_enabled | bool
+
+- name: Verify the live OVS source is still running before retrying metadata preparation
+  hosts: control:network:compute
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Require the live Neutron API process and OVS mechanism before target config
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker inspect neutron_server | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
+        docker exec neutron_server python3 -c 'import configparser; c=configparser.ConfigParser(); c.read("/etc/neutron/plugins/ml2/ml2_conf.ini"); drivers={v.strip() for v in c.get("ml2", "mechanism_drivers").split(",")}; assert "openvswitch" in drivers and "ovn" not in drivers; assert c.get("ml2", "tenant_network_types").strip()=="vxlan"'
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: inventory_hostname in groups['control']
+
+    - name: Require OVN controller to remain stopped before metadata preparation
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if ! result=$(docker container inspect ovn_controller 2>&1); then
+          [[ "$result" == *"No such container"* || "$result" == *"No such object"* ]]
+        else
+          python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is False' <<< "$result"
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: inventory_hostname in (groups['network'] + groups['compute'])
+
+    - name: Require source OVS agents on every original chassis
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker inspect neutron_openvswitch_agent | python3 -c 'import json,sys; assert json.load(sys.stdin)[0]["State"]["Running"] is True'
+        docker exec openvswitch_vswitchd ovs-vsctl br-exists br-int
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: inventory_hostname in (groups['network'] + groups['compute'])
+
+- name: Retain recovery timing before retrying metadata preparation
+  hosts: localhost
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  tasks:
+    - name: Record recovery pause without rewriting original run or probe baselines
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../../scripts/recovery/metadata_recovery.py", record, "{{ migration_run_dir }}", --inventory, "{{ kolla_inventory_runtime }}"]
+      changed_when: true
+
+- import_playbook: ../06-prepared-metadata.yml
+- import_playbook: ../07-migrate-db.yml
+- import_playbook: ../08-cutover.yml
+- import_playbook: ../09-cleanup.yml
+- import_playbook: ../10-restore-neutron.yml
+- import_playbook: ../11-validate.yml
+- import_playbook: ../12-workload-validation.yml
+- import_playbook: ../13-report.yml

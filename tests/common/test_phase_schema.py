@@ -219,6 +219,18 @@ class PhaseSchemaTests(unittest.TestCase):
         self.assertRegex((self.root/'migration-report.txt').read_text(),r'Total run duration\s+: UNAVAILABLE')
 
 
+def expanded_plays(path):
+    """Include statically imported phase suffixes when checking timer scope."""
+    path = pathlib.Path(path)
+    result = []
+    for play in yaml.safe_load(path.read_text()):
+        if 'import_playbook' in play:
+            result.extend(expanded_plays(path.parent/play['import_playbook']))
+        else:
+            result.append(play)
+    return result
+
+
 class OrchestrationPhaseTests(unittest.TestCase):
     def setUp(self):
         self.imports=yaml.safe_load((ROOT/'migrate-to-ovn.yml').read_text())
@@ -226,12 +238,12 @@ class OrchestrationPhaseTests(unittest.TestCase):
     def test_canonical_order_and_all_play_labels_match_filenames(self):
         self.assertEqual([row['import_playbook'] for row in self.imports],['playbooks/'+filename for _,filename in p.PHASES])
         for phase,row in enumerate(self.imports):
-            for play in yaml.safe_load((ROOT/row['import_playbook']).read_text()):
+            for play in expanded_plays(ROOT/row['import_playbook']):
                 self.assertTrue(play['name'].startswith(f'Phase {phase:02d} - '),play['name'])
 
     def test_each_file_has_schema_aware_start_and_end_covering_all_plays(self):
         for phase,row in enumerate(self.imports):
-            plays=yaml.safe_load((ROOT/row['import_playbook']).read_text())
+            plays=expanded_plays(ROOT/row['import_playbook'])
             tasks=[task for play in plays for task in play['tasks']]
             markers=[(index,task['ansible.builtin.command']['argv']) for index,task in enumerate(tasks)
                      if 'phase_schema.py' in str(task.get('ansible.builtin.command',{}))]

@@ -181,7 +181,7 @@ class CallbackModule(CallbackBase):
         self._finish(result, 'UNREACHABLE')
 
     def _collect_failed_run_diagnostics(self, stats):
-        workflows = {'migrate-to-ovn.yml', 'resume-before-target.yml', 'resume-after-db.yml',
+        workflows = {'migrate-to-ovn.yml', 'resume-before-target.yml', 'resume-metadata-preparation.yml', 'resume-after-db.yml',
             'resume-after-cleanup.yml', 'retry-validation-preparation.yml', 'retry-ns-diagnostics-preparation.yml'}
         if (self.root is None or Path(self.playbook or '').name not in workflows or
                 os.environ.get('OVS_TO_OVN_DIAGNOSTICS_FINALIZING') == '1' or

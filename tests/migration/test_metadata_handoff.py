@@ -88,6 +88,17 @@ class Worker:
 
 
 class MetadataHandoffTests(unittest.TestCase):
+    def test_native_kolla_trailing_slash_and_docker_spelling_resolve_the_same_config(self):
+        for bind in ('/etc/kolla/neutron-ovn-metadata-agent/:/var/lib/kolla/config_files/:ro',
+                     '/etc/kolla/neutron-ovn-metadata-agent:/var/lib/kolla/config_files:ro',
+                     '/etc/kolla/neutron-ovn-metadata-agent/:/var/lib/kolla/config_files/:ro,z'):
+            self.assertEqual(handoff.config_directory([bind]),Path('/etc/kolla/neutron-ovn-metadata-agent'))
+        for binds in (['/etc/kolla/agent:/var/lib/kolla/config_files/:rw'],
+                      ['/etc/kolla/agent:/var/lib/kolla/config_files-else:ro'],
+                      ['/etc/kolla/one:/var/lib/kolla/config_files/:ro','/etc/kolla/two:/var/lib/kolla/config_files:ro']):
+            with self.assertRaisesRegex(ValueError,'Exactly one read-only'):
+                handoff.config_directory(binds)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

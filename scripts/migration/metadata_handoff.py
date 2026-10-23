@@ -8,7 +8,7 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import time
@@ -31,7 +31,11 @@ def config_directory(volumes):
     matches = []
     for volume in volumes:
         parts = volume.split(':')
-        if len(parts) == 3 and parts[1] == '/var/lib/kolla/config_files' and parts[2] == 'ro':
+        # Kolla's native binds include a trailing slash on both paths. Docker
+        # may preserve that spelling in inspect; compare path meaning instead
+        # of requiring one spelling. Additional mount flags do not cancel ro.
+        if (len(parts) == 3 and PurePosixPath(parts[1]) == PurePosixPath('/var/lib/kolla/config_files')
+                and 'ro' in parts[2].split(',') and 'rw' not in parts[2].split(',')):
             matches.append(Path(parts[0]))
     if len(matches) != 1 or not matches[0].is_absolute():
         raise ValueError('Exactly one read-only Kolla configuration bind is required')

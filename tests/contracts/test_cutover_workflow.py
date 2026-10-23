@@ -15,7 +15,7 @@ def tasks(name):
 
 class WorkflowTests(unittest.TestCase):
     def test_metadata_is_prepared_before_freeze_and_started_without_waiting_for_controller(self):
-        phase06 = str(plays('playbooks/06-target-config.yml'))
+        phase06 = str(plays('playbooks/06-prepared-metadata.yml'))
         self.assertTrue(plays('playbooks/06-target-config.yml')[0]['any_errors_fatal'])
         self.assertIn('scripts/migration/prepare_metadata.py', phase06)
         phase07 = tasks('playbooks/07-migrate-db.yml')
