@@ -114,7 +114,7 @@ Sau khi cập nhật source trong thư mục sạch, reset lab rồi chạy run 
 ```bash
 cd /root/ovs-to-ovn-migration
 source /root/venvs/kolla-2024.1/bin/activate
-ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
+ansible-playbook -i /root/multinode reset-lab-to-ovs.yml -e increase_quota=true -e instance_quota_limit=30 \
   -e reset_lab_confirm=true -e reset_delete_migration_backups=false
 # Chỉ chạy lệnh tiếp theo sau OVS_4NODE_BASELINE_READY.
 ansible-playbook -i /root/multinode migrate-to-ovn.yml

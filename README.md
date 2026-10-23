@@ -58,7 +58,7 @@ reset và việc giữ migration backup hoạt động như bản gốc:
 
 ```bash
 ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
-  -e reset_lab_confirm=true
+  -e reset_lab_confirm=true -e increase_quota=true -e instance_quota_limit=30
 ```
 
 Sau khi reset kết thúc với `OVS_4NODE_BASELINE_READY`:
@@ -68,14 +68,16 @@ source /etc/kolla/admin-openrc.sh
 ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
-Reset bật và xác minh OpenFlow15 trên `br-int` của network/compute trước khi
-tạo workload. Phase 07 chỉ bổ sung protocol còn thiếu trước downtime; nếu đã
+Reset chờ các container OVS chạy và `br-int` tồn tại, tối đa 120 giây trên
+mỗi network/compute, rồi bật và xác minh OpenFlow15 trước khi tạo workload.
+Xem [gate OVS và chẩn đoán startup](docs/reset-ovs-readiness.md). Phase 07 chỉ bổ sung protocol còn thiếu trước downtime; nếu đã
 đủ thì không ghi cấu hình. Phase 08 chỉ xác minh, không thay đổi protocol.
 
-Mặc định reset và migration không thay đổi quota project (`increase_quota: false`).
-Để nâng instance quota lên tối thiểu 20, thêm `-e increase_quota=true` vào lệnh.
-Đổi mức yêu cầu bằng `-e instance_quota_limit=30`. Không hạ quota cao hơn hoặc
-không giới hạn, không đổi cores/RAM. Xem [hướng dẫn quota](docs/project-quota.md).
+Trong profile bạn cung cấp, `group_vars/quota.yml` giữ `increase_quota: true`
+và `instance_quota_limit: 30`. Các lệnh reset ở đây cũng truyền rõ hai giá trị
+đó. Đặt `-e increase_quota=false` để bỏ qua tăng quota trong một lần chạy.
+Helper chỉ nâng quota instance nếu cần; giữ quota cao hơn/không giới hạn và
+không đổi cores/RAM. Xem [hướng dẫn quota](docs/project-quota.md).
 Capacity vẫn kiểm tra sức chứa workload theo quota thực tế.
 
 Các giá trị mặc định giữ profile lab trong `group_vars/all.yml`, `group_vars/ns-lab.yml` và
@@ -106,7 +108,8 @@ Nếu run lab lỗi trước freeze và capture N-S gốc đã dừng, giữ ngu
 
 ```bash
 ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
-  -e reset_lab_confirm=true -e reset_delete_migration_backups=false
+  -e reset_lab_confirm=true -e increase_quota=true -e instance_quota_limit=30 \
+  -e reset_delete_migration_backups=false
 ```
 
 Chỉ chạy `ansible-playbook -i /root/multinode migrate-to-ovn.yml` sau khi reset

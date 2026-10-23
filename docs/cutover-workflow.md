@@ -99,7 +99,7 @@ reset baseline rồi chạy một run đo mới.
 Để kiểm chứng trong lab, cập nhật toàn bộ ZIP, rồi chạy reset và migrate như cũ:
 
 ```bash
-ansible-playbook -i /root/multinode reset-lab-to-ovs.yml -e reset_lab_confirm=true
+ansible-playbook -i /root/multinode reset-lab-to-ovs.yml -e reset_lab_confirm=true -e increase_quota=true -e instance_quota_limit=30
 # Chỉ chạy tiếp khi reset in OVS_4NODE_BASELINE_READY.
 ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```

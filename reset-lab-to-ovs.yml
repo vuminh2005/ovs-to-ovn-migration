@@ -6,7 +6,7 @@
 # Run from controller (full four-node Kolla inventory):
 #   source /root/venvs/kolla-2024.1/bin/activate
 #   ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
-#     -e reset_lab_confirm=true
+#     -e reset_lab_confirm=true -e increase_quota=true -e instance_quota_limit=30
 #
 # Optional: also remove /root/ovs-to-ovn-backup
 #   -e reset_delete_migration_backups=true
@@ -946,6 +946,61 @@
     - group_vars/reset.yml
     - group_vars/ns-lab.yml
   tasks:
+    - name: Wait for source OVS containers and br-int before OpenFlow preparation
+      block:
+        - name: Wait for the OVS agent to create its integration bridge
+          ansible.builtin.script: scripts/reset/reset_ovs_readiness.py --timeout 120 --interval 2
+          args:
+            executable: python3
+          register: reset_ovs_readiness
+          changed_when: false
+
+        - name: Save source OVS readiness evidence
+          ansible.builtin.copy:
+            dest: "{{ hostvars['localhost']['reset_run_dir'] }}/ovs-readiness-{{ inventory_hostname }}.json"
+            content: "{{ reset_ovs_readiness.stdout | from_json | to_nice_json }}"
+            mode: '0600'
+          delegate_to: localhost
+      rescue:
+        - name: Collect source OVS startup diagnostics after readiness failure
+          ansible.builtin.shell: |
+            set -u
+            for container in openvswitch_db openvswitch_vswitchd neutron_openvswitch_agent; do
+              echo "Container: $container"
+              timeout 10 docker inspect --format '{% raw %}{{.Name}} status={{.State.Status}} running={{.State.Running}} restarting={{.State.Restarting}} exit={{.State.ExitCode}} restarts={{.RestartCount}}{% endraw %}' "$container" || true
+              timeout 10 docker logs --tail 80 "$container" 2>&1 || true
+            done
+            timeout 10 docker exec openvswitch_vswitchd ovs-vsctl --timeout=5 show 2>&1 || true
+            timeout 10 tail -n 100 /var/log/kolla/neutron/neutron-openvswitch-agent.log 2>&1 || true
+          args:
+            executable: /bin/bash
+          register: reset_ovs_startup_diagnostics
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Save source OVS startup diagnostics without exposing log contents
+          ansible.builtin.copy:
+            dest: "{{ hostvars['localhost']['reset_run_dir'] }}/ovs-readiness-{{ inventory_hostname }}.log"
+            content: |
+              Readiness result:
+              {{ reset_ovs_readiness.stdout | default('unavailable') }}
+              {{ reset_ovs_readiness.stderr | default('') }}
+              Startup diagnostics:
+              {{ reset_ovs_startup_diagnostics.stdout | default('unavailable') }}
+              {{ reset_ovs_startup_diagnostics.stderr | default('') }}
+            mode: '0600'
+          delegate_to: localhost
+          no_log: true
+
+        - name: Stop reset when the source OVS agent or br-int is not ready
+          ansible.builtin.fail:
+            msg: >-
+              Source OVS containers or br-int did not become ready within 120 seconds.
+              OpenFlow preparation and workload creation have not run.
+              Inspect {{ hostvars['localhost']['reset_run_dir'] }}/ovs-readiness-{{ inventory_hostname }}.log
+              for container state, OVS state and neutron-openvswitch-agent startup errors.
+
     - name: Prepare additive OpenFlow15 baseline before creating any workload
       ansible.builtin.include_tasks: playbooks/tasks/openflow-preparation-tasks.yml
       vars:

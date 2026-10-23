@@ -1,3 +1,8 @@
+> Cập nhật: sau deploy, reset chờ các container OVS và `br-int` trước OpenFlow,
+> tối đa 120 giây. Nếu không sẵn sàng, lưu chẩn đoán từng host và dừng trước
+> workload. Xem [readiness OVS](reset-ovs-readiness.md). Profile quota hiện tại
+> bật tăng quota instance lên tối thiểu 30; các giá trị `group_vars` được giữ nguyên.
+
 > Cập nhật 17/10/2026: baseline READY mặc định có external dùng chung và hai
 > VM demo, không còn là cloud rỗng. Xem [hướng dẫn demo](demo.md). Reset kiểm
 > tra cloud sạch hoặc tài nguyên đúng generation của chính reset trước khi
@@ -123,7 +128,7 @@ source /root/venvs/kolla-2024.1/bin/activate
 
 ansible-playbook -i /root/multinode reset-lab-to-ovs.yml --syntax-check
 
-ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
+ansible-playbook -i /root/multinode reset-lab-to-ovs.yml -e increase_quota=true -e instance_quota_limit=30 \
     -e reset_lab_confirm=true
 ```
 
@@ -131,7 +136,7 @@ Không dùng `--limit`, `--check`, `--start-at-task` hoặc inventory trích đo
 Nếu đổi đường dẫn inventory, dùng cùng đường dẫn tuyệt đối cho cả hai:
 
 ```bash
-ansible-playbook -i /root/my-multinode reset-lab-to-ovs.yml \
+ansible-playbook -i /root/my-multinode reset-lab-to-ovs.yml -e increase_quota=true -e instance_quota_limit=30 \
     -e reset_kolla_inventory=/root/my-multinode \
     -e reset_lab_confirm=true
 ```

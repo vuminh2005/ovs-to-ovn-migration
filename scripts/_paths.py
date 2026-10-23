@@ -47,6 +47,7 @@ SCRIPT_FILES = {
     "report_format.py": "reporting/report_format.py",
     "reset_demo.py": "reset/reset_demo.py",
     "reset_host_observers.py": "reset/reset_host_observers.py",
+    "reset_ovs_readiness.py": "reset/reset_ovs_readiness.py",
     "reset_local_probes.py": "reset/reset_local_probes.py",
     "reset_rabbitmq_health.py": "reset/reset_rabbitmq_health.py",
     "reset_rabbitmq_recovery.py": "reset/reset_rabbitmq_recovery.py",

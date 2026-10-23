@@ -1,3 +1,8 @@
+> Sửa readiness OVS sau reset trên ZIP người dùng cung cấp: xem
+> [reset-ovs-readiness.md](reset-ovs-readiness.md). Toàn bộ `group_vars` của ZIP
+> đó được giữ nguyên; bản ghi kiểm chứng nằm trong
+> [reset-ovs-readiness-validation.json](reset-ovs-readiness-validation.json).
+>
 > Cập nhật 23/10/2026: phase 06 đã gộp vào một file; các route resume thủ công
 > chuyển vào [archive](../archive/README.md). Kết quả kiểm chứng bản hiện hành
 > nằm trong [metadata-validation.json](metadata-validation.json). Phần dưới là

@@ -97,7 +97,7 @@ def connect():return NS(session=NS(get_project_id=lambda:'project'),compute=Comp
 
 
 class QuotaAnsibleTests(unittest.TestCase):
-    def test_actual_reset_and_migration_tasks_default_off_and_apply_requested_limits(self):
+    def test_actual_reset_and_migration_tasks_follow_profile_and_explicit_quota_options(self):
         reset = yaml.safe_load((ROOT/'reset-lab-to-ovs.yml').read_text())
         migration = yaml.safe_load((ROOT/'playbooks/04-validation-workloads.yml').read_text())
         entries = [
@@ -105,10 +105,14 @@ class QuotaAnsibleTests(unittest.TestCase):
                               if t['name']=='Increase instance quota only when explicitly enabled')),
             ('playbooks/phase.yml', next(t for p in migration for t in p.get('tasks', [])
                               if t['name']=='[04] Increase instance quota only when explicitly enabled'))]
-        cases = [({}, 10), ({'increase_quota':True}, 20),
-                 ({'increase_quota':True, 'instance_quota_limit':30}, 30)]
+        defaults = yaml.safe_load((ROOT/'group_vars/quota.yml').read_text())
+        cases = [{}, {'increase_quota':False}, {'increase_quota':True,'instance_quota_limit':20},
+                 {'increase_quota':True,'instance_quota_limit':30}]
         for entry_name, task in entries:
-            for extra, expected in cases:
+            for extra in cases:
+                enabled = extra.get('increase_quota', defaults['increase_quota'])
+                target = extra.get('instance_quota_limit', defaults['instance_quota_limit'])
+                expected = max(10, target) if enabled else 10
                 with self.subTest(entry=entry_name, extra=extra), tempfile.TemporaryDirectory() as directory:
                     home = Path(directory); scripts = home/'scripts/common'; scripts.mkdir(parents=True)
                     for name in ('project_quota.py','run_layout.py'):
@@ -134,8 +138,8 @@ class QuotaAnsibleTests(unittest.TestCase):
                     self.assertEqual(result.returncode,0,result.stdout+result.stderr)
                     observed = json.loads(state.read_text())
                     self.assertEqual(observed['quota'],dict(instances=expected,cores=20,ram=51200))
-                    self.assertEqual(sum(call[0]=='PUT' for call in observed['calls']), int(bool(extra)))
-                    self.assertEqual((evidence/'quota-instances.json').exists(), bool(extra))
+                    self.assertEqual(sum(call[0]=='PUT' for call in observed['calls']), int(expected > 10))
+                    self.assertEqual((evidence/'quota-instances.json').exists(), enabled)
 
 
 if __name__=='__main__': unittest.main()

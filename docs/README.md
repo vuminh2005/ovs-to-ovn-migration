@@ -16,6 +16,7 @@
 | Evidence / observers | [report-evidence.md](report-evidence.md), [ns-observability.md](ns-observability.md) |
 | TCP N-S | [ns-tcp-diagnostics.md](ns-tcp-diagnostics.md), [ns-held-session-diagnostics.md](ns-held-session-diagnostics.md) |
 | Image preflight / phase 05 | [image-preflight.md](image-preflight.md) |
+| OVS/br-int sau reset | [reset-ovs-readiness.md](reset-ovs-readiness.md) |
 | RabbitMQ khi reset | [reset-rabbitmq-mitigation.md](reset-rabbitmq-mitigation.md) |
 | Retry và ghi chú sự cố cũ | [archive](../archive/README.md) |
 

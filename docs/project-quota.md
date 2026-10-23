@@ -1,10 +1,10 @@
 # Tăng instance quota khi được bật rõ ràng
 
-Mặc định trong `group_vars/quota.yml`:
+Profile hiện tại do bạn cung cấp trong `group_vars/quota.yml`:
 
 ```yaml
-increase_quota: false
-instance_quota_limit: 20
+increase_quota: true
+instance_quota_limit: 30
 ```
 
 Hai biến dùng chung cho reset và migration đầy đủ. `false` bỏ qua task quota;
@@ -18,8 +18,8 @@ cao hơn hoặc không giới hạn (`-1`) được giữ nguyên; cores/RAM kh�
 cd /root/ovs-to-ovn-migration
 source /root/venvs/kolla-2024.1/bin/activate
 
-# Migration: bật tăng instance quota lên tối thiểu 20.
-ansible-playbook -i /root/multinode migrate-to-ovn.yml -e increase_quota=true
+# Migration: truyền rõ tăng instance quota lên tối thiểu 30.
+ansible-playbook -i /root/multinode migrate-to-ovn.yml -e increase_quota=true -e instance_quota_limit=30
 
 # Ví dụ yêu cầu mức khác.
 ansible-playbook -i /root/multinode migrate-to-ovn.yml \
@@ -30,11 +30,13 @@ Nếu chạy lại toàn bộ reset lab, có thể bật ở lần reset đó:
 
 ```bash
 ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
-  -e reset_lab_confirm=true -e increase_quota=true
+  -e reset_lab_confirm=true -e increase_quota=true -e instance_quota_limit=30
 ```
 
-Mỗi lệnh là một lần chạy riêng. Không truyền flag thì không tăng quota;
-quota đã được nâng trong reset vẫn giữ trong cloud khi chạy migration sau đó.
+Mỗi lệnh là một lần chạy riêng. Nếu không truyền flag, playbook dùng giá trị
+trong `group_vars/quota.yml`; profile này đã bật tăng quota lên tối thiểu 30.
+Dùng `-e increase_quota=false` để bỏ qua. Quota đã nâng trong reset được giữ
+trong cloud khi chạy migration sau đó.
 `instance_quota_limit` phải là số nguyên dương; chỉ đặt limit mà không bật
 `increase_quota` không làm phát sinh cập nhật.
 

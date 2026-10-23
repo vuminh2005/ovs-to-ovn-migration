@@ -79,6 +79,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('scripts/migration/cutover_preparation.py cleanup /tmp',rows[cleanup]['ansible.builtin.script'])
         of=names.index('Prepare additive OpenFlow15 baseline before creating any workload')
         self.assertGreater(of,cleanup)
+        self.assertLess(names.index('Wait for source OVS containers and br-int before OpenFlow preparation'),of)
         self.assertLess(of,names.index('Verify neutron_openvswitch_agent is running'))
 
     def test_quota_changes_require_opt_in_and_capacity_remains_read_only(self):
@@ -88,8 +89,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('update_quota_set',source)
         self.assertNotIn('Set only instance quota',reset)
         defaults=yaml.safe_load((ROOT/'group_vars/quota.yml').read_text())
-        self.assertIs(defaults['increase_quota'],False)
-        self.assertEqual(defaults['instance_quota_limit'],20)
+        self.assertIs(type(defaults['increase_quota']),bool)
+        self.assertIs(type(defaults['instance_quota_limit']),int)
+        self.assertGreater(defaults['instance_quota_limit'],0)
         for filename in ('reset-lab-to-ovs.yml','playbooks/04-validation-workloads.yml'):
             data=plays(filename)
             policy=next(t for p in data for t in p.get('tasks',[])

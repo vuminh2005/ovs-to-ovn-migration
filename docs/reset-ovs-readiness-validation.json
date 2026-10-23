@@ -1,0 +1,45 @@
+{
+  "status": "PASS",
+  "date": "2026-10-23",
+  "source": "User-supplied multinode-playbook.zip",
+  "scope": "Wait for source OVS containers and br-int before reset OpenFlow preparation",
+  "validation": {
+    "pytest": {
+      "passed": 693,
+      "seconds": 314.42
+    },
+    "ansible_syntax": {
+      "passed": 18,
+      "total": 18
+    },
+    "source_paths": "PASS",
+    "ruff": "PASS",
+    "modeled_scenarios": [
+      "Delayed integration bridge",
+      "Permanently missing bridge",
+      "Stopped source OVS agent",
+      "Hung Docker bounded by deadline",
+      "Ansible failure evidence and later-workload barrier",
+      "User quota profile and explicit quota disable/override"
+    ]
+  },
+  "group_vars": {
+    "byte_identical_to_input": true,
+    "files": [
+      "group_vars/all.yml",
+      "group_vars/ns-lab.yml",
+      "group_vars/quota.yml",
+      "group_vars/reset.yml"
+    ]
+  },
+  "preserved": [
+    "User quota true/30 and reset/demo settings",
+    "Metadata handoff implementation",
+    "Phase 00-13 migration playbooks",
+    "Original probes and downtime formulas",
+    "TXT renderer",
+    "Archived manual recovery routes"
+  ],
+  "readiness_timeout_seconds": 120,
+  "lab_execution": false
+}

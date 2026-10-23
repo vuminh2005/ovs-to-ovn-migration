@@ -1,6 +1,6 @@
 ---
 # Repeated destructive reset of the four-node nested lab.
-reset_lab_confirm: false
+reset_lab_confirm: true
 
 # Stop actual live host observers; old migration results are not reset gates.
 # Match migration_diagnostics_directory if a non-standard location is used.
