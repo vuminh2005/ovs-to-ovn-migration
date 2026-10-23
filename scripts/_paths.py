@@ -17,6 +17,8 @@ SCRIPT_FILES = {
     "diagnostics_control.py": "diagnostics/diagnostics_control.py",
     "extended_validation.py": "validation/extended_validation.py",
     "host_network.py": "migration/host_network.py",
+    "gateway_native.py": "migration/gateway_native.py",
+    "gateway_scheduling.py": "migration/gateway_scheduling.py",
     "ovn_ready.py": "migration/ovn_ready.py",
     "metadata_handoff.py": "migration/metadata_handoff.py",
     "prepare_metadata.py": "migration/prepare_metadata.py",

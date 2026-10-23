@@ -70,6 +70,56 @@
         mode: '0600'
       run_once: true
 
+- name: "Phase 07 - Prepare early gateway helper before API freeze"
+  hosts: control
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: "[07] [SAVE] Stage isolated gateway scheduling helpers before API freeze"
+      ansible.builtin.copy:
+        content: "{{ lookup('file', playbook_dir + '/../scripts/migration/' + item) }}"
+        dest: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}/{{ item }}"
+        mode: '0600'
+      loop: [gateway_native.py, gateway_scheduling.py]
+      run_once: true
+
+    - name: "[07] [SAVE] Stage frozen inventory chassis identities for gateway scheduling"
+      ansible.builtin.copy:
+        src: "{{ hostvars['localhost']['migration_run_dir'] | run_file('host-topology.json') }}"
+        dest: "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}/gateway-topology.json"
+        mode: '0600'
+      run_once: true
+
+    - name: "[07] Preflight native gateway helper without starting API or scheduling"
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}/gateway_scheduling.py"
+          - prepare
+          - "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}"
+          - "{{ hostvars['localhost']['cutover_preparation_runtime'] | to_json }}"
+      register: gateway_preparation
+      failed_when: false
+      changed_when: false
+      run_once: true
+
+    - name: "[07] [SAVE] Save gateway preparation result before API freeze"
+      ansible.builtin.copy:
+        dest: "{{ hostvars['localhost']['migration_run_dir'] | run_file('gateway-preparation.json') }}"
+        content: "{{ {'rc': gateway_preparation.rc, 'stdout': gateway_preparation.stdout, 'stderr': gateway_preparation.stderr} | to_nice_json }}\n"
+        mode: '0600'
+      delegate_to: localhost
+      run_once: true
+
+    - name: "[07] Require successful gateway preparation before API freeze"
+      ansible.builtin.assert:
+        that: gateway_preparation.rc == 0
+        fail_msg: "Gateway helper preflight failed before API freeze; inspect gateway-preparation.json and the run-owned gateway-preflight.log."
+      run_once: true
+
 - name: "Phase 07 - Prepare existing VM port checkpoint"
   hosts: localhost
   any_errors_fatal: true

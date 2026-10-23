@@ -10,8 +10,12 @@ Xem [nguyên nhân và kiểm chứng](docs/host-network-fix.md).
 Metadata được chuẩn bị trước downtime ở phase 06: container chưa chạy, service
 bị disable. Phase 08 dừng metadata cũ trên từng host rồi start container đã
 chuẩn bị, trước deploy controller và không chờ chassis tại bước start. Xem
-[luồng chuyển giao metadata](docs/metadata-preparation.md). Bản sửa này chưa
-thay đổi gateway scheduling.
+[luồng chuyển giao metadata](docs/metadata-preparation.md).
+
+Gateway được schedule sớm ở đầu phase 10, sau cleanup OVS cũ và trước start
+Neutron API. Helper dùng scheduler gốc trong image Neutron, đã preflight trước
+downtime ở phase 07. Lỗi tối ưu sẽ lưu evidence rồi tiếp tục bật API. Xem
+[gateway scheduling sớm](docs/early-gateway-scheduling.md).
 
 Playbook cho lab Kolla-Ansible 2024.1, giữ workflow Phase 00–13 và bộ đo
 E-W/N-S của bản `playbook new stage.zip`. Bản audit ngày 22/10/2026 sắp xếp

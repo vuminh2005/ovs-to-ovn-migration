@@ -1,0 +1,81 @@
+{
+  "status": "PASS",
+  "date": "2026-10-23",
+  "source": "Latest multinode-playbook.zip, including the completed reset/OVS readiness fix",
+  "scope": "Native early gateway scheduling after legacy cleanup and before API start",
+  "validation": {
+    "pytest": {
+      "passed": 734,
+      "seconds": 216.67
+    },
+    "ansible_syntax": {
+      "passed": 18,
+      "total": 18
+    },
+    "source_paths": "PASS",
+    "ruff": "PASS",
+    "native_source_model": {
+      "status": "PASS",
+      "neutron_version": "24.2.1",
+      "wheel_sha256": "a6cad042ffd422f770ba9957683090537ade9f7b4eb5ff1c0c4e75f34d2ca22b",
+      "method_source": "Unmodified AST-extracted methods from the official Neutron wheel",
+      "scenarios": [
+        "Native physnet/CMS/AZ filtering",
+        "Native L3 reschedule transaction",
+        "Native valid-primary preservation",
+        "Native repeat scheduling is idempotent"
+      ],
+      "limitation": "Modeled OVSDB rows and scheduler select result; no Docker daemon or live OpenStack"
+    },
+    "integration": [
+      "Real Ansible optional scheduling PASS/failure/missing cleanup/API still running",
+      "Real Ansible failed cleanup globally blocks subsequent API start",
+      "Real cleanup shell rejects stale namespace/OVS port/running L3/query failure",
+      "Mocked Docker deadline and force-removal on attach exit",
+      "Changed image/config/source/topology/owner/checkpoint prevents early scheduling"
+    ]
+  },
+  "group_vars": {
+    "byte_identical_to_input": true,
+    "files": [
+      "group_vars/all.yml",
+      "group_vars/ns-lab.yml",
+      "group_vars/quota.yml",
+      "group_vars/reset.yml"
+    ]
+  },
+  "modified_files": [
+    "README.md",
+    "docs/README.md",
+    "docs/cutover-workflow.md",
+    "docs/metadata-preparation.md",
+    "playbooks/07-migrate-db.yml",
+    "playbooks/09-cleanup.yml",
+    "playbooks/10-restore-neutron.yml",
+    "scripts/README.md",
+    "scripts/_paths.py",
+    "tests/contracts/test_b87_contract.py"
+  ],
+  "added_files": [
+    "docs/early-gateway-scheduling.md",
+    "docs/early-gateway-validation.json",
+    "scripts/migration/gateway_native.py",
+    "scripts/migration/gateway_scheduling.py",
+    "tests/migration/test_gateway_scheduling.py"
+  ],
+  "preserved": [
+    "Metadata implementation and phase 06/08 ordering",
+    "Phase numbering 00-13",
+    "Probe implementations, report formulas and TXT format",
+    "Reset and quota behavior",
+    "Archived recovery routes"
+  ],
+  "schedule_seconds": {
+    "native_alarm": 25,
+    "docker_attach": 30,
+    "force_remove": 5
+  },
+  "lab_execution": false,
+  "docker_daemon_execution": false,
+  "limitation": "Image/bootstrap compatibility and actual N-S savings must be measured in the lab; no numerical outage guarantee"
+}

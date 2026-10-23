@@ -1,4 +1,4 @@
-"""The b87 update changes storage/names while retaining its gateway workflow."""
+"""Display/storage contracts, with optional early scheduling before API start."""
 from pathlib import Path
 import re
 import unittest
@@ -34,13 +34,20 @@ class B87ContractTests(unittest.TestCase):
         self.assertIn('[07] Switch router service backend associations to OVN',names)
         self.assertIn('[08] Verify prepared OpenFlow support on br-int',names)
 
-    def test_no_additional_gateway_synchronization_or_readiness_gate_is_installed(self):
+    def test_gateway_optimization_adds_no_full_sync_or_blocking_readiness_gate(self):
         self.assertFalse(list((ROOT/'scripts').rglob('gateway_readiness.py')))
         for name in ('playbooks/00-bootstrap.yml','playbooks/07-migrate-db.yml',
                      'playbooks/10-restore-neutron.yml','group_vars/all.yml','scripts/reporting/migration_report.py'):
             text=(ROOT/name).read_text()
             self.assertNotIn('gateway_sync',text,name)
             self.assertNotIn('gateway-readiness',text,name)
+        phase = yaml.safe_load((ROOT/'playbooks/10-restore-neutron.yml').read_text())
+        optional = next(p for p in phase if 'Attempt early gateway scheduling' in p['name'])
+        block = next(t for t in optional['tasks'] if 'block' in t)
+        self.assertTrue(block['rescue'])
+        self.assertTrue(block['rescue'][0]['failed_when'] is False)
+        self.assertLess(phase.index(optional), next(i for i,p in enumerate(phase)
+            if 'Start Neutron API workers' in p['name']))
 
 
 if __name__=='__main__': unittest.main()

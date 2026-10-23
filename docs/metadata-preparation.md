@@ -1,7 +1,7 @@
 # Chuẩn bị metadata trước downtime — 23/10/2026
 
-Bản này thay đổi riêng cách chuẩn bị/start OVN metadata. Gateway scheduling
-vẫn theo luồng hiện có; chưa có helper gán gateway sớm trong bản này.
+Luồng chuẩn bị/start OVN metadata bên dưới giữ nguyên. Phần gateway hiện có
+[scheduling sớm sau cleanup](early-gateway-scheduling.md), trước restart API.
 
 ## Thứ tự thực thi
 
@@ -12,7 +12,7 @@ vẫn theo luồng hiện có; chưa có helper gán gateway sớm trong bản n
 | Phase 07 trước freeze | Xác minh container chưa chạy, unit chưa enabled và cấu hình/identity vẫn khớp |
 | Đầu phase 08 | Kiểm tra mọi metadata host; trên từng host dừng/disable metadata cũ, xác minh nó không còn chạy rồi enable/start metadata mới ngay |
 | Tiếp theo trong phase 08 | Stop agent OVS/DHCP/L3 còn lại, kiểm tra OpenFlow, deploy controller; metadata đã chạy và tự chờ chassis/binding |
-| Phase 09–10 | Cleanup cũ rồi restart Neutron theo luồng hiện có |
+| Phase 09–10 | Cleanup cũ; thử scheduling gateway sớm rồi restart Neutron |
 | Phase 11 | Kiểm tra metadata đăng ký trên đúng `Chassis_Private`, container chạy và healthcheck đạt; phase 12 tiếp tục kiểm tra metadata từ VM như cũ |
 
 Bước start metadata không chờ agent đăng ký hoặc HTTP metadata sẵn sàng,

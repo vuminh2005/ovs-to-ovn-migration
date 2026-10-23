@@ -1,6 +1,7 @@
 ---
 - name: "Phase 09 - Begin legacy ML2/OVS network cleanup"
   hosts: localhost
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -20,6 +21,7 @@
 
 - name: "Phase 09 - Remove legacy OVS tunnel bridges"
   hosts: network:compute
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -35,6 +37,7 @@
 
 - name: "Phase 09 - Remove legacy namespaces and OVS ports"
   hosts: network
+  any_errors_fatal: true
   gather_facts: false
   become: true
   vars_files:
@@ -77,6 +80,26 @@
       args:
         executable: /bin/bash
       changed_when: false
+
+    - name: "[09] Verify legacy gateway attachments and L3 agent are withdrawn"
+      ansible.builtin.shell: |
+        set -euo pipefail
+        namespaces=$(ip netns list)
+        if grep -E '^(qrouter-|qdhcp-|snat-|fip-)' <<< "$namespaces" >/dev/null; then exit 1; fi
+        interfaces=$(docker exec openvswitch_vswitchd ovs-vsctl --data=bare --no-heading --columns=name list Interface)
+        if tr -d '"' <<< "$interfaces" | grep -E '^(qg-|qr-|ha-|rfp-|fpr-|int-br-ex$|phy-br-ex$)' >/dev/null; then exit 1; fi
+        containers=$(docker ps -a --format '{% raw %}{{.Names}}{% endraw %}')
+        if grep -Fx neutron_l3_agent <<< "$containers" >/dev/null; then
+          test "$(docker inspect neutron_l3_agent --format '{% raw %}{{.State.Running}}{% endraw %}')" = false
+        fi
+      args:
+        executable: /bin/bash
+      register: gateway_withdrawal_check
+      changed_when: false
+
+    - name: "[09] Publish per-host legacy gateway withdrawal result"
+      ansible.builtin.set_fact:
+        gateway_cleanup_verified: "{{ gateway_withdrawal_check.rc == 0 }}"
 
     - name: "[09] [TIMER] End phase 09"
       ansible.builtin.command:

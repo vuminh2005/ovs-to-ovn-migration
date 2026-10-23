@@ -18,6 +18,61 @@
       run_once: true
       changed_when: false
 
+- name: "Phase 10 - Attempt early gateway scheduling after legacy cleanup"
+  hosts: control
+  gather_facts: false
+  become: true
+  vars_files:
+    - ../group_vars/all.yml
+  tasks:
+    - name: "[10] Check every Neutron API container remains stopped"
+      ansible.builtin.command:
+        argv: [docker, inspect, neutron_server, --format, '{% raw %}{{.State.Running}}{% endraw %}']
+      register: gateway_api_stopped_check
+      changed_when: false
+      failed_when: false
+
+    - name: "[10] Publish per-host API freeze verification"
+      ansible.builtin.set_fact:
+        gateway_api_stopped: "{{ gateway_api_stopped_check.rc == 0 and gateway_api_stopped_check.stdout == 'false' }}"
+
+    - name: "[10] Attempt bounded native gateway scheduling before Neutron API restart"
+      block:
+        - name: "[10] Require verified gateway withdrawal on every network host"
+          ansible.builtin.assert:
+            that:
+              - groups.get('network', []) | length > 0
+              - groups['network'] | map('extract', hostvars, 'gateway_cleanup_verified') | select('equalto', true) | list | length == groups['network'] | length
+              - groups['control'] | map('extract', hostvars, 'gateway_api_stopped') | select('equalto', true) | list | length == groups['control'] | length
+
+        - name: "[10] Schedule unhosted gateways using the prepared native helper"
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}/gateway_scheduling.py"
+              - schedule
+              - "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}"
+              - "{{ hostvars['localhost']['cutover_preparation_runtime'] | to_json }}"
+              - --cleanup-verified
+          register: gateway_scheduling_attempt
+          changed_when: gateway_scheduling_attempt.rc == 0 and (gateway_scheduling_attempt.stdout | from_json).native.changed_count | int > 0
+
+        - name: "[10] [SAVE] Save successful early gateway scheduling evidence"
+          ansible.builtin.copy:
+            dest: "{{ hostvars['localhost']['migration_run_dir'] | run_file('gateway-scheduling.json') }}"
+            content: "{{ gateway_scheduling_attempt.stdout }}\n"
+            mode: '0600'
+          delegate_to: localhost
+      rescue:
+        - name: "[10] [SAVE] Record early scheduling fallback and continue API restoration"
+          ansible.builtin.copy:
+            dest: "{{ hostvars['localhost']['migration_run_dir'] | run_file('gateway-scheduling.json') }}"
+            content: "{{ {'status': 'FALLBACK', 'reason': 'Early scheduling failed or cleanup was not verified; restore API and use the normal Neutron scheduler', 'attempt': gateway_scheduling_attempt | default({})} | to_nice_json }}\n"
+            mode: '0600'
+          delegate_to: localhost
+          failed_when: false
+      run_once: true
+
 - name: "Phase 10 - Start Neutron API workers with OVN configuration"
   hosts: control
   gather_facts: false
