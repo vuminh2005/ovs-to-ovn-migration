@@ -25,7 +25,7 @@ reset_managed_image_url: https://cloud-images.ubuntu.com/releases/noble/release/
 reset_managed_flavor_name: ovn-validation.small
 reset_image_cache_dir: /var/cache/ovs-to-ovn-validation
 reset_image_download_timeout: 120
-reset_image_active_timeout: 900
+reset_image_active_timeout: 600
 # Prepare br-int before any workload is created; retain compatible older versions.
 reset_br_int_protocols: "OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13,OpenFlow14,OpenFlow15"
 # Live readiness is separate from historical errors emitted during deployment.
@@ -40,7 +40,7 @@ reset_nova_conductor_workers: 1
 reset_rabbitmq_recovery_enabled: true
 
 # A console-only demo pair is built by reset, independently of migration probes.
-reset_demo_enabled: true
+reset_demo_enabled: false
 reset_demo_prefix: demo
 reset_demo_cidrs: ['10.234.0.0/24', '10.234.1.0/24']
 reset_demo_compute_hosts: ['compute1', 'compute2']
@@ -48,5 +48,5 @@ reset_demo_router_ip: 10.1.0.6
 reset_demo_floating_ip: 10.1.0.7
 reset_demo_console_user: demo
 # Empty generates a password in the reset snapshot, mode 0600. It is never printed.
-reset_demo_console_password: ''
+reset_demo_console_password: 'demo'
 reset_demo_timeout_seconds: 300
