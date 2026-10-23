@@ -20,12 +20,12 @@ playbooks/openflow-preparation-tasks.yml	playbooks/tasks/openflow-preparation-ta
 playbooks/pair-d-trigger-tasks.yml	playbooks/transport/pair-d-trigger-tasks.yml
 playbooks/reset-demo-preflight-tasks.yml	playbooks/tasks/reset-demo-preflight-tasks.yml
 playbooks/reset-host-observers.yml	playbooks/transport/reset-host-observers.yml
-playbooks/resume-bootstrap.yml	playbooks/recovery/resume-bootstrap.yml
+playbooks/resume-bootstrap.yml	archive/playbooks/resume-bootstrap.yml
 playbooks/validation-snapshot-tasks.yml	playbooks/tasks/validation-snapshot-tasks.yml
 playbooks/workload-ovn-evidence-tasks.yml	playbooks/transport/workload-ovn-evidence-tasks.yml
-resume-after-cleanup.yml	playbooks/recovery/resume-after-cleanup.yml
-resume-after-db.yml	playbooks/recovery/resume-after-db.yml
-resume-before-target.yml	playbooks/recovery/resume-before-target.yml
+resume-after-cleanup.yml	archive/playbooks/resume-after-cleanup.yml
+resume-after-db.yml	archive/playbooks/resume-after-db.yml
+resume-before-target.yml	archive/playbooks/resume-before-target.yml
 retry-ns-diagnostics-preparation.yml	archive/playbooks/retry-ns-diagnostics-preparation.yml
 retry-validation-preparation.yml	archive/playbooks/retry-validation-preparation.yml
 scripts/aux_ping.py	scripts/probes/aux_ping.py
@@ -54,8 +54,8 @@ scripts/ns_underlay.py	scripts/reset/ns_underlay.py
 scripts/openflow_prepare.py	scripts/migration/openflow_prepare.py
 scripts/ovn_workload_evidence.py	scripts/diagnostics/ovn_workload_evidence.py
 scripts/phase_schema.py	scripts/common/phase_schema.py
-scripts/post_db_recovery.py	scripts/recovery/post_db_recovery.py
-scripts/pre_stage_recovery.py	scripts/recovery/pre_stage_recovery.py
+scripts/post_db_recovery.py	archive/scripts/recovery/post_db_recovery.py
+scripts/pre_stage_recovery.py	archive/scripts/recovery/pre_stage_recovery.py
 scripts/prepare_migration_images.py	scripts/migration/prepare_migration_images.py
 scripts/provider_associations.py	scripts/migration/provider_associations.py
 scripts/report_format.py	scripts/reporting/report_format.py
@@ -104,8 +104,8 @@ tests/test_ovn_workload_evidence.py	tests/diagnostics/test_ovn_workload_evidence
 tests/test_phase_schema.py	tests/common/test_phase_schema.py
 tests/test_play_targets.py	tests/contracts/test_play_targets.py
 tests/test_post_cutover_dhcp.py	tests/validation/test_post_cutover_dhcp.py
-tests/test_post_db_recovery.py	tests/recovery/test_post_db_recovery.py
-tests/test_pre_stage_recovery.py	tests/recovery/test_pre_stage_recovery.py
+tests/test_post_db_recovery.py	archive/tests/test_post_db_recovery.py
+tests/test_pre_stage_recovery.py	archive/tests/test_pre_stage_recovery.py
 tests/test_preparation_retry.py	tests/recovery/test_preparation_retry.py
 tests/test_prerequisites.py	tests/validation/test_prerequisites.py
 tests/test_provider_associations.py	tests/migration/test_provider_associations.py
@@ -127,3 +127,7 @@ tests/test_three_pairs.py	tests/validation/test_three_pairs.py
 tests/test_topology_pipeline.py	tests/migration/test_topology_pipeline.py
 tests/test_traffic_timeline.py	tests/reporting/test_traffic_timeline.py
 tests/test_validation.py	tests/validation/test_validation.py
+playbooks/06-prepared-metadata.yml	playbooks/06-target-config.yml
+playbooks/recovery/resume-metadata-preparation.yml	archive/playbooks/resume-metadata-preparation.yml
+scripts/recovery/metadata_recovery.py	archive/scripts/recovery/metadata_recovery.py
+tests/recovery/test_metadata_recovery.py	archive/tests/test_metadata_recovery.py

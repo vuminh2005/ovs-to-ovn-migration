@@ -15,8 +15,7 @@
 | Workload và phép đo | [ns-ew-matrix.md](ns-ew-matrix.md), [abcd-validation.md](abcd-validation.md) |
 | Evidence / observers | [report-evidence.md](report-evidence.md), [ns-observability.md](ns-observability.md) |
 | TCP N-S | [ns-tcp-diagnostics.md](ns-tcp-diagnostics.md), [ns-held-session-diagnostics.md](ns-held-session-diagnostics.md) |
-| Các route resume | [recovery](../playbooks/recovery/README.md) |
-| Image/phase 05 và sau DB migrate | [image-cache-recovery.md](recovery/image-cache-recovery.md), [post-db-recovery.md](recovery/post-db-recovery.md) |
+| Image preflight / phase 05 | [image-preflight.md](image-preflight.md) |
 | RabbitMQ khi reset | [reset-rabbitmq-mitigation.md](reset-rabbitmq-mitigation.md) |
 | Retry và ghi chú sự cố cũ | [archive](../archive/README.md) |
 

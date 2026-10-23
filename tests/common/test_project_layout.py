@@ -131,9 +131,6 @@ class SourceLayoutTests(unittest.TestCase):
         spec.loader.exec_module(module)
         entries = (
             "migrate-to-ovn.yml",
-            "playbooks/recovery/resume-before-target.yml",
-            "playbooks/recovery/resume-after-db.yml",
-            "playbooks/recovery/resume-after-cleanup.yml",
             "archive/playbooks/retry-validation-preparation.yml",
             "archive/playbooks/retry-ns-diagnostics-preparation.yml",
         )
@@ -159,6 +156,13 @@ class SourceLayoutTests(unittest.TestCase):
                     )
                     self.assertTrue(Path(command[1]).is_file())
                     self.assertEqual(command[2:], ["abort", str(root)])
+
+            for path in (ROOT/'archive/playbooks').glob('resume-*.yml'):
+                callback = module.CallbackModule()
+                callback.root, callback.playbook = root, str(path)
+                with self.subTest(archived=path.name), patch.object(module.subprocess, "run") as run:
+                    callback._collect_failed_run_diagnostics(stats)
+                    run.assert_not_called()
 
 
 if __name__ == "__main__":

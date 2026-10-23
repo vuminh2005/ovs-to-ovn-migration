@@ -2,7 +2,7 @@
 """Guard phase-06 metadata retry without repeating MTU changes or measurements."""
 import sys as _sys
 from pathlib import Path as _Path
-_source = _Path(__file__).resolve().parents[1]
+_source = _Path(__file__).resolve().parents[3] / 'scripts'
 if _source.name == 'scripts' and (_source / '_paths.py').is_file():
     _sys.path.insert(0, str(_source))
     from _paths import configure as _configure

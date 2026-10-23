@@ -61,11 +61,6 @@ validation_ephemeral_network: true
 # Guest VM1 tenant ICMP interval.
 dataplane_probe_interval_seconds: 0.2
 
-# Optional resume target. Leave empty to auto-pick the newest migration run.
-# Prefer passing explicitly for safety:
-#   -e migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>
-migration_resume_run_dir: "{{ lookup('env', 'OVS_TO_OVN_RESUME_RUN_DIR') | default('', true) }}"
-
 # Workload POC: UUID or unambiguous name. Ubuntu cloud images must already
 # contain cloud-init, Python3, ping, iproute2, systemd and ttyS0 support.
 validation_workloads_enabled: true

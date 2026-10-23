@@ -171,7 +171,7 @@ class MetadataPreparationTests(unittest.TestCase):
 
     def test_preparation_failure_aborts_later_control_host_plays(self):
         self.inventory_for(2)
-        source = yaml.safe_load((ROOT/'playbooks/06-prepared-metadata.yml').read_text())[0]
+        source = yaml.safe_load((ROOT/'playbooks/06-target-config.yml').read_text())[0]
         sentinel = self.parent/'NEUTRON-MUST-NOT-STOP'
         entry = self.parent/'failure-gate.yml'
         entry.write_text(yaml.safe_dump([

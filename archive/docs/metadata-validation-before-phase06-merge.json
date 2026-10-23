@@ -1,0 +1,45 @@
+{
+  "status": "PASS",
+  "date": "2026-10-23",
+  "scope": "Native Kolla trailing-slash bind fix and guarded phase-06 metadata recovery",
+  "validation": {
+    "pytest": {
+      "passed": 710,
+      "seconds": 254.8
+    },
+    "ansible_syntax": {
+      "passed": 17,
+      "total": 17
+    },
+    "source_paths": "PASS",
+    "ruff": "PASS",
+    "ansible_modeled_topologies": [
+      {
+        "total_nodes": 4,
+        "metadata_hosts": 3
+      },
+      {
+        "total_nodes": 20,
+        "metadata_hosts": 19
+      }
+    ],
+    "native_kolla_worker": {
+      "version": "18.8.0",
+      "docker_sdk": "7.2.0",
+      "engine_and_systemd": "MODELED; no Docker daemon or production host was used",
+      "creates": 1,
+      "starts": 0,
+      "unit_enables": 0,
+      "retry_reused_container": true,
+      "bind_spelling": "native trailing slash on source and destination"
+    }
+  },
+  "preserved": [
+    "Original probes and TCP sessions",
+    "Downtime formulas and markers",
+    "TXT renderer",
+    "Legacy cleanup and API restore ordering",
+    "Gateway scheduling"
+  ],
+  "lab_execution": false
+}

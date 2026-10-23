@@ -1,4 +1,13 @@
----
+# Archived reference: unsupported by the current metadata/capture workflow.
+- name: Stop archived migration recovery before any checkpoint or host action
+  hosts: localhost
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Refuse execution of an archived migration recovery route
+      ansible.builtin.fail:
+        msg: This recovery route is archived and unsupported by the current metadata/capture workflow. See README.md for the fresh lab baseline procedure; preserve existing run evidence.
+
 - name: Recover failed metadata preparation before API freeze
   hosts: localhost
   gather_facts: false
@@ -17,7 +26,7 @@
 
     - name: Require an incomplete phase 06 with original MTU journal and live capture checkpoints
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../../scripts/recovery/metadata_recovery.py", inspect, "{{ migration_resume_run_dir }}", --inventory, "{{ ansible_inventory_sources[0] }}"]
+        argv: [python3, "{{ playbook_dir }}/../scripts/recovery/metadata_recovery.py", inspect, "{{ migration_resume_run_dir }}", --inventory, "{{ ansible_inventory_sources[0] }}"]
       register: metadata_checkpoint
       changed_when: false
 
@@ -107,14 +116,14 @@
   tasks:
     - name: Record recovery pause without rewriting original run or probe baselines
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../../scripts/recovery/metadata_recovery.py", record, "{{ migration_run_dir }}", --inventory, "{{ kolla_inventory_runtime }}"]
+        argv: [python3, "{{ playbook_dir }}/../scripts/recovery/metadata_recovery.py", record, "{{ migration_run_dir }}", --inventory, "{{ kolla_inventory_runtime }}"]
       changed_when: true
 
-- import_playbook: ../06-prepared-metadata.yml
-- import_playbook: ../07-migrate-db.yml
-- import_playbook: ../08-cutover.yml
-- import_playbook: ../09-cleanup.yml
-- import_playbook: ../10-restore-neutron.yml
-- import_playbook: ../11-validate.yml
-- import_playbook: ../12-workload-validation.yml
-- import_playbook: ../13-report.yml
+- import_playbook: metadata-preparation-suffix.yml
+- import_playbook: ../../playbooks/07-migrate-db.yml
+- import_playbook: ../../playbooks/08-cutover.yml
+- import_playbook: ../../playbooks/09-cleanup.yml
+- import_playbook: ../../playbooks/10-restore-neutron.yml
+- import_playbook: ../../playbooks/11-validate.yml
+- import_playbook: ../../playbooks/12-workload-validation.yml
+- import_playbook: ../../playbooks/13-report.yml

@@ -1,45 +1,35 @@
 {
   "status": "PASS",
   "date": "2026-10-23",
-  "scope": "Native Kolla trailing-slash bind fix and guarded phase-06 metadata recovery",
+  "scope": "One canonical phase-06 playbook; unsupported manual migration resume routes archived",
   "validation": {
     "pytest": {
-      "passed": 710,
-      "seconds": 254.8
+      "passed": 686,
+      "seconds": 254.91
     },
     "ansible_syntax": {
-      "passed": 17,
-      "total": 17
+      "passed": 18,
+      "total": 18,
+      "includes_archived_references": true
     },
     "source_paths": "PASS",
     "ruff": "PASS",
-    "ansible_modeled_topologies": [
-      {
-        "total_nodes": 4,
-        "metadata_hosts": 3
-      },
-      {
-        "total_nodes": 20,
-        "metadata_hosts": 19
-      }
-    ],
-    "native_kolla_worker": {
-      "version": "18.8.0",
-      "docker_sdk": "7.2.0",
-      "engine_and_systemd": "MODELED; no Docker daemon or production host was used",
-      "creates": 1,
-      "starts": 0,
-      "unit_enables": 0,
-      "retry_reused_container": true,
-      "bind_spelling": "native trailing slash on source and destination"
-    }
+    "phase06_task_order": "IDENTICAL after import expansion",
+    "archived_resume_execution": "All 5 routes stop before checkpoint reads and host actions"
   },
+  "phase_count": 14,
+  "numbered_phase_files": 14,
+  "archived_resume_routes": 5,
+  "archived_checkpoint_helpers": 3,
+  "archived_test_snapshots": 27,
+  "added_current_contract_tests": 3,
   "preserved": [
-    "Original probes and TCP sessions",
+    "Native Kolla trailing-slash bind fix",
+    "Original probe programs and TCP session logic",
     "Downtime formulas and markers",
     "TXT renderer",
-    "Legacy cleanup and API restore ordering",
-    "Gateway scheduling"
+    "Reset implementation",
+    "Phase 07-13 and gateway scheduling"
   ],
   "lab_execution": false
 }

@@ -4,13 +4,13 @@
   gather_facts: false
   become: true
   vars_files:
-    - ../group_vars/all.yml
+    - ../../group_vars/all.yml
   tasks:
     - name: "[06] Prepare disabled OVN metadata containers before API freeze"
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/migration/prepare_metadata.py"
+          - "{{ playbook_dir }}/../../scripts/migration/prepare_metadata.py"
           - "{{ migration_run_dir }}"
           - --kolla-ansible
           - "{{ kolla_ansible_bin_runtime }}"
@@ -34,7 +34,7 @@
   gather_facts: false
   become: true
   vars_files:
-    - ../group_vars/all.yml
+    - ../../group_vars/all.yml
   tasks:
     - name: "[06] Read generated Neutron settings"
       ansible.builtin.shell: |
@@ -78,7 +78,7 @@
   gather_facts: false
   become: true
   vars_files:
-    - ../group_vars/all.yml
+    - ../../group_vars/all.yml
   tasks:
     - name: "[06] [SAVE] Save database monitor endpoints"
       ansible.builtin.copy:
@@ -87,14 +87,14 @@
         mode: '0600'
     - name: "[06] Start Northbound and Southbound change monitors"
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../scripts/diagnostics/diagnostics_control.py", start, "{{ migration_run_dir }}", --role, central]
+        argv: [python3, "{{ playbook_dir }}/../../scripts/diagnostics/diagnostics_control.py", start, "{{ migration_run_dir }}", --role, central]
       changed_when: false
       when: migration_diagnostics_enabled | bool
     - name: "[06] [TIMER] End phase 06"
       ansible.builtin.command:
         argv:
           - python3
-          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
+          - "{{ playbook_dir }}/../../scripts/common/phase_schema.py"
           - mark
           - "{{ hostvars['localhost']['migration_run_dir'] }}"
           - '06'

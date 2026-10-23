@@ -76,9 +76,9 @@ renderer không được thay đổi. Không có cam kết số giây tiết ki�
 
 ## Cập nhật và chạy
 
-Dùng toàn bộ source cùng phiên bản trong thư mục sạch. Run dừng tại preparation
-phase 06 có route riêng bên dưới; không ghép vào run đã freeze mà thiếu metadata checkpoint. `resume-after-db`
-của run mới dùng container đã chuẩn bị và không lặp preparation sau freeze.
+Dùng toàn bộ source cùng phiên bản trong thư mục sạch. Toàn bộ phase 06 nằm
+trong `playbooks/06-target-config.yml`; không còn một file phase 06 riêng cho
+metadata. Các route resume thủ công đã chuyển vào [archive](../archive/README.md).
 Reset vẫn dùng Kolla destroy để xóa container/unit như các dịch vụ khác.
 
 Sau khi baseline ML2/OVS đã sẵn sàng:
@@ -95,60 +95,31 @@ mới chưa chạy; sau handoff controller tiếp tục start; request metadata 
 khôi phục và các probe E-W/N-S hiện có vẫn được thu như trước. Bộ kiểm thử
 offline không xác nhận kết quả forwarding thực tế trên lab.
 
-## Khôi phục lỗi preparation ở phase 06
+## Lỗi mount metadata và lượt đo mới
 
-Sửa ngày 23/10/2026: Kolla 18.8 dùng bind
+Kolla 18.8 dùng bind
 `/etc/kolla/neutron-ovn-metadata-agent/:/var/lib/kolla/config_files/:ro`.
-Helper trước đây so sánh destination bằng chuỗi thiếu dấu `/` cuối, nên báo
-`Exactly one read-only Kolla configuration bind is required` trước khi tạo
-container. Helper hiện so sánh đường dẫn bằng `PurePosixPath`; vẫn từ chối
-mount read-write hoặc nhiều bind cùng destination. Test Ansible sử dụng đúng
-dạng trailing slash này.
+Helper hiện so sánh destination bằng `PurePosixPath`, nhận cả dạng có/không có
+trailing slash; vẫn từ chối mount read-write hoặc nhiều bind cùng destination.
+Test Ansible sử dụng đúng dạng trailing slash này. Lỗi parser cũ xảy ra trước
+khi tạo/start container metadata; MTU đã giảm ở task trước đó trong phase 06.
 
-Với run dừng đúng bước này, MTU đã được thay đổi và target config đã được sinh;
-Neutron API chưa freeze, chưa migrate DB hay takeover dataplane. Không chạy
-lại entrypoint migration đầy đủ để tạo một run mới trên trạng thái chuẩn bị dở.
+Với run `20261023-155541`, guard đã phát hiện capture N-S gốc thiếu hoặc đã dừng.
+Run đó không đủ điều kiện tiếp tục phép đo liên tục. Các route resume được lưu
+ở archive để tham khảo và dừng ngay khi gọi; không xóa checkpoint hoặc tạo lại
+capture để ép run cũ đi tiếp.
 
-Sau khi thay toàn bộ source bằng bản đã sửa, kiểm tra khả năng resume trước:
+Sau khi cập nhật source trong thư mục sạch, reset lab rồi chạy run mới:
 
 ```bash
 cd /root/ovs-to-ovn-migration
 source /root/venvs/kolla-2024.1/bin/activate
-python3 scripts/recovery/metadata_recovery.py inspect \
-  /root/ovs-to-ovn-backup/20261023-155541 --inventory /root/multinode
+ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
+  -e reset_lab_confirm=true -e reset_delete_migration_backups=false
+# Chỉ chạy lệnh tiếp theo sau OVS_4NODE_BASELINE_READY.
+ansible-playbook -i /root/multinode migrate-to-ovn.yml
 ```
 
-Guard yêu cầu inventory và run gốc, phase 00–05 hoàn tất, phase 06 chưa kết thúc,
-journal MTU hợp lệ, attempt metadata trước freeze và chưa có marker phase 07
-trở đi. Nó từ chối các capture N-S đã dừng. Kiểm tra trực tiếp API nguồn OVS,
-agent nguồn và controller chưa chạy nằm trong route Ansible:
-
-```bash
-ansible-playbook -i /root/multinode playbooks/recovery/resume-metadata-preparation.yml \
-  -e migration_resume_run_dir=/root/ovs-to-ovn-backup/20261023-155541
-```
-
-Route chỉ chạy lại preparation metadata, lấy endpoint/config đích, khôi phục
-monitor rồi đi tiếp phase 07–13. Nó không chạy lại MTU/genconfig tổng thể,
-không tạo workload, không reset timestamp hay baseline. Các gate live probe,
-capture và readiness trước freeze vẫn được giữ nguyên.
-
-**Nếu guard báo capture đã STOPPED:** callback thu thập khi run lỗi có thể đã
-đóng capture N-S gốc. Run đó không đủ điều kiện tiếp tục phép đo liên tục.
-Giữ nguyên checkpoint/PCAP để phân tích; không xóa chúng hoặc tạo capture mới
-để ép resume. Khôi phục baseline lab bằng quy trình reset hiện có trước khi
-chạy một run đo mới. Reset là thao tác phá hủy deployment/workload lab, không
-phải bước sửa metadata hay thao tác áp dụng lên production.
-
-Nếu chỉ cần kiểm chứng bản sửa và chuẩn bị container của run cũ, lệnh dưới
-không freeze API hoặc start metadata; nó vẫn giữ kiểm tra ownership và cấm
-chạy sau freeze:
-
-```bash
-python3 scripts/migration/prepare_metadata.py /root/ovs-to-ovn-backup/20261023-155541 \
-  --kolla-ansible /root/venvs/kolla-2024.1/bin/kolla-ansible \
-  --inventory /root/multinode --globals /etc/kolla/globals.yml
-```
-
-Kết quả `PASS` của preparation chỉ xác nhận container đã chuẩn bị. Nó không
-phục hồi capture đã dừng và không xác nhận run đủ điều kiện resume.
+Reset phá hủy deployment/workload lab và dựng baseline OVS; tham số trên giữ
+migration backup/evidence của run cũ. Mỗi run mới có UUID workload, capture,
+phiên TCP và mốc đo riêng. Quy trình reset lab này không phải rollback production.

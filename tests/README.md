@@ -19,3 +19,7 @@ traffic và container trên lab thật.
 Khi di chuyển source, chạy `tests/common/test_project_layout.py` cùng test
 filter discovery, included-helper paths, callback timing và recovery. Giữ các
 assertion về fail/UNAVAILABLE, ownership, UUID, mốc đo và nội dung report.
+
+`archive/tests/` giữ nguyên snapshot các test resume cũ để đối chiếu lịch sử;
+không nằm trong `testpaths` của bộ test hiện hành. Các test contract hiện hành
+kiểm tra phase 06 duy nhất và route archived dừng trước mọi thao tác host.

@@ -4,7 +4,7 @@
 
 1. `migrate-to-ovn.yml` liệt kê Phase 00–13. Tên `Phase NN` được callback và
    timeline sử dụng.
-2. `playbooks/NN-*.yml` điều phối theo phase. `tasks/` chứa task include;
+2. `playbooks/NN-*.yml` có đúng một file cho mỗi phase 00–13; phase 06 chứa cả metadata preparation và endpoint/monitor. Các file này điều phối theo phase. `tasks/` chứa task include;
    `transport/` chứa playbook độc lập được Python gọi để copy/chạy/fetch helper.
 3. `scripts/validation/workload_validation.py` điều phối workload; các nhóm
    migration, diagnostics, reporting, reset, recovery xử lý phần tương ứng.
@@ -22,7 +22,7 @@
 | `scripts/diagnostics/` | PCAP, host observers, log transfer/reconcile, OVN evidence | `tests/diagnostics/` |
 | `scripts/reporting/` | Tạo report, timeline, TXT renderer, N-S summary | `tests/reporting/` |
 | `scripts/reset/` | Demo/baseline, cleanup, underlay, RabbitMQ | `tests/reset/`, shared-demo tests |
-| `scripts/recovery/` | Guard checkpoint và ghi nhận resume | `tests/recovery/` |
+| `scripts/recovery/` | Helper retry phase 04 lịch sử còn được archive sử dụng | `tests/recovery/` |
 
 Danh sách từng file cũ/mới nằm trong [path-map.tsv](path-map.tsv).
 `plugins/callback/` và `plugins/filter/` phân loại plugin theo convention
@@ -64,7 +64,7 @@ của **cùng checkout**, vì process có thể còn chạy khi checkpoint bị 
 - `playbook_dir` thuộc play đang chạy, không đổi thành thư mục của task include.
   Reset ở gốc và phase trong `playbooks/` có context khác nhau. Giữ đúng
   context khi viết shell/Python inline.
-- Giữ `group_vars/` theo convention; khai báo `vars_files` khi thêm recovery.
+- Giữ `group_vars/` theo convention; khai báo `vars_files` khi thêm entrypoint.
   Chạy từ gốc project để nạp đầy đủ `ansible.cfg`.
 - Giữ `Phase NN`, nhãn `[SAVE]` cho ghi file và các khóa dữ liệu lịch sử.
 
@@ -80,3 +80,8 @@ Python nhúng import helper của project phải gọi `_paths.configure()` trư
 import; chỉ thêm thư mục `scripts/` vào `sys.path` không đủ với source đã nhóm.
 Nó không đánh giá đầy đủ Jinja runtime hay trạng thái cloud; Ansible integration
 và kiểm chứng lab giải quyết các lớp đó.
+
+Các route resume thủ công, helper checkpoint và test snapshot cũ nằm trong
+`archive/`. Guard đầu mỗi route chặn việc thực thi; test snapshot không thuộc
+bộ regression hiện hành. Migrate/reset mặc định không import bất kỳ route nào
+trong archive.

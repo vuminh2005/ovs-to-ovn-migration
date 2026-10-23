@@ -25,7 +25,7 @@ chứng nằm trong [báo cáo audit](docs/audit-current.md).
 | Migration đầy đủ | [migrate-to-ovn.yml](migrate-to-ovn.yml) |
 | Reset lab về OVS | [reset-lab-to-ovs.yml](reset-lab-to-ovs.yml) |
 | Phase theo thứ tự thực thi | [playbooks/](playbooks/) — `00-*.yml` đến `13-*.yml` |
-| Resume có kiểm tra checkpoint | [playbooks/recovery/](playbooks/recovery/README.md) |
+| Recovery lịch sử, đã ngừng hỗ trợ | [archive](archive/README.md) |
 | Task dùng lại / playbook vận chuyển helper | `playbooks/tasks/`, `playbooks/transport/` |
 | Python theo chức năng | [scripts/](scripts/README.md) |
 | Callback, filter và adapter tạo container | [plugins/](plugins/README.md) |
@@ -34,6 +34,7 @@ chứng nằm trong [báo cáo audit](docs/audit-current.md).
 | Cấu trúc và bản đồ đường dẫn cũ → mới | [docs/structure.md](docs/structure.md), [docs/path-map.tsv](docs/path-map.tsv) |
 
 `group_vars/` và `inventory.example` giữ vị trí quy ước của Ansible.
+Mỗi phase 00–13 có đúng một file đánh số trong `playbooks/`, gồm toàn bộ phần chuẩn bị metadata trong `06-target-config.yml`.
 Hai entrypoint migrate/reset ở gốc để giữ nguyên lệnh vận hành quen thuộc.
 Các file trong `archive/` không được import bởi migration/reset mặc định.
 
@@ -96,17 +97,22 @@ Run mới dùng `run-layout.json` và các nhóm `config/`, `backups/`, `resourc
 Run lịch sử không có marker tiếp tục dùng layout cũ. Source reorganization
 không chuyển file dữ liệu run, đổi schema/checkpoint hay đổi công thức downtime.
 
-Resume đã chuyển vào `playbooks/recovery/`. Ví dụ với checkpoint phù hợp:
+Các route resume thủ công đã chuyển vào [archive](archive/README.md), cùng helper
+checkpoint, hướng dẫn và test snapshot cũ. Chúng dừng ngay khi được gọi; không
+còn là entrypoint được hỗ trợ cho workflow metadata/capture hiện tại.
+
+Nếu run lab lỗi trước freeze và capture N-S gốc đã dừng, giữ nguyên run cũ để
+điều tra. Sau khi sửa nguyên nhân, reset lab để có baseline OVS và lượt đo mới:
 
 ```bash
-ansible-playbook -i /root/multinode playbooks/recovery/resume-after-db.yml \
-  -e migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>
+ansible-playbook -i /root/multinode reset-lab-to-ovs.yml \
+  -e reset_lab_confirm=true -e reset_delete_migration_backups=false
 ```
 
-Chọn đúng route trong [hướng dẫn recovery](playbooks/recovery/README.md).
-Các route giữ inventory, UUID, mốc đo và phiên probe cũ; không tự chọn run mới
-nhất hoặc chạy lại DB migration. Reset còn nhận diện probe dùng đường dẫn
-`scripts/ns_probe.py` cũ của cùng checkout khi checkpoint đã mất.
+Chỉ chạy `ansible-playbook -i /root/multinode migrate-to-ovn.yml` sau khi reset
+kết thúc với `OVS_4NODE_BASELINE_READY`. Reset phá hủy deployment/workload lab;
+tham số trên giữ toàn bộ migration backup/evidence, gồm run lỗi trước đó.
+Các mốc đo và phiên TCP cũ không được khởi tạo lại để nối vào một run đã gián đoạn.
 
 ## Phát triển và kiểm tra offline
 

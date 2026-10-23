@@ -1,0 +1,18 @@
+# Archived reference: unsupported by the current metadata/capture workflow.
+- name: Stop archived migration recovery before any checkpoint or host action
+  hosts: localhost
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Refuse execution of an archived migration recovery route
+      ansible.builtin.fail:
+        msg: This recovery route is archived and unsupported by the current metadata/capture workflow. See README.md for the fresh lab baseline procedure; preserve existing run evidence.
+
+- import_playbook: resume-bootstrap.yml
+- import_playbook: ../../playbooks/09-cleanup.yml
+- import_playbook: ../../playbooks/10-restore-neutron.yml
+- import_playbook: ../../playbooks/11-validate.yml
+  when: not (hostvars['localhost']['validation_cleanup_pending'] | default(false) | bool)
+- import_playbook: ../../playbooks/12-workload-validation.yml
+  when: not (hostvars['localhost']['validation_cleanup_pending'] | default(false) | bool)
+- import_playbook: ../../playbooks/13-report.yml

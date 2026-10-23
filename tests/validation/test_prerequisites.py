@@ -106,7 +106,8 @@ class PrerequisiteTests(unittest.TestCase):
         imports=[pathlib.Path(i['import_playbook']) for i in yaml.safe_load((ROOT/'migrate-to-ovn.yml').read_text())]
         self.assertEqual([int(i.name[:2]) for i in imports],list(range(14)))
         self.assertTrue(all((ROOT/i).exists() for i in imports))
-        self.assertTrue((ROOT/'playbooks/recovery/resume-bootstrap.yml').exists())
+        self.assertTrue((ROOT/'archive/playbooks/resume-bootstrap.yml').exists())
+        self.assertFalse((ROOT/'playbooks/recovery').exists())
         self.assertTrue((ROOT/'playbooks/tasks/validation-snapshot-tasks.yml').exists())
         cutover=yaml.safe_load((ROOT/'playbooks/08-cutover.yml').read_text())
         self.assertEqual(cutover[0]['tasks'][0]['ansible.builtin.command']['argv'][4:6], ['08','start'])

@@ -1,3 +1,8 @@
+> Cập nhật 23/10/2026: phase 06 đã gộp vào một file; các route resume thủ công
+> chuyển vào [archive](../archive/README.md). Kết quả kiểm chứng bản hiện hành
+> nằm trong [metadata-validation.json](metadata-validation.json). Phần dưới là
+> hồ sơ audit nền ngày 22/10 và mô tả layout tại thời điểm đó.
+>
 > Cập nhật migration theo inventory ngày 23/10/2026 được ghi riêng tại
 > [node-independent-migration.md](node-independent-migration.md). Các số liệu 655 test
 > dưới đây thuộc bản nền ngày 22/10, không phải lượt kiểm tra của bản cập nhật.
@@ -8,9 +13,7 @@
 
 Nguồn duy nhất: `playbook new stage.zip`, SHA-256
 `af89b1e98b542e783aa6f21dd19ab7f129590c7d277af1e79c09a8b4adec4f0a`.
-Archive đầu vào có 175 file, gồm 102 Python và 38 YAML. Không dùng archive
-GitHub a77 cũ để thay thế source của bản này.
-
+Archive đầu vào có 175 file, gồm 102 Python và 38 YAML. 
 Audit bao gồm kiểm kê toàn bộ file, cú pháp/import, quan hệ source → Ansible →
 helper được staged, đường dẫn resume/retry, plugin discovery, tên/thứ tự phase,
 ownership khi cleanup, checkpoint/evidence, công thức đo và chạy test offline.
@@ -138,5 +141,6 @@ reset, migration, SSH hay thao tác OpenStack API trên lab thật trong lần a
 
 Dùng toàn bộ source cùng phiên bản trong thư mục sạch; giải nén đè để lại các
 file source cũ. Giữ cấu hình, inventory và thư mục run/backup ngoài source.
-Hai lệnh migrate/reset ở gốc không đổi; lệnh resume/script bên ngoài cần đổi
-theo bảng path. Hướng dẫn tại [README](../README.md).
+Hai lệnh migrate/reset ở gốc không đổi. Các route resume cũ đã chuyển archive;
+script ngoài project cần đối chiếu bảng path. Hướng dẫn hiện hành tại
+[README](../README.md).

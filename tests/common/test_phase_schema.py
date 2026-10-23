@@ -219,18 +219,6 @@ class PhaseSchemaTests(unittest.TestCase):
         self.assertRegex((self.root/'migration-report.txt').read_text(),r'Total run duration\s+: UNAVAILABLE')
 
 
-def expanded_plays(path):
-    """Include statically imported phase suffixes when checking timer scope."""
-    path = pathlib.Path(path)
-    result = []
-    for play in yaml.safe_load(path.read_text()):
-        if 'import_playbook' in play:
-            result.extend(expanded_plays(path.parent/play['import_playbook']))
-        else:
-            result.append(play)
-    return result
-
-
 class OrchestrationPhaseTests(unittest.TestCase):
     def setUp(self):
         self.imports=yaml.safe_load((ROOT/'migrate-to-ovn.yml').read_text())
@@ -238,12 +226,12 @@ class OrchestrationPhaseTests(unittest.TestCase):
     def test_canonical_order_and_all_play_labels_match_filenames(self):
         self.assertEqual([row['import_playbook'] for row in self.imports],['playbooks/'+filename for _,filename in p.PHASES])
         for phase,row in enumerate(self.imports):
-            for play in expanded_plays(ROOT/row['import_playbook']):
+            for play in yaml.safe_load((ROOT/row['import_playbook']).read_text()):
                 self.assertTrue(play['name'].startswith(f'Phase {phase:02d} - '),play['name'])
 
     def test_each_file_has_schema_aware_start_and_end_covering_all_plays(self):
         for phase,row in enumerate(self.imports):
-            plays=expanded_plays(ROOT/row['import_playbook'])
+            plays=yaml.safe_load((ROOT/row['import_playbook']).read_text())
             tasks=[task for play in plays for task in play['tasks']]
             markers=[(index,task['ansible.builtin.command']['argv']) for index,task in enumerate(tasks)
                      if 'phase_schema.py' in str(task.get('ansible.builtin.command',{}))]
@@ -295,15 +283,12 @@ class OrchestrationPhaseTests(unittest.TestCase):
         self.assertEqual(sum('capture-cleanup' in task.get('ansible.builtin.shell','') for task in tasks),1)
         self.assertEqual(sum(' finalize ' in task.get('ansible.builtin.shell','') for task in tasks),1)
 
-    def test_resume_uses_shared_schema_check_and_preserves_live_safety_checks(self):
-        plays=yaml.safe_load((ROOT/'playbooks/recovery/resume-bootstrap.yml').read_text())
-        check=next(task for task in plays[0]['tasks'] if task['name'].startswith('Verify takeover checkpoint'))
-        self.assertIn('phase_schema.py',check['ansible.builtin.shell'])
-        self.assertIn('resume-check',check['ansible.builtin.shell'])
-        self.assertNotIn('/metrics/phase06.end',check['ansible.builtin.shell'])
-        self.assertTrue(all(play['any_errors_fatal'] for play in plays))
-        live=plays[1]['tasks'][0]['ansible.builtin.shell']
-        self.assertIn('docker inspect ovn_controller',live); self.assertIn('systemctl is-active',live)
+    def test_only_one_numbered_playbook_exists_for_each_canonical_phase(self):
+        numbered=sorted(path.name for path in (ROOT/'playbooks').glob('[0-9][0-9]-*.yml'))
+        self.assertEqual(numbered,[filename for _,filename in p.PHASES])
+        for phase,row in enumerate(self.imports):
+            self.assertTrue(all('import_playbook' not in play for play in
+                yaml.safe_load((ROOT/row['import_playbook']).read_text())),phase)
 
 
 if __name__=='__main__': unittest.main()

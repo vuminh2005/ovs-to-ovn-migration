@@ -1,3 +1,13 @@
+# Archived reference: unsupported by the current metadata/capture workflow.
+- name: Stop archived migration recovery before any checkpoint or host action
+  hosts: localhost
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Refuse execution of an archived migration recovery route
+      ansible.builtin.fail:
+        msg: This recovery route is archived and unsupported by the current metadata/capture workflow. See README.md for the fresh lab baseline procedure; preserve existing run evidence.
+
 - name: Recover only a completed DB migration before dataplane cutover
   hosts: localhost
   gather_facts: false
@@ -15,7 +25,7 @@
           - not ansible_check_mode
     - name: Require committed successful DB migration and no cutover markers
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../../scripts/recovery/post_db_recovery.py", inspect, "{{ migration_resume_run_dir }}", --inventory, "{{ ansible_inventory_sources[0]
+        argv: [python3, "{{ playbook_dir }}/../scripts/recovery/post_db_recovery.py", inspect, "{{ migration_resume_run_dir }}", --inventory, "{{ ansible_inventory_sources[0]
               }}"]
       register: post_db_checkpoint
       changed_when: false
@@ -86,7 +96,7 @@
       changed_when: false
     - name: Record recovery pause without modifying the original measurement timestamps
       ansible.builtin.command:
-        argv: [python3, "{{ playbook_dir }}/../../scripts/recovery/post_db_recovery.py", record, "{{ migration_run_dir }}", --inventory, "{{ kolla_inventory_runtime }}"]
+        argv: [python3, "{{ playbook_dir }}/../scripts/recovery/post_db_recovery.py", record, "{{ migration_run_dir }}", --inventory, "{{ kolla_inventory_runtime }}"]
       changed_when: true
     - name: Complete phase 07 only after migrated topology is verified
       ansible.builtin.command:
@@ -99,9 +109,9 @@
       changed_when: false
       when: lookup('fileglob', (migration_run_dir | run_file('diagnostics-config.json'))) | length > 0
 
-- import_playbook: ../08-cutover.yml
-- import_playbook: ../09-cleanup.yml
-- import_playbook: ../10-restore-neutron.yml
-- import_playbook: ../11-validate.yml
-- import_playbook: ../12-workload-validation.yml
-- import_playbook: ../13-report.yml
+- import_playbook: ../../playbooks/08-cutover.yml
+- import_playbook: ../../playbooks/09-cleanup.yml
+- import_playbook: ../../playbooks/10-restore-neutron.yml
+- import_playbook: ../../playbooks/11-validate.yml
+- import_playbook: ../../playbooks/12-workload-validation.yml
+- import_playbook: ../../playbooks/13-report.yml

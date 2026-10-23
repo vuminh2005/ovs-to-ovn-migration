@@ -155,16 +155,10 @@ D bị tắt được báo `DISABLED`; không được báo là TCP PASS. Nếu 
 report là `MIGRATED_VALIDATION_INCOMPLETE`, tài nguyên/evidence được giữ để điều tra,
 không tự rollback. SG/network/router bên ngoài checkpoint không bị xóa.
 
-Nếu đã qua cutover và gate late-resume hiện có chấp nhận checkpoint, tiếp tục:
-
-```bash
-ansible-playbook -i /root/multinode playbooks/recovery/resume-after-cleanup.yml \
-    -e 'migration_resume_run_dir=/root/ovs-to-ovn-backup/<run-id>'
-```
-
-Entrypoint này không lặp freeze/DB sync/ARM. Nếu dừng trước freeze/cutover,
-không chạy lại full migration hoặc late-resume tùy tiện; kiểm tra log/checkpoint
-trước. Run mới luôn tạo run ID mới, không tiếp quản workload của run trước.
+Các route resume cũ đã chuyển vào [archive](../archive/README.md) và không còn
+được hỗ trợ cho workflow hiện tại. Giữ nguyên evidence khi run lỗi. Với lab
+cần đo lại, reset baseline sau khi sửa nguyên nhân rồi chạy run mới; capture,
+UUID và phiên TCP của run mới được tạo riêng.
 
 ## Kiểm tra bản sửa
 

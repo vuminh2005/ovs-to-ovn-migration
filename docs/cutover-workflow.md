@@ -90,11 +90,11 @@ report/backup migration. Evidence cleanup ở snapshot reset. Sau OVS deploy,
 reset thêm và xác minh OpenFlow15 trước khi dựng workload; chuẩn bị trước
 freeze vẫn kiểm tra lại để hỗ trợ baseline OVS chưa chạy reset bản mới.
 
-`playbooks/recovery/resume-after-db.yml` yêu cầu checkpoint preparation gốc và không lặp lại DB
-migration, freeze hay ARM. Bản này dành cho **run mới**; không ghép code mới vào
-run cũ đã freeze mà thiếu `cutover-preparation.json`. Các hướng dẫn cài riêng
-vài file để cứu run cũ trong tài liệu lịch sử không áp dụng cho bản thay đổi
-thứ tự này.
+Các route resume thủ công trước đây đã chuyển vào [archive](../archive/README.md).
+Workflow hiện hành dùng một file cho mỗi phase 00–13. Toàn bộ metadata
+preparation và lấy endpoint ở phase 06 nằm trong `06-target-config.yml`.
+Run bị gián đoạn và mất capture gốc cần được giữ làm evidence; với lab, sửa lỗi,
+reset baseline rồi chạy một run đo mới.
 
 Để kiểm chứng trong lab, cập nhật toàn bộ ZIP, rồi chạy reset và migrate như cũ:
 
