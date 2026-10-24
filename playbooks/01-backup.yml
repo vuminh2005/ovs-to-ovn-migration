@@ -159,6 +159,7 @@
     - rollback_common.py
     - rollback_host.py
     - rollback_database.py
+    - rollback_nova_native.py
   - name: '[01] Capture original per-host config and container identities'
     ansible.builtin.command:
       argv:

@@ -50,35 +50,56 @@ def events(root):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
-def nova_state(cloud):
-    rows=[]
-    for server in cloud.compute.servers(all_projects=True,details=True):
-        row={key:getattr(server,key,None) for key in ('id','compute_host','status','task_state')}
-        if row['task_state'] or row['status'] not in ('ACTIVE','SHUTOFF','PAUSED','SUSPENDED'):
-            raise Stop('Nova has an in-flight or unsupported instance state')
-        rows.append(row)
+def nova_rows(root, value):
+    spec=load(root)
+    hosts=sorted(host for host,roles in spec['hosts'].items() if roles.get('control'))
+    if (value.get('schema')!=1 or value.get('status')!='PASS' or value.get('source')!='nova-cell-db' or
+            value.get('run')!=root.name or not hosts or value.get('host')!=hosts[0] or
+            value.get('reader_sha256')!=sha(Path(__file__).with_name('rollback_nova_native.py')) or
+            abs(time.time()-value.get('observed_at',0))>120 or not value.get('cells') or
+            not value.get('container_id') or not value.get('image_id')):
+        raise Stop('Native Nova observation identity/source/freshness is invalid')
+    rows=value.get('servers')
+    if not isinstance(rows,list):raise Stop('Nova instance inventory is missing')
+    identifiers=set()
+    for row in rows:
+        if (set(row)!=set(('id','compute_host','status','task_state')) or not row['id'] or row['id'] in identifiers or
+                not row['compute_host'] or row['task_state'] is not None or
+                row['status'] not in ('ACTIVE','SHUTOFF','PAUSED','SUSPENDED')):
+            raise Stop('Nova has an in-flight, duplicate or unsupported instance state')
+        identifiers.add(row['id'])
     return sorted(rows,key=lambda row:row['id'])
 
 
 def nova(root,freeze=False):
-    import openstack
     load(root)
-    cloud=openstack.connect();cloud.compute.default_microversion='2.74'
-    rows=nova_state(cloud)
+    value=json.loads((root/'rollback/nova-current.json').read_text())
+    rows=nova_rows(root,value)
     path=root/'rollback/nova-frozen.json'
     if freeze:
         if path.exists():raise Stop('Never overwrite the frozen Nova inventory')
+        preflight=json.loads((root/'rollback/nova-preflight.json').read_text())
+        for key in ('container_id','image_id','reader_sha256','cells','servers'):
+            if value[key]!=preflight.get(key):raise Stop('Nova changed since the pre-freeze native preflight')
         domains=set()
         for host,roles in load(root)['hosts'].items():
             if roles.get('compute'):
                 domains.update(json.loads((root/'rollback/frozen'/f'{host}.json').read_text()).get('vms',{}))
         if domains!={r['id'] for r in rows}:raise Stop('Nova instances differ from the complete libvirt source inventory')
-        save(path,dict(schema=1,run=root.name,servers=rows))
+        save(path,dict(schema=1,run=root.name,servers=rows,source='nova-cell-db',
+                       native_identity={key:value[key] for key in ('container_id','image_id','reader_sha256','cells')}))
         return dict(status='PASS',servers=len(rows),source_sha256=sha(path))
     original=json.loads(path.read_text())
+    if original.get('native_identity') and any(value.get(k)!=v for k,v in original['native_identity'].items()):
+        raise Stop('Native Nova reader/container/cell coverage changed since freeze')
     value=dict(status='PASS',run=root.name,matches=rows==original['servers'],source_sha256=sha(path),observed_at=time.time())
     save(root/'rollback/nova-inspection.json',value)
     return value
+
+
+def plan_digest(value):
+    content={key:item for key,item in value.items() if key!='plan_sha256'}
+    return hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
 
 
 def plan(root):
@@ -128,19 +149,23 @@ def plan(root):
                nova_sha256=sha(root/'rollback/nova-frozen.json') if dirty else None,
                metadata_port_ids=db.get('metadata_port_ids',[]), maintenance_required=True,
                scope='In-place OVS restoration; no VM deletion, global MariaDB restore or original-report rewrite')
-    value['plan_sha256']=hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+    value['plan_sha256']=plan_digest(value)
     save(root/'rollback/plan.json',value)
     return value
 
 
 def authorize(root, cfg):
     value=json.loads((root/'rollback/plan.json').read_text())
+    spec=load(root)
     no_migration_process()
     if cfg.get('execute') is not True or cfg.get('maintenance') is not True:
-        raise Stop('Execute requires explicit authorization and externally enforced maintenance')
-    if value.get('status')!='READY' or cfg.get('plan_sha256')!=value.get('plan_sha256'):
-        raise Stop('Inspect and approve the current concrete plan hash before executing')
-    save(root/'rollback/execution.json',dict(status='AUTHORIZED',run=root.name,plan_sha256=value['plan_sha256'],authorized_at=time.time()))
+        raise Stop('Rollback execution or maintenance has been disabled; no restore was started')
+    if (value.get('status')!='READY' or value.get('run')!=root.name or
+            value.get('inventory_sha256')!=spec['inventory_sha256'] or
+            value.get('plan_sha256')!=plan_digest(value) or cfg.get('plan_sha256')!=value.get('plan_sha256')):
+        raise Stop('Fresh rollback plan identity/hash differs; no restore was started')
+    save(root/'rollback/execution.json',dict(status='AUTHORIZED',run=root.name,plan_sha256=value['plan_sha256'],authorized_at=time.time(),
+                                            authorization_mode=cfg.get('authorization_mode','explicit')))
     return dict(status='PASS',plan=value)
 
 

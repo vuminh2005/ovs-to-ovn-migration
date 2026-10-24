@@ -354,7 +354,7 @@ def test_migration_checkpoint_is_before_database_metric_and_takeover():
     assert len(list((ROOT/'playbooks').glob('[0-9][0-9]-*.yml')))==14
 
 
-def test_real_ansible_inspect_default_has_no_mutation_calls(tmp_path,planned_run):
+def test_real_ansible_explicit_inspect_has_no_mutation_calls(tmp_path,planned_run):
     # The production entry runs its real Jinja conditions and plan construction.
     # Replace only remote transport commands with safe receipt-emitting fixtures.
     plays=yaml.safe_load((ROOT/'rollback-to-ovs.yml').read_text())
@@ -376,17 +376,19 @@ def test_real_ansible_inspect_default_has_no_mutation_calls(tmp_path,planned_run
     inventory.write_text('[all:vars]\nansible_connection=local\nansible_python_interpreter='+sys.executable+'\n[control]\ncontroller\n[network]\nnetwork1\n[compute]\n')
     (planned_run/'inventory.before').write_bytes(inventory.read_bytes())
     entry=tmp_path/'inspect.yml';entry.write_text(yaml.safe_dump(plays,sort_keys=False))
-    result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i',str(inventory),str(entry),'-e','rollback_run_dir='+str(planned_run)],
+    result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i',str(inventory),str(entry),'-e','rollback_run_dir='+str(planned_run),'-e','rollback_mode=inspect'],
                           cwd=tmp_path,capture_output=True,text=True,timeout=45)
     assert result.returncode==0,result.stdout+result.stderr
     assert not events.exists()
     assert json.loads((planned_run/'rollback/plan.json').read_text())['db_restore'] is False
 
 
-@pytest.mark.parametrize('case',['success','wrong-plan','db-failure','host-failure'])
+@pytest.mark.parametrize('case',['success','auto','auto-prepare','auto-repeat','wrong-plan','db-failure','host-failure',
+                                  'execution-disabled','maintenance-disabled','business-drift'])
 def test_real_ansible_execute_keeps_global_restore_barriers(tmp_path,planned_run,case):
     root=planned_run;inventory=Path(json.loads((root/'runtime.json').read_text())['inventory'])
-    (root/'metrics').mkdir();(root/'metrics/db_migration.start').write_text('100')
+    (root/'metrics').mkdir()
+    if case!='auto-prepare':(root/'metrics/db_migration.start').write_text('100')
     sql=root/'rollback/database/neutron.sql';sql.write_text('frozen source SQL')
     checkpoint=dict(run='run',database='neutron',dump_sha256=common.sha(sql),business_sha256='business')
     proof=dict(status='PASS',run='run',business_matches=True,current_business_sha256='business',checkpoint=checkpoint,metadata_port_ids=[])
@@ -396,7 +398,9 @@ def test_real_ansible_execute_keeps_global_restore_barriers(tmp_path,planned_run
     common.save(root/'rollback/nova-inspection.json',dict(status='PASS',matches=True,source_sha256=common.sha(root/'rollback/nova-frozen.json')))
     plan=controller.plan(root)
     plays=yaml.safe_load((ROOT/'rollback-to-ovs.yml').read_text());events=tmp_path/'events'
-    marker=tmp_path/'checkpoint';marker.write_text('exists')
+    marker=tmp_path/'checkpoint'
+    if case!='auto-prepare':marker.write_text('exists')
+    if case=='business-drift':proof['business_matches']=False
     action_names={
         'Stop relevant writers before any restore':'quiesce',
         'Restore and verify Neutron without touching other service databases':'db',
@@ -425,27 +429,58 @@ def test_real_ansible_execute_keeps_global_restore_barriers(tmp_path,planned_run
                 fail=(case=='db-failure' and stage=='db') or (case=='host-failure' and stage=='quiesce')
                 task['ansible.builtin.command']['argv']=emit(dict(status='STOP' if fail else 'PASS'),stage,fail)
             elif name=='Wait for Neutron through the operator maintenance path':task['ansible.builtin.shell']='true'
-            elif name=='Check current Nova against frozen instance inventory':task['ansible.builtin.shell']='true'
+            elif name=='Read current Nova cells without HTTP or Neutron dependency':
+                task['ansible.builtin.command']['argv']=emit(native_receipt())
+            elif name=='Check current Nova against frozen instance inventory':task['ansible.builtin.command']['argv']=['true']
             elif name=='Wait for source services ports and underlay to recover':task['ansible.builtin.command']['argv']=emit(dict(status='PASS'))
             elif name=='Validate existing guests without changing migration probes or reports':
                 task.pop('ansible.builtin.shell');task.pop('args')
                 task['ansible.builtin.command']=dict(argv=[sys.executable,'-c',
                     f'from pathlib import Path;Path({str(root/"rollback/functional.json")!r}).write_text(\'{{"status":"PASS"}}\')'])
     entry=tmp_path/'execute.yml';entry.write_text(yaml.safe_dump(plays,sort_keys=False))
-    extra=dict(rollback_run_dir=str(root),rollback_mode='execute',rollback_execute=True,rollback_maintenance_confirm=True,
-               rollback_plan_sha256='wrong' if case=='wrong-plan' else plan['plan_sha256'])
-    result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i',str(inventory),str(entry),'-e',json.dumps(extra)],
-                          cwd=tmp_path,capture_output=True,text=True,timeout=60)
-    assert (result.returncode==0)==(case=='success'),result.stdout+result.stderr
+    extra=dict(rollback_run_dir=str(root))
+    if case in ('success','wrong-plan'):
+        extra.update(rollback_mode='execute',rollback_execute=True,rollback_maintenance_confirm=True,
+                     rollback_plan_sha256='wrong' if case=='wrong-plan' else plan['plan_sha256'])
+    elif case=='execution-disabled':extra['rollback_execute']=False
+    elif case=='maintenance-disabled':extra['rollback_maintenance_confirm']=False
+    command=[sys.executable,'-m','ansible.cli.playbook','-i',str(inventory),str(entry),'-e',json.dumps(extra)]
+    result=subprocess.run(command,cwd=tmp_path,capture_output=True,text=True,timeout=75)
+    succeeded=case in ('success','auto','auto-prepare','auto-repeat')
+    assert (result.returncode==0)==succeeded,result.stdout+result.stderr
     stages=events.read_text().splitlines() if events.exists() else []
-    if case=='wrong-plan':assert stages==[]
+    if case in ('wrong-plan','execution-disabled','maintenance-disabled','business-drift'):assert stages==[]
     elif case=='host-failure':assert stages and set(stages)=={'quiesce'}
     elif case=='db-failure':assert stages[-1]=='db' and 'api' not in stages and 'config' not in stages
     else:
-        assert max(i for i,s in enumerate(stages) if s=='quiesce')<stages.index('db')<stages.index('config')<stages.index('ovs')<stages.index('api')<stages.index('agents')
+        if case=='auto-prepare':
+            assert 'db' not in stages
+            assert json.loads((root/'rollback/plan.json').read_text())['db_restore'] is False
+            assert max(i for i,s in enumerate(stages) if s=='quiesce')<stages.index('config')
+        else:assert max(i for i,s in enumerate(stages) if s=='quiesce')<stages.index('db')<stages.index('config')
+        assert stages.index('config')<stages.index('ovs')<stages.index('api')<stages.index('agents')
         completed=json.loads((root/'rollback/complete.json').read_text())
         assert completed['maintenance_released'] is False
         assert completed['status']=='RESTORED_REQUIRES_ACCEPTANCE'
+        execution=json.loads((root/'rollback/execution.json').read_text())
+        assert execution['plan_sha256']==json.loads((root/'rollback/plan.json').read_text())['plan_sha256']
+        assert execution['authorization_mode']=='single-command'
+        if case=='auto-repeat':
+            repeated=subprocess.run(command,cwd=tmp_path,capture_output=True,text=True,timeout=75)
+            assert repeated.returncode==0,repeated.stdout+repeated.stderr
+            assert events.read_text().splitlines()==stages
+
+
+@pytest.mark.parametrize('change',['content','run','inventory'])
+def test_plan_integrity_is_checked_before_single_command_restore(planned_run,change):
+    plan=controller.plan(planned_run)
+    if change=='content':plan['db_restore']=True
+    elif change=='run':plan['run']='foreign'
+    else:plan['inventory_sha256']='different'
+    common.save(planned_run/'rollback/plan.json',plan)
+    with pytest.raises(common.Stop,match='identity/hash'):
+        controller.authorize(planned_run,dict(execute=True,maintenance=True,plan_sha256=plan['plan_sha256']))
+    assert not (planned_run/'rollback/execution.json').exists()
 
 
 def test_functional_verification_never_uses_evidence_writing_collectors(tmp_path,monkeypatch):
@@ -472,11 +507,17 @@ def test_functional_verification_never_uses_evidence_writing_collectors(tmp_path
 
 
 def test_nova_task_and_host_changes_are_not_treated_as_unchanged(planned_run,monkeypatch):
-    import openstack
     common.save(planned_run/'rollback/nova-frozen.json',dict(schema=1,run='run',servers=[dict(id='server',compute_host='compute1',status='ACTIVE',task_state=None)]))
-    server=NS(id='server',compute_host='compute2',status='ACTIVE',task_state=None)
-    cloud=NS(compute=NS(servers=lambda **kw:[server]))
-    monkeypatch.setattr(openstack,'connect',lambda:cloud)
+    server=dict(id='server',compute_host='compute2',status='ACTIVE',task_state=None)
+    common.save(planned_run/'rollback/nova-current.json',native_receipt([server]))
     assert controller.nova(planned_run)['matches'] is False
-    server.task_state='migrating'
+    server['task_state']='migrating'
+    common.save(planned_run/'rollback/nova-current.json',native_receipt([server]))
     with pytest.raises(common.Stop,match='in-flight'):controller.nova(planned_run)
+
+
+def native_receipt(servers=None):
+    import time
+    return dict(schema=1,status='PASS',source='nova-cell-db',run='run',host='controller',
+                observed_at=time.time(),container_id='nova-id',image_id='nova-image',cells=['cell0','cell1'],
+                reader_sha256=common.sha(ROOT/'scripts/recovery/rollback_nova_native.py'),servers=servers or [])

@@ -3,12 +3,22 @@
   any_errors_fatal: true
   gather_facts: false
   become: true
+  vars:
+    rollback_defaults:
+      mode: execute
+      execute: true
+      maintenance_confirm: true
   tasks:
+  - name: Resolve single-command rollback defaults
+    ansible.builtin.set_fact:
+      rollback_mode_runtime: '{{ rollback_mode | default(rollback_defaults.mode) }}'
+      rollback_execute_runtime: '{{ rollback_execute | default(rollback_defaults.execute) | bool }}'
+      rollback_maintenance_runtime: '{{ rollback_maintenance_confirm | default(rollback_defaults.maintenance_confirm) | bool }}'
   - name: Require explicit run and supported mode
     ansible.builtin.assert:
       that:
       - rollback_run_dir is defined
-      - rollback_mode | default('inspect') in ['inspect','execute','verify']
+      - rollback_mode_runtime in ['inspect','execute','verify']
       - ansible_limit | default('') | length == 0
       - ansible_inventory_sources | length == 1
   - name: Load immutable rollback specification
@@ -24,6 +34,16 @@
     ansible.builtin.set_fact:
       rollback_spec: '{{ (rollback_load.stdout | from_json).spec }}'
       rollback_plan: '{{ (rollback_load.stdout | from_json).plan | default({}) }}'
+  - name: Detect an already completed rollback
+    ansible.builtin.stat:
+      path: '{{ rollback_run_dir }}/rollback/complete.json'
+    register: rollback_previous_completion
+  - name: Verify a completed rollback without repeating restoration
+    ansible.builtin.set_fact:
+      rollback_mode_runtime: verify
+    when:
+    - rollback_mode is not defined
+    - rollback_previous_completion.stat.exists
   - name: Require all original hosts
     ansible.builtin.assert:
       that: rollback_spec.hosts.keys() | list | difference(groups['all']) | length == 0
@@ -57,8 +77,7 @@
     delegate_to: localhost
   vars: &id001
     rollback_host_config_json: '{{ hostvars[''localhost''][''rollback_spec''].hosts[inventory_hostname] | combine({''run'': hostvars[''localhost''][''rollback_spec''].run,
-      ''host'': inventory_hostname, ''execute'': rollback_execute | default(false) | bool, ''maintenance'': rollback_maintenance_confirm | default(false)
-      | bool, ''db_restore'': hostvars[''localhost''][''rollback_plan''].db_restore | default(false), ''flow_rebuild'': hostvars[''localhost''][''rollback_plan''].flow_rebuild
+      ''host'': inventory_hostname, ''execute'': hostvars[''localhost''][''rollback_execute_runtime''], ''maintenance'': hostvars[''localhost''][''rollback_maintenance_runtime''], ''db_restore'': hostvars[''localhost''][''rollback_plan''].db_restore | default(false), ''flow_rebuild'': hostvars[''localhost''][''rollback_plan''].flow_rebuild
       | default(false), ''metadata_port_ids'': hostvars[''localhost''][''rollback_plan''].metadata_port_ids | default([])}) | to_json }}'
 - name: Rollback - Inspect frozen database and business changes
   hosts: localhost
@@ -90,13 +109,30 @@
         '
       mode: '0600'
     when: rollback_db_checkpoint.stat.exists
+  - name: Read current Nova cells without HTTP or Neutron dependency
+    ansible.builtin.command:
+      argv:
+      - python3
+      - /var/lib/ovs-to-ovn-rollback/{{ rollback_spec.run }}/rollback_host.py
+      - nova-state
+      - '{{ rollback_spec.hosts[groups[''control''] | sort | first] | combine({''run'': rollback_spec.run, ''host'': groups[''control''] | sort | first}) | to_json }}'
+    delegate_to: '{{ groups[''control''] | sort | first }}'
+    register: rollback_nova_current
+    changed_when: false
+    when: rollback_db_checkpoint.stat.exists
+  - name: Save current native Nova observation
+    ansible.builtin.copy:
+      dest: '{{ rollback_run_dir }}/rollback/nova-current.json'
+      content: '{{ rollback_nova_current.stdout }}'
+      mode: '0600'
+    when: rollback_db_checkpoint.stat.exists
   - name: Check current Nova against frozen instance inventory
-    ansible.builtin.shell: |
-      set -euo pipefail
-      source {{ rollback_spec.openrc | quote }}
-      python3 {{ (playbook_dir + '/scripts/recovery/rollback_controller.py') | quote }} nova-inspect {{ rollback_run_dir | quote }}
-    args:
-      executable: /bin/bash
+    ansible.builtin.command:
+      argv:
+      - python3
+      - '{{ playbook_dir }}/scripts/recovery/rollback_controller.py'
+      - nova-inspect
+      - '{{ rollback_run_dir }}'
     changed_when: false
     when: rollback_db_checkpoint.stat.exists
   - name: Build concrete rollback plan
@@ -108,25 +144,32 @@
       - '{{ rollback_run_dir }}'
     register: rollback_planned
     changed_when: false
-    when: rollback_mode | default('inspect') != 'verify'
+    when: hostvars['localhost']['rollback_mode_runtime'] != 'verify'
   - name: Load current plan
     ansible.builtin.set_fact:
       rollback_plan: '{{ rollback_planned.stdout | from_json }}'
-    when: rollback_mode | default('inspect') != 'verify'
-  - name: Show rollback plan and required hash
+    when: hostvars['localhost']['rollback_mode_runtime'] != 'verify'
+  - name: Show automatic rollback summary
     ansible.builtin.debug:
-      var: rollback_plan
-    when: rollback_mode | default('inspect') != 'verify'
-  - name: Authorize only the reviewed plan under enforced maintenance
+      msg:
+        run: '{{ rollback_plan.run }}'
+        status: '{{ rollback_plan.status }}'
+        db_restore: '{{ rollback_plan.db_restore }}'
+        flow_rebuild: '{{ rollback_plan.flow_rebuild }}'
+        api_reopened: '{{ rollback_plan.api_reopened }}'
+        hosts: '{{ rollback_spec.hosts.keys() | list }}'
+        evidence: '{{ rollback_run_dir }}/rollback/plan.json'
+    when: hostvars['localhost']['rollback_mode_runtime'] != 'verify'
+  - name: Validate the fresh plan and begin rollback automatically
     ansible.builtin.command:
       argv:
       - python3
       - '{{ playbook_dir }}/scripts/recovery/rollback_controller.py'
       - authorize
       - '{{ rollback_run_dir }}'
-      - '{{ {''execute'': rollback_execute | default(false) | bool, ''maintenance'': rollback_maintenance_confirm | default(false) | bool, ''plan_sha256'':
-        rollback_plan_sha256 | default('''')} | to_json }}'
-    when: rollback_mode | default('inspect') == 'execute'
+      - '{{ {''execute'': rollback_execute_runtime, ''maintenance'': rollback_maintenance_runtime, ''plan_sha256'':
+        rollback_plan_sha256 | default(rollback_plan.plan_sha256), ''authorization_mode'': ''single-command''} | to_json }}'
+    when: hostvars['localhost']['rollback_mode_runtime'] == 'execute'
     changed_when: false
 - name: Rollback - Quiesce all source and target writers
   hosts: control:network:compute:mariadb
@@ -142,12 +185,12 @@
       - quiesce
       - '{{ rollback_host_config_json }}'
     when:
-    - rollback_mode | default('inspect') == 'execute'
+    - hostvars['localhost']['rollback_mode_runtime'] == 'execute'
   - name: Publish successful quiescence
     ansible.builtin.set_fact:
       rollback_quiesced: true
     when:
-    - rollback_mode | default('inspect') == 'execute'
+    - hostvars['localhost']['rollback_mode_runtime'] == 'execute'
   vars: *id001
 - name: Rollback - Restore only the frozen Neutron database
   hosts: localhost
@@ -160,7 +203,7 @@
       that: rollback_spec.hosts.keys() | list | map('extract', hostvars, 'rollback_quiesced') | select('equalto', true) | list | length == rollback_spec.hosts
         | length
     when:
-    - rollback_mode | default('inspect') == 'execute'
+    - hostvars['localhost']['rollback_mode_runtime'] == 'execute'
   - name: Restore and verify Neutron without touching other service databases
     ansible.builtin.command:
       argv:
@@ -171,7 +214,7 @@
         | to_json }}'
     delegate_to: '{{ rollback_spec.db_host }}'
     when:
-    - rollback_mode | default('inspect') == 'execute'
+    - hostvars['localhost']['rollback_mode_runtime'] == 'execute'
     - rollback_plan.db_restore
 - name: Rollback - Restore original Neutron configuration
   hosts: control:network:compute:mariadb
@@ -187,7 +230,7 @@
       - restore-config
       - '{{ rollback_host_config_json }}'
     when:
-    - rollback_mode | default('inspect') == 'execute'
+    - hostvars['localhost']['rollback_mode_runtime'] == 'execute'
   vars: *id001
 - name: Rollback - Hand back OVS ownership while preserving VM and uplink ports
   hosts: control:network:compute:mariadb
@@ -203,7 +246,7 @@
       - recover-ovs
       - '{{ rollback_host_config_json }}'
     when:
-    - rollback_mode | default('inspect') == 'execute'
+    - hostvars['localhost']['rollback_mode_runtime'] == 'execute'
   vars: *id001
 - name: Rollback - Start original Neutron API under maintenance
   hosts: control:network:compute:mariadb
@@ -219,7 +262,7 @@
       - start-api
       - '{{ rollback_host_config_json }}'
     when:
-    - rollback_mode | default('inspect') == 'execute'
+    - hostvars['localhost']['rollback_mode_runtime'] == 'execute'
   vars: *id001
 - name: Rollback - Wait for usable source API
   hosts: localhost
@@ -243,7 +286,7 @@
     until: rollback_api_ready.rc == 0
     changed_when: false
     when:
-    - rollback_mode | default('inspect') == 'execute'
+    - hostvars['localhost']['rollback_mode_runtime'] == 'execute'
 - name: Rollback - Start original L2 L3 DHCP and metadata agents
   hosts: control:network:compute:mariadb
   any_errors_fatal: true
@@ -258,7 +301,7 @@
       - start-agents
       - '{{ rollback_host_config_json }}'
     when:
-    - rollback_mode | default('inspect') == 'execute'
+    - hostvars['localhost']['rollback_mode_runtime'] == 'execute'
   vars: *id001
 - name: Rollback - Verify source infrastructure and VM preservation
   hosts: control:network:compute:mariadb
@@ -279,7 +322,7 @@
     until: rollback_verified.rc == 0
     changed_when: false
     when:
-    - rollback_mode | default('inspect') in ['execute','verify']
+    - hostvars['localhost']['rollback_mode_runtime'] in ['execute','verify']
   - name: Save source host verification
     ansible.builtin.copy:
       dest: '{{ rollback_run_dir }}/rollback/verified/{{ inventory_hostname }}.json'
@@ -289,7 +332,7 @@
       mode: '0600'
     delegate_to: localhost
     when:
-    - rollback_mode | default('inspect') in ['execute','verify']
+    - hostvars['localhost']['rollback_mode_runtime'] in ['execute','verify']
   vars: *id001
 - name: Rollback - Verify policy state and existing functional traffic
   hosts: localhost
@@ -308,13 +351,13 @@
     register: rollback_final_db
     changed_when: false
     when:
-    - rollback_mode | default('inspect') in ['execute','verify']
+    - hostvars['localhost']['rollback_mode_runtime'] in ['execute','verify']
     - rollback_db_checkpoint.stat.exists
   - name: Require exact business-state equivalence
     ansible.builtin.assert:
       that: (rollback_final_db.stdout | from_json).business_matches
     when:
-    - rollback_mode | default('inspect') in ['execute','verify']
+    - hostvars['localhost']['rollback_mode_runtime'] in ['execute','verify']
     - rollback_db_checkpoint.stat.exists
   - name: Validate existing guests without changing migration probes or reports
     ansible.builtin.shell: 'set -euo pipefail
@@ -328,7 +371,7 @@
     args:
       executable: /bin/bash
     when:
-    - rollback_mode | default('inspect') in ['execute','verify']
+    - hostvars['localhost']['rollback_mode_runtime'] in ['execute','verify']
     - rollback_plan.db_restore | default(true)
   - name: Record preparation-only rollback scope
     ansible.builtin.copy:
@@ -338,7 +381,7 @@
         '
       mode: '0600'
     when:
-    - rollback_mode | default('inspect') in ['execute','verify']
+    - hostvars['localhost']['rollback_mode_runtime'] in ['execute','verify']
     - not (rollback_plan.db_restore | default(true))
   - name: Record restoration and retain maintenance for operator acceptance
     ansible.builtin.command:
@@ -349,10 +392,10 @@
       - '{{ rollback_run_dir }}'
     changed_when: false
     when:
-    - rollback_mode | default('inspect') in ['execute','verify']
+    - hostvars['localhost']['rollback_mode_runtime'] in ['execute','verify']
   - name: Show rollback result
     ansible.builtin.debug:
       msg: 'OVS restoration verified. Keep maintenance until operator acceptance. Evidence: {{ rollback_run_dir }}/rollback/. Original migration
         report/metrics were not rewritten.'
     when:
-    - rollback_mode | default('inspect') in ['execute','verify']
+    - hostvars['localhost']['rollback_mode_runtime'] in ['execute','verify']

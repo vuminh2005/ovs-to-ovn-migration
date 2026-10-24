@@ -12,7 +12,7 @@ downtime tiết kiệm được trước khi chạy lại lab.
 | Phase 06, trước freeze | Tạo cấu hình và container OVN metadata bằng Kolla; container giữ trạng thái `created`, service bị disable |
 | Phase 07, trước freeze | Lấy image Neutron, tạo thư mục helper có ownership, tính timeout binding, copy danh sách VM port đã chốt, thêm OpenFlow15; stage và preflight helper gateway |
 | Ngay trước freeze | Chờ snapshot diagnostics `pre-freeze` thực hiện xong; kiểm tra readiness và capture/anchor Group A đang có |
-| Phase 07, sau stop toàn bộ API, trước migrate | Kiểm VM/Nova, dump riêng Neutron và restore-test trong DB tạm đã chuẩn bị trước freeze; lưu checkpoint bất biến |
+| Phase 07, sau stop toàn bộ API, trước migrate | Kiểm VM/Nova DB bằng reader READ ONLY đã preflight, không gọi Nova server-detail HTTP; dump riêng Neutron và restore-test trong DB tạm đã chuẩn bị trước freeze |
 | Phase 07–10 sau freeze | DB migration/provider verification, ARM listener; phase 08 dừng metadata cũ rồi start metadata đã chuẩn bị, stop các agent còn lại, deploy controller, chờ binding, cleanup; thử schedule gateway rồi restart Neutron |
 | Đầu phase 11, API đã phục hồi | Quan sát các probe đang chạy đến khi có thành công mới; sau đó bật sampling bổ sung và lấy snapshot diagnostics sau phục hồi |
 | Tiếp theo | Snapshot tài nguyên AFTER, so sánh, smoke test, validation/workload mới và remediation |

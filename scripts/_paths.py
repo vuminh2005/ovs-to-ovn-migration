@@ -52,6 +52,7 @@ SCRIPT_FILES = {
     "rollback_database.py": "recovery/rollback_database.py",
     "rollback_host.py": "recovery/rollback_host.py",
     "rollback_validate.py": "recovery/rollback_validate.py",
+    "rollback_nova_native.py": "recovery/rollback_nova_native.py",
     "reset_demo.py": "reset/reset_demo.py",
     "reset_host_observers.py": "reset/reset_host_observers.py",
     "reset_ovs_readiness.py": "reset/reset_ovs_readiness.py",

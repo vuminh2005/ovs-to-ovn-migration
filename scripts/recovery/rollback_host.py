@@ -50,6 +50,30 @@ def service_manifest(name):
                 mounts=[{k: m.get(k) for k in ('Type','Name','Source','Destination','RW')} for m in row.get('Mounts', [])])
 
 
+def nova_state(directory, cfg):
+    if not cfg.get('control'):
+        raise Stop('Native Nova checkpoint must run on an original control host')
+    row = container('nova_api')
+    if not row or not row['State']['Running']:
+        raise Stop('Original nova_api container must be running for a native database read')
+    reader = Path(__file__).with_name('rollback_nova_native.py')
+    result = command(['docker', 'exec', '-i', '--user', 'nova', 'nova_api',
+                      '/var/lib/kolla/venv/bin/python', '-'], input=reader.read_text(),
+                     timeout=70, check=False)
+    try:
+        value = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        raise Stop('Native Nova reader did not return valid JSON; keep the migration stopped') from None
+    if not isinstance(value,dict):
+        raise Stop('Native Nova reader response is not an observation')
+    if result.returncode or value.get('status') != 'PASS':
+        if value.get('error_type')=='ReadStop':
+            raise Stop(value.get('reason','Native Nova read-only checkpoint stopped'))
+        raise Stop('Native Nova database read failed; verify all Nova cells and native dependencies')
+    return dict(value, run=cfg['run'], host=cfg['host'], observed_at=time.time(),
+                container_id=row['Id'], image_id=row['Image'], reader_sha256=sha(reader))
+
+
 def ovs(*args):
     return command(['docker', 'exec', 'openvswitch_vswitchd', 'ovs-vsctl', '--timeout=10'] + list(args)).stdout
 
@@ -358,7 +382,7 @@ def verify(directory, cfg):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('source','freeze','inspect','quiesce','restore-config','recover-ovs','start-api','start-agents','verify','event'))
+    parser.add_argument('action',choices=('source','freeze','inspect','nova-state','quiesce','restore-config','recover-ovs','start-api','start-agents','verify','event'))
     parser.add_argument('config'); args=parser.parse_args(); cfg=json.loads(args.config)
     result={}
     try:
@@ -369,7 +393,7 @@ def main():
             mutation=args.action in ('quiesce','restore-config','recover-ovs','start-api','start-agents')
             if mutation and (cfg.get('execute') is not True or cfg.get('maintenance') is not True): raise Stop('Explicit execution and maintenance are required')
             if mutation: journal(directory/'events.jsonl',args.action,'intent')
-            action={'restore-config':restore_config,'recover-ovs':recover_ovs,
+            action={'restore-config':restore_config,'recover-ovs':recover_ovs,'nova-state':nova_state,
                     'start-api':lambda d,c:start_sources(d,c,True), 'start-agents':start_sources}.get(args.action)
             result=(action or globals()[args.action])(directory,cfg)
             if mutation: journal(directory/'events.jsonl',args.action,'complete')

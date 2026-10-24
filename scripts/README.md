@@ -34,3 +34,7 @@ nằm trong registry source hiện hành.
 `rollback_host.py`, `rollback_validate.py` phục vụ entrypoint hiện hành
 `rollback-to-ovs.yml`. Host/DB helpers được chép cùng `rollback_common.py`
 sang thư mục private theo run. Xem [workflow rollback](../docs/rollback.md).
+
+`rollback_nova_native.py` được stage cùng host helper và chỉ chạy trong
+`nova_api`: đọc các Nova cell bằng session READ ONLY, không phụ thuộc Neutron
+HTTP trong cửa sổ API freeze. Preflight diễn ra trước khi đóng API.

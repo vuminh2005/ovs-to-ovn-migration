@@ -17,8 +17,9 @@ Neutron API. Helper dùng scheduler gốc trong image Neutron, đã preflight tr
 downtime ở phase 07. Lỗi tối ưu sẽ lưu evidence rồi tiếp tục bật API. Xem
 [gateway scheduling sớm](docs/early-gateway-scheduling.md).
 
-Rollback giữ VM có entrypoint riêng: inspect mặc định, kế hoạch có hash,
-checkpoint riêng Neutron đã restore-test và barrier dừng writer trước restore.
+Rollback giữ VM có entrypoint riêng: một lệnh tự inspect, dùng hash của kế hoạch
+vừa tạo và thực thi khi các gate đạt; có checkpoint riêng Neutron đã restore-test
+và barrier dừng writer trước restore. Không cần sao chép SHA hay truyền cờ xác nhận.
 Checkpoint sau khi đóng API làm tăng control-plane downtime; thời gian được
 ghi riêng, chưa có số đo lab. Xem [rollback về OVS](docs/rollback.md) trước khi
 chạy; run cũ thiếu checkpoint không được phục hồi tự động bằng workflow này.
@@ -26,6 +27,10 @@ chạy; run cũ thiếu checkpoint không được phục hồi tự động b�
 Đã sửa lỗi snapshot phase 01 nhận nhầm container OVN chưa tồn tại: dùng inspect
 riêng container và xử lý đúng biến thể `no such object/container`, vẫn chặn lỗi
 Docker daemon/quyền truy cập. Xem [cách chạy lại sau lỗi này](docs/rollback.md).
+
+Checkpoint phase 07 đọc Nova DB qua container `nova_api` bằng session READ ONLY,
+không gọi Nova server-detail API sau khi Neutron đã dừng. Reader được preflight
+trước freeze; kiểm tra mọi cell và mapping, UUID/host/task state vẫn giữ nguyên.
 
 Playbook cho lab Kolla-Ansible 2024.1, giữ workflow Phase 00–13 và bộ đo
 E-W/N-S của bản `playbook new stage.zip`. Bản audit ngày 22/10/2026 sắp xếp
@@ -37,7 +42,7 @@ chứng nằm trong [báo cáo audit](docs/audit-current.md).
 | Mục đích | File/thư mục |
 |---|---|
 | Migration đầy đủ | [migrate-to-ovn.yml](migrate-to-ovn.yml) |
-| Rollback giữ VM, mặc định chỉ inspect | [rollback-to-ovs.yml](rollback-to-ovs.yml), [hướng dẫn](docs/rollback.md) |
+| Rollback giữ VM bằng một lệnh | [rollback-to-ovs.yml](rollback-to-ovs.yml), [hướng dẫn](docs/rollback.md) |
 | Reset lab về OVS | [reset-lab-to-ovs.yml](reset-lab-to-ovs.yml) |
 | Phase theo thứ tự thực thi | [playbooks/](playbooks/) — `00-*.yml` đến `13-*.yml` |
 | Recovery lịch sử, đã ngừng hỗ trợ | [archive](archive/README.md) |

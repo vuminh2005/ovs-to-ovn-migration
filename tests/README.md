@@ -28,3 +28,12 @@ kiểm tra phase 06 duy nhất và route archived dừng trước mọi thao tá
 checkpoint restore-test và Neutron-only import, cùng kiểm thử thứ tự barrier
 qua Ansible local. DB/host transport được giả lập; chưa kiểm thử MariaDB image
 hoặc dataplane trên lab. Chạy riêng bằng `pytest -q tests/recovery/test_rollback.py`.
+
+Các ca Ansible chạy mặc định bằng run-dir duy nhất, tự lấy hash, preparation-only,
+rerun tự verify, và chặn trước mutation khi disable execution/maintenance,
+business drift hoặc hash sai. Inspect cần chọn rõ `rollback_mode=inspect`.
+
+`test_nova_checkpoint.py` dùng SQLite mở read-only để kiểm tra toàn bộ mapping/
+cell inventory và drift, mock MySQL session để xác minh READ ONLY trước SELECT,
+bootstrap không RPC/DB configuration, và chặn rò DSN khi lỗi. Không thay thế
+việc kiểm thử image Nova/MariaDB thật trong lab.

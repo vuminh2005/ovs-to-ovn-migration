@@ -5,9 +5,9 @@
   "scope": "Conditional in-place rollback to source ML2/OVS, preserving VM/container identities and migration evidence",
   "validation": {
     "pytest": {
-      "passed": 794,
-      "seconds": 200.32,
-      "new_rollback_tests": 60
+      "passed": 831,
+      "seconds": 233.81,
+      "new_rollback_tests": 97
     },
     "ansible_syntax": {
       "passed": 19,
@@ -15,11 +15,11 @@
     },
     "project": {
       "status": "PASS",
-      "python_files": 146,
+      "python_files": 148,
       "yaml_files": 45,
       "local_path_references": 313,
-      "document_links": 88,
-      "bash_blocks": 122,
+      "document_links": 89,
+      "bash_blocks": 120,
       "embedded_python_blocks": 13,
       "errors": []
     },
@@ -112,5 +112,94 @@
     "new_runtime_mutations": false,
     "new_downtime_steps": false,
     "limitation": "The pasted log suppresses raw Docker stderr. The fixed helper still stops on daemon/access errors; no live host execution here."
+  },
+  "nova_checkpoint_fix": {
+    "status": "PASS",
+    "scope": "Replace Nova detailed HTTP listing during API freeze with native READ ONLY cell database inventory",
+    "added_files": [
+      "scripts/recovery/rollback_nova_native.py",
+      "tests/recovery/test_nova_checkpoint.py"
+    ],
+    "modified_files": [
+      "README.md",
+      "docs/cutover-workflow.md",
+      "docs/rollback-validation.json",
+      "docs/rollback.md",
+      "playbooks/01-backup.yml",
+      "playbooks/07-migrate-db.yml",
+      "rollback-to-ovs.yml",
+      "scripts/README.md",
+      "scripts/_paths.py",
+      "scripts/recovery/rollback_controller.py",
+      "scripts/recovery/rollback_host.py",
+      "tests/README.md",
+      "tests/common/test_project_layout.py",
+      "tests/recovery/test_rollback.py"
+    ],
+    "new_tests": 28,
+    "source_log": "20261024-072541, Nova freeze failed before Neutron dump/migrate",
+    "source_review": {
+      "release": "Nova 29.2.1",
+      "wheel_sha256": "d5a886a384c336c0d4f357728177750da102e29b242041f17fd704c124d12e96",
+      "git_version": "1aeeb96ffa",
+      "checked": [
+        "Detailed server view calls Neutron security group API",
+        "Native bootstrap supports configure_db=False and init_rpc=False",
+        "API/cell table and column names match the SELECT queries"
+      ]
+    },
+    "guards": [
+      "Preflight native dependencies and every cell before closing Neutron API",
+      "READ ONLY session for both API and cell database connections",
+      "Complete mapping/UUID/host/task-state checks; no skipped cell0 or disabled cells",
+      "Two reads must agree; preflight and frozen read must agree",
+      "Pin native reader hash, Nova container/image IDs and cell coverage",
+      "Keep existing frozen libvirt and business-state barriers"
+    ],
+    "raw_http_response_known": false,
+    "new_cloud_resources": false,
+    "restores_nova_database": false,
+    "limitations": "Offline SQL fixtures, local Ansible and source checks only. Native image and live MariaDB validation happen at the pre-freeze gate; no live lab execution here."
+  },
+  "single_command_rollback": {
+    "status": "PASS",
+    "default_mode": "execute",
+    "default_execute": true,
+    "default_maintenance_confirm": true,
+    "plan_hash": "Automatically taken from the freshly collected plan in the same Ansible invocation",
+    "plan_integrity": "Recomputed canonical digest, run identity and inventory hash are checked before authorization",
+    "completed_run_behavior": "Default invocation switches to verify without repeating host/database mutations",
+    "required_arguments": [
+      "Original inventory",
+      "Explicit rollback_run_dir"
+    ],
+    "optional_overrides": [
+      "rollback_mode",
+      "rollback_execute",
+      "rollback_maintenance_confirm",
+      "rollback_plan_sha256"
+    ],
+    "changed_files": [
+      "README.md",
+      "docs/rollback-validation.json",
+      "docs/rollback.md",
+      "rollback-to-ovs.yml",
+      "scripts/recovery/rollback_controller.py",
+      "tests/README.md",
+      "tests/recovery/test_rollback.py"
+    ],
+    "new_tests": 9,
+    "focused_rollback_tests": 69,
+    "regression_cases": [
+      "Default one-command execution with no supplied hash or confirmation flags",
+      "Preparation-only rollback skips database restore",
+      "Repeat default invocation verifies without repeating mutations",
+      "Explicit inspect remains read-only",
+      "Explicit wrong hash, disabled execution/maintenance and business drift stop before quiescence",
+      "Failed host quiescence blocks restore; failed database import blocks API start",
+      "Changed stored plan content/run/inventory blocks authorization"
+    ],
+    "maintenance": "Operator invocation assumes maintenance has already been enforced externally; no ACL or Nova maintenance mechanism is created",
+    "lab_execution": false
   }
 }
