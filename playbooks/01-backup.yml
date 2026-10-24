@@ -113,14 +113,94 @@
         mode: '0600'
         content: "{{ {'enabled': run_mariadb_backup | bool, 'volume': 'mariadb_backup', 'locations': mariadb_backup_locations.results | default([]) | selectattr('stdout', 'defined') | map(attribute='stdout') | map('from_json') | list, 'scope': 'Location and file metadata only; database backups remain in Kolla volumes'} | to_nice_json }}"
 
-    - name: "[01] [TIMER] End phase 01"
-      ansible.builtin.command:
-        argv:
-          - python3
-          - "{{ playbook_dir }}/../scripts/common/phase_schema.py"
-          - mark
-          - "{{ hostvars['localhost']['migration_run_dir'] }}"
-          - '01'
-          - end
-      run_once: true
-      changed_when: false
+
+- name: Phase 01 - Initialize source rollback coverage
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  tasks:
+  - name: '[01] Build complete rollback host roles'
+    ansible.builtin.set_fact:
+      rollback_hosts: '{{ rollback_hosts | default({}) | combine({item: {''control'': item in groups[''control''], ''network'': item in groups[''network''],
+        ''compute'': item in groups[''compute''], ''chassis'': item in (groups[''network''] + groups[''compute'']), ''database'': rollback_database_name
+        | default(''neutron'')}}) }}'
+    loop: '{{ (groups[''control''] + groups[''network''] + groups[''compute''] + (groups[''mariadb''] | default(groups[''control'']))) | unique
+      | list }}'
+  - name: '[01] Initialize immutable rollback specification'
+    ansible.builtin.command:
+      argv:
+      - python3
+      - '{{ playbook_dir }}/../scripts/recovery/rollback_controller.py'
+      - init
+      - '{{ migration_run_dir }}'
+      - '{{ {''db_host'': (groups[''mariadb''] | default(groups[''control'']))[0], ''database'': rollback_database_name | default(''neutron''),
+        ''shadow_size'': rollback_shadow_tmpfs_size | default(''2g''), ''hosts'': rollback_hosts, ''openrc'': openrc_path} | to_json }}'
+    changed_when: false
+  vars_files:
+  - ../group_vars/all.yml
+- name: Phase 01 - Snapshot original per-host configuration
+  hosts: control:network:compute:mariadb
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  tasks:
+  - name: '[01] Create private source rollback directory'
+    ansible.builtin.file:
+      path: /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}
+      state: directory
+      mode: '0700'
+  - name: '[01] [SAVE] Stage standalone rollback helpers'
+    ansible.builtin.copy:
+      content: '{{ lookup(''file'', playbook_dir + ''/../scripts/recovery/'' + item) }}'
+      dest: /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/{{ item }}
+      mode: '0600'
+    loop:
+    - rollback_common.py
+    - rollback_host.py
+    - rollback_database.py
+  - name: '[01] Capture original per-host config and container identities'
+    ansible.builtin.command:
+      argv:
+      - python3
+      - /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_host.py
+      - source
+      - '{{ rollback_source_config | to_json }}'
+    changed_when: false
+  - name: '[01] [SAVE] Fetch private original configuration and manifest'
+    ansible.builtin.fetch:
+      src: /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/{{ item.src }}
+      dest: '{{ hostvars[''localhost''][''migration_run_dir''] }}/rollback/source/{{ inventory_hostname }}.{{ item.suffix }}'
+      flat: true
+    loop:
+    - src: source.json
+      suffix: json
+    - src: source.tar
+      suffix: tar
+  vars:
+    rollback_source_config:
+      run: '{{ hostvars[''localhost''][''migration_run_id''] }}'
+      host: '{{ inventory_hostname }}'
+      control: '{{ inventory_hostname in groups[''control''] }}'
+      compute: '{{ inventory_hostname in groups[''compute''] }}'
+      chassis: '{{ inventory_hostname in (groups[''network''] + groups[''compute'']) }}'
+      network: '{{ inventory_hostname in groups[''network''] }}'
+      database: '{{ rollback_database_name | default(''neutron'') }}'
+
+- name: Phase 01 - Complete source backup
+  hosts: localhost
+  any_errors_fatal: true
+  gather_facts: false
+  become: true
+  tasks:
+  - name: '[01] [TIMER] End phase 01'
+    ansible.builtin.command:
+      argv:
+      - python3
+      - '{{ playbook_dir }}/../scripts/common/phase_schema.py'
+      - mark
+      - '{{ hostvars[''localhost''][''migration_run_dir''] }}'
+      - '01'
+      - end
+    run_once: true
+    changed_when: false

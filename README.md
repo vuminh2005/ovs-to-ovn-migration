@@ -17,6 +17,12 @@ Neutron API. Helper dùng scheduler gốc trong image Neutron, đã preflight tr
 downtime ở phase 07. Lỗi tối ưu sẽ lưu evidence rồi tiếp tục bật API. Xem
 [gateway scheduling sớm](docs/early-gateway-scheduling.md).
 
+Rollback giữ VM có entrypoint riêng: inspect mặc định, kế hoạch có hash,
+checkpoint riêng Neutron đã restore-test và barrier dừng writer trước restore.
+Checkpoint sau khi đóng API làm tăng control-plane downtime; thời gian được
+ghi riêng, chưa có số đo lab. Xem [rollback về OVS](docs/rollback.md) trước khi
+chạy; run cũ thiếu checkpoint không được phục hồi tự động bằng workflow này.
+
 Playbook cho lab Kolla-Ansible 2024.1, giữ workflow Phase 00–13 và bộ đo
 E-W/N-S của bản `playbook new stage.zip`. Bản audit ngày 22/10/2026 sắp xếp
 lại source, cập nhật import/path và bổ sung kiểm tra cấu trúc; kết quả kiểm
@@ -27,6 +33,7 @@ chứng nằm trong [báo cáo audit](docs/audit-current.md).
 | Mục đích | File/thư mục |
 |---|---|
 | Migration đầy đủ | [migrate-to-ovn.yml](migrate-to-ovn.yml) |
+| Rollback giữ VM, mặc định chỉ inspect | [rollback-to-ovs.yml](rollback-to-ovs.yml), [hướng dẫn](docs/rollback.md) |
 | Reset lab về OVS | [reset-lab-to-ovs.yml](reset-lab-to-ovs.yml) |
 | Phase theo thứ tự thực thi | [playbooks/](playbooks/) — `00-*.yml` đến `13-*.yml` |
 | Recovery lịch sử, đã ngừng hỗ trợ | [archive](archive/README.md) |
@@ -39,8 +46,8 @@ chứng nằm trong [báo cáo audit](docs/audit-current.md).
 
 `group_vars/` và `inventory.example` giữ vị trí quy ước của Ansible.
 Mỗi phase 00–13 có đúng một file đánh số trong `playbooks/`, gồm toàn bộ phần chuẩn bị metadata trong `06-target-config.yml`.
-Hai entrypoint migrate/reset ở gốc để giữ nguyên lệnh vận hành quen thuộc.
-Các file trong `archive/` không được import bởi migration/reset mặc định.
+Các entrypoint migrate/reset/rollback ở gốc; lệnh migrate/reset giữ nguyên.
+Các file trong `archive/` không được import bởi migration/reset/rollback mặc định.
 
 ## Chạy trên controller
 
@@ -55,6 +62,7 @@ source /root/venvs/kolla-2024.1/bin/activate
 
 ansible-playbook -i /root/multinode reset-lab-to-ovs.yml --syntax-check
 ansible-playbook -i /root/multinode migrate-to-ovn.yml --syntax-check
+ansible-playbook -i /root/multinode rollback-to-ovs.yml --syntax-check
 ```
 
 Reset xóa deployment/workload lab hiện tại và dựng baseline OVS. Cờ xác nhận

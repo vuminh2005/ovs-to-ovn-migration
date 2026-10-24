@@ -54,6 +54,8 @@
               - "{{ hostvars['localhost']['cutover_preparation_runtime'].directory }}"
               - "{{ hostvars['localhost']['cutover_preparation_runtime'] | to_json }}"
               - --cleanup-verified
+              - --journal
+              - "/var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/events.jsonl"
           register: gateway_scheduling_attempt
           changed_when: gateway_scheduling_attempt.rc == 0 and (gateway_scheduling_attempt.stdout | from_json).native.changed_count | int > 0
 
@@ -80,6 +82,18 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
+    - name: '[10] Record API restart intent'
+      ansible.builtin.command:
+        argv:
+        - python3
+        - '{{ playbook_dir }}/../scripts/recovery/rollback_controller.py'
+        - event
+        - '{{ hostvars[''localhost''][''migration_run_dir''] }}'
+        - '{"stage":"api-restore","edge":"intent"}'
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+
     - name: "[10] Enable and start neutron-server"
       ansible.builtin.systemd_service:
         name: "{{ neutron_server_unit }}"

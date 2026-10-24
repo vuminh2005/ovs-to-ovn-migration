@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
-    entries = [ROOT/'migrate-to-ovn.yml', ROOT/'reset-lab-to-ovs.yml']
+    entries = [ROOT/'migrate-to-ovn.yml', ROOT/'reset-lab-to-ovs.yml', ROOT/'rollback-to-ovs.yml']
     for directory, pattern in (('playbooks/transport', '*.yml'), ('archive/playbooks', '*.yml')):
         entries.extend(sorted((ROOT/directory).glob(pattern)))
     failures = []

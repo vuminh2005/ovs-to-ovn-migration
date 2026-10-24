@@ -283,7 +283,7 @@ def test_real_ansible_always_reaches_api_start_after_optional_attempt(tmp_path, 
     inventory.write_text('[all:vars]\nansible_connection=local\nansible_python_interpreter=' + sys.executable +
         '\n[control]\ncontroller\ncontroller2\n[network]\nnetwork1\nnetwork2\n')
     facts = [dict(hosts='localhost', gather_facts=False, tasks=[{'ansible.builtin.set_fact': dict(
-        migration_run_dir=str(run), cutover_preparation_runtime=dict(directory=str(helpers)))}])]
+        migration_run_dir=str(run), migration_run_id='run', cutover_preparation_runtime=dict(directory=str(helpers)))}])]
     if case != 'cleanup-missing':
         facts.append(dict(hosts='network', gather_facts=False, tasks=[
             {'ansible.builtin.set_fact': dict(gateway_cleanup_verified=True)}]))

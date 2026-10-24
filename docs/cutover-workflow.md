@@ -8,9 +8,11 @@ downtime tiết kiệm được trước khi chạy lại lab.
 
 | Vị trí | Công việc |
 |---|---|
+| Phase 01 | Snapshot cấu hình/container nguồn từng host cho rollback, trước mọi thay đổi backend |
 | Phase 06, trước freeze | Tạo cấu hình và container OVN metadata bằng Kolla; container giữ trạng thái `created`, service bị disable |
 | Phase 07, trước freeze | Lấy image Neutron, tạo thư mục helper có ownership, tính timeout binding, copy danh sách VM port đã chốt, thêm OpenFlow15; stage và preflight helper gateway |
 | Ngay trước freeze | Chờ snapshot diagnostics `pre-freeze` thực hiện xong; kiểm tra readiness và capture/anchor Group A đang có |
+| Phase 07, sau stop toàn bộ API, trước migrate | Kiểm VM/Nova, dump riêng Neutron và restore-test trong DB tạm đã chuẩn bị trước freeze; lưu checkpoint bất biến |
 | Phase 07–10 sau freeze | DB migration/provider verification, ARM listener; phase 08 dừng metadata cũ rồi start metadata đã chuẩn bị, stop các agent còn lại, deploy controller, chờ binding, cleanup; thử schedule gateway rồi restart Neutron |
 | Đầu phase 11, API đã phục hồi | Quan sát các probe đang chạy đến khi có thành công mới; sau đó bật sampling bổ sung và lấy snapshot diagnostics sau phục hồi |
 | Tiếp theo | Snapshot tài nguyên AFTER, so sánh, smoke test, validation/workload mới và remediation |
@@ -109,6 +111,11 @@ Metadata được chuyển sang luồng [chuẩn bị trước freeze](metadata-
 Giữa cleanup và restart Neutron có bước [gateway scheduling sớm](early-gateway-scheduling.md)
 với deadline và fallback tiếp tục bật API. MTU/DHCP remediation, NAT profile,
 source-port preservation và các tiêu chí chứng nhận traffic không đổi.
+
+Bản rollback mới thêm checkpoint sau stop API, nên tăng thời gian API đóng.
+Thời gian helper nằm ở `rollback/checkpoint-timing.json`; không đổi công thức
+downtime/report. Legacy agents còn chạy khi lấy checkpoint. Xem
+[rollback.md](rollback.md) về maintenance, điều kiện restore và lệnh vận hành.
 
 ## External dùng chung và bộ demo (17/10/2026)
 

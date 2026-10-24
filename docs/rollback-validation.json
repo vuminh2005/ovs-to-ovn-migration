@@ -1,0 +1,100 @@
+{
+  "status": "PASS",
+  "date": "2026-10-24",
+  "baseline": "Current multinode-playbook.zip with metadata preparation and early gateway scheduling",
+  "scope": "Conditional in-place rollback to source ML2/OVS, preserving VM/container identities and migration evidence",
+  "validation": {
+    "pytest": {
+      "passed": 775,
+      "seconds": 226.54,
+      "new_rollback_tests": 41
+    },
+    "ansible_syntax": {
+      "passed": 19,
+      "total": 19
+    },
+    "project": {
+      "status": "PASS",
+      "python_files": 146,
+      "yaml_files": 45,
+      "local_path_references": 313,
+      "document_links": 88,
+      "bash_blocks": 122,
+      "embedded_python_blocks": 13,
+      "errors": []
+    },
+    "ruff": "PASS",
+    "cases": [
+      "Real local Ansible inspect does not invoke host/database mutation",
+      "Real local Ansible execute success, wrong hash, database failure, host failure and barriers",
+      "Inventory/source archive/container/VM/Nova/business drift blocks restore",
+      "Isolated roundtrip mismatch cannot commit a frozen checkpoint",
+      "Neutron-only SQL import and exact dump roundtrip verification",
+      "Failed/partial import retains original recovery proof and permits same-checkpoint retry",
+      "Archive traversal and unrelated service configuration are protected",
+      "Rollback functional collection leaves existing probe/report evidence byte-identical"
+    ]
+  },
+  "modified_files": [
+    "README.md",
+    "docs/README.md",
+    "docs/cutover-workflow.md",
+    "playbooks/01-backup.yml",
+    "playbooks/07-migrate-db.yml",
+    "playbooks/08-cutover.yml",
+    "playbooks/09-cleanup.yml",
+    "playbooks/10-restore-neutron.yml",
+    "scripts/README.md",
+    "scripts/_paths.py",
+    "scripts/migration/gateway_scheduling.py",
+    "scripts/migration/metadata_handoff.py",
+    "tests/README.md",
+    "tests/common/test_project_layout.py",
+    "tests/migration/test_gateway_scheduling.py",
+    "tools/check_ansible.py"
+  ],
+  "added_files": [
+    "docs/rollback-validation.json",
+    "docs/rollback.md",
+    "rollback-to-ovs.yml",
+    "scripts/recovery/rollback_common.py",
+    "scripts/recovery/rollback_controller.py",
+    "scripts/recovery/rollback_database.py",
+    "scripts/recovery/rollback_host.py",
+    "scripts/recovery/rollback_validate.py",
+    "tests/recovery/test_rollback.py"
+  ],
+  "group_vars": {
+    "byte_identical_to_input": true,
+    "files": [
+      "group_vars/all.yml",
+      "group_vars/ns-lab.yml",
+      "group_vars/quota.yml",
+      "group_vars/reset.yml"
+    ]
+  },
+  "preserved": [
+    "Phase numbering 00-13",
+    "Reset/quota behavior",
+    "All four group_vars files",
+    "Metadata/gateway start order and default behavior (optional journal added)",
+    "Probe implementations, downtime formulas and TXT format",
+    "Archived recovery routes"
+  ],
+  "limits": {
+    "lab_execution": false,
+    "docker_daemon_execution": false,
+    "tested_transport": "Local Ansible with mocked remote host/database operations",
+    "supported_environment": "Kolla 2024.1 Docker with kernel OVS; unchanged complete source inventory",
+    "requires_new_run_checkpoints": true,
+    "maintenance_enforced_externally": true,
+    "final_status": "RESTORED_REQUIRES_ACCEPTANCE",
+    "security_group_packet_deny_test": "NOT_RUN",
+    "held_tcp_preservation": false,
+    "automatic_central_volume_decommission": false,
+    "functional_checks_require_live_existing_probes": true,
+    "checkpoint_adds_api_freeze_time": true,
+    "measured_added_downtime_seconds": null,
+    "note": "Offline verification is not lab/prod certification. Checkpoint helper time is measured per run; no outage estimate is promised."
+  }
+}

@@ -61,6 +61,8 @@ class SourceLayoutTests(unittest.TestCase):
             ),
             ("cutover_preparation", ("cutover_preparation.py",)),
             ("provider_associations", ("provider_associations.py",)),
+            ("rollback_host", ("rollback_host.py", "rollback_common.py")),
+            ("rollback_database", ("rollback_database.py", "rollback_common.py")),
         )
         for module, files in bundles:
             with (

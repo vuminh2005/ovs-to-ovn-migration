@@ -186,6 +186,16 @@ def verify(cfg, allow_started=False):
 
 def start(cfg):
     value, _ = verify(cfg)
+    journal = cfg.get('journal')
+    def record(edge):
+        if journal:
+            expected = '/var/lib/ovs-to-ovn-rollback/' + cfg['run'] + '/events.jsonl'
+            if journal != expected or Path(journal).is_symlink():
+                raise ValueError('Metadata rollback journal ownership differs')
+            with open(journal, 'a', opener=lambda p, f: os.open(p, f, 0o600)) as output:
+                output.write(json.dumps(dict(stage='metadata-handoff', edge=edge, time=time.time())) + '\n')
+                output.flush(); os.fsync(output.fileno())
+    record('intent')
     # Stop the old agent on this host immediately before using its socket.
     # Computes without an old metadata agent need no legacy stop operation.
     load = command(['systemctl', 'show', OLD_UNIT, '--property=LoadState', '--value'], check=False)
@@ -203,6 +213,7 @@ def start(cfg):
     command(['systemctl', 'start', UNIT])
     value.update(status='STARTED', activated_at=time.time())
     save_manifest(value['config_directory'], value)
+    record('complete')
     # Do not wait for chassis registration or metadata HTTP readiness here.
     # Controller start is a later task and must not be blocked by this agent.
     return dict(status='STARTED', container_id=value['container_id'],

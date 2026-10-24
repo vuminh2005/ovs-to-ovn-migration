@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -110,9 +111,17 @@ def container(directory, manifest, action, budget):
             command(['rm', '--force', cid], timeout=5)
 
 
-def run(action, directory, expected, cleanup_verified=False):
+def run(action, directory, expected, cleanup_verified=False, journal=None):
     started = time.monotonic()
     result = dict(status='FALLBACK', action=action, run=expected['run'])
+    def record(edge):
+        if journal and action == 'schedule':
+            path = Path(journal)
+            if str(path) != '/var/lib/ovs-to-ovn-rollback/' + expected['run'] + '/events.jsonl' or path.is_symlink():
+                raise PreparationCheck('Gateway journal ownership differs')
+            with open(path, 'a', opener=lambda p, f: os.open(p, f, 0o600)) as output:
+                output.write(json.dumps(dict(stage='gateway-scheduling', edge=edge, time=time.time())) + '\n')
+                output.flush(); os.fsync(output.fileno())
     try:
         manifest = validated(directory, expected)
         checkpoint = directory / 'gateway-preparation.json'
@@ -127,7 +136,9 @@ def run(action, directory, expected, cleanup_verified=False):
                 raise PreparationCheck('Legacy cleanup was not verified on every network host')
             if json.loads(checkpoint.read_text()) != manifest:
                 raise PreparationCheck('Gateway helper/image/config changed since preparation')
+            record('intent')
             native = container(directory, manifest, 'schedule', 30)
+            record('complete' if native['status'] == 'PASS' else 'fallback')
         result.update(status=native['status'], native=native)
     except Exception as exc:
         # No subprocess command/configuration/connection strings in stdout.
@@ -145,8 +156,9 @@ def main(argv=None):
     parser.add_argument('directory', type=Path)
     parser.add_argument('owner', help='Exact cutover preparation JSON')
     parser.add_argument('--cleanup-verified', action='store_true')
+    parser.add_argument('--journal')
     args = parser.parse_args(argv)
-    result = run(args.action, args.directory, json.loads(args.owner), args.cleanup_verified)
+    result = run(args.action, args.directory, json.loads(args.owner), args.cleanup_verified, args.journal)
     print(json.dumps(result, sort_keys=True))
     return 0 if result['status'] == 'PASS' else 1
 

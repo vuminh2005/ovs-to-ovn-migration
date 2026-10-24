@@ -13,6 +13,7 @@
 | Chuẩn bị và cutover | [cutover-workflow.md](cutover-workflow.md) |
 | Chuẩn bị và chuyển giao metadata trước controller | [metadata-preparation.md](metadata-preparation.md) |
 | Schedule gateway sau cleanup, trước restart API | [early-gateway-scheduling.md](early-gateway-scheduling.md) |
+| Rollback giữ VM, checkpoint và maintenance | [rollback.md](rollback.md) |
 | Workload và phép đo | [ns-ew-matrix.md](ns-ew-matrix.md), [abcd-validation.md](abcd-validation.md) |
 | Evidence / observers | [report-evidence.md](report-evidence.md), [ns-observability.md](ns-observability.md) |
 | TCP N-S | [ns-tcp-diagnostics.md](ns-tcp-diagnostics.md), [ns-held-session-diagnostics.md](ns-held-session-diagnostics.md) |

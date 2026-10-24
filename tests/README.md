@@ -23,3 +23,8 @@ assertion về fail/UNAVAILABLE, ownership, UUID, mốc đo và nội dung repor
 `archive/tests/` giữ nguyên snapshot các test resume cũ để đối chiếu lịch sử;
 không nằm trong `testpaths` của bộ test hiện hành. Các test contract hiện hành
 kiểm tra phase 06 duy nhất và route archived dừng trước mọi thao tác host.
+
+`tests/recovery/test_rollback.py` có guard drift/container/inventory/VM,
+checkpoint restore-test và Neutron-only import, cùng kiểm thử thứ tự barrier
+qua Ansible local. DB/host transport được giả lập; chưa kiểm thử MariaDB image
+hoặc dataplane trên lab. Chạy riêng bằng `pytest -q tests/recovery/test_rollback.py`.
