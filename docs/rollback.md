@@ -7,6 +7,21 @@ hash kế hoạch và xác nhận maintenance đang được thực thi bên ngo
 Phạm vi hiện tại là Kolla 2024.1, Docker và kernel OVS. Bản này đã kiểm thử
 offline; chưa chạy MariaDB image hay rollback dataplane trên lab thật.
 
+## Sửa lỗi snapshot phase 01 ngày 24/10/2026
+
+Helper dùng `docker container inspect` và nhận chính xác thông báo thiếu
+container theo tên, không phân biệt hoa/thường (`no such object/container`).
+Baseline OVS chưa có `ovn_controller`/`neutron_ovn_metadata_agent` được chấp nhận;
+lỗi daemon, socket/quyền truy cập, tên khác hoặc response hỏng vẫn STOP. Container
+OVN đang có, kể cả đã dừng, vẫn chặn snapshot nguồn như trước.
+
+Nếu run dừng ở task `Capture original per-host config and container identities`
+như log `20261024-071718`, chưa đến bước đổi backend/MTU hay đóng API. Sau khi
+cập nhật toàn bộ source bản sửa, có thể chạy lại entrypoint migration để tạo
+run mới; không cần reset chỉ vì lỗi kiểm tra này. Giữ nguyên thư mục run lỗi,
+không resume giữa phase hoặc chép checkpoint sang run khác. Kết luận này áp dụng
+cho lỗi phase 01 đó; run đã tiến xa hơn phải kiểm tra trạng thái riêng.
+
 ## Checkpoint thêm vào migration
 
 | Vị trí | Nội dung | Thời gian |

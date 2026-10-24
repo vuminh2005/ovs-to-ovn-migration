@@ -21,11 +21,24 @@ CONFIG_ROOT = Path('/etc/kolla')
 
 
 def container(name):
-    result = command(['docker', 'inspect', name], check=False)
+    # Inspect only containers: the generic command also looks up images/volumes.
+    result = command(['docker', 'container', 'inspect', name], check=False)
     if result.returncode:
-        if 'No such' in result.stderr: return None
-        raise Stop('Cannot inspect container ' + name)
-    return json.loads(result.stdout)[0]
+        # Docker versions vary the case and use either "container" or "object".
+        # Accept only a precise missing-name error, never a missing daemon socket,
+        # permission failure or mixed diagnostics. Do not print raw stderr.
+        missing = re.fullmatch(r'(?:error(?: response from daemon)?:\s*)?no such (?:container|object):\s*' +
+                               re.escape(name), result.stderr.strip(), flags=re.IGNORECASE)
+        if result.returncode == 1 and missing and result.stdout.strip() in ('', '[]'):
+            return None
+        raise Stop('Cannot inspect container ' + name + '; verify Docker daemon and access (rc=' + str(result.returncode) + ')')
+    try:
+        rows = json.loads(result.stdout)
+        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict) or not rows[0].get('Id'):
+            raise ValueError('Invalid inspect response')
+        return rows[0]
+    except (ValueError, TypeError):
+        raise Stop('Invalid Docker container inspect response for ' + name) from None
 
 
 def service_manifest(name):

@@ -23,6 +23,81 @@ import rollback_host as host
 import rollback_validate as validation
 
 
+@pytest.mark.parametrize('message',[
+    'Error: no such object: ovn_controller\n',
+    'Error: No such object: ovn_controller\n',
+    'Error: No such container: ovn_controller\n',
+    'Error response from daemon: No such container: ovn_controller\n',
+    'Error response from daemon: no such container: ovn_controller\n',
+    'no such container: ovn_controller\n',
+])
+def test_absent_optional_container_accepts_docker_missing_name_variants(monkeypatch,message):
+    calls=[]
+    def invoke(argv,**kwargs):
+        calls.append((argv,kwargs))
+        return NS(returncode=1,stdout='[]\n',stderr=message)
+    monkeypatch.setattr(host,'command',invoke)
+    assert host.container('ovn_controller') is None
+    assert calls==[(['docker','container','inspect','ovn_controller'],dict(check=False))]
+
+
+@pytest.mark.parametrize('message',[
+    'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?',
+    'dial unix /var/run/docker.sock: connect: no such file or directory',
+    'permission denied while trying to connect to the Docker daemon socket',
+    'Error response from daemon: No such image: ovn_controller',
+    'Error: no such object: other_container',
+    'warning: daemon connection failed\nError: no such object: ovn_controller',
+    'unknown error',
+])
+def test_docker_failures_are_not_treated_as_optional_container_absence(monkeypatch,message):
+    monkeypatch.setattr(host,'command',lambda *a,**kw:NS(returncode=1,stdout='[]',stderr=message))
+    with pytest.raises(common.Stop,match='verify Docker daemon and access') as error:
+        host.container('ovn_controller')
+    assert message not in str(error.value)
+
+
+@pytest.mark.parametrize('payload',['[]','{}','[{}]','not json'])
+def test_malformed_successful_docker_inspect_stops(monkeypatch,payload):
+    monkeypatch.setattr(host,'command',lambda *a,**kw:NS(returncode=0,stdout=payload,stderr=''))
+    with pytest.raises(common.Stop,match='Invalid Docker container inspect response'):
+        host.container('ovn_controller')
+
+
+def test_existing_container_remains_present_and_blocks_source_ovn_baseline(tmp_path,monkeypatch):
+    row=dict(Id='target-id',Image='target-image',State=dict(Running=False))
+    monkeypatch.setattr(host,'command',lambda *a,**kw:NS(returncode=0,stdout=json.dumps([row]),stderr=''))
+    assert host.container('ovn_controller')==row
+    with pytest.raises(common.Stop,match='clean ML2/OVS baseline'):
+        host.source(tmp_path,dict(run='run',host='network1'))
+    assert not (tmp_path/'source.json').exists()
+
+
+def test_source_snapshot_handles_missing_optional_services_through_real_inspector(tmp_path,monkeypatch):
+    config=tmp_path/'config';config.mkdir();(config/'globals.yml').write_text('neutron_plugin_agent: openvswitch\n')
+    monkeypatch.setattr(host,'CONFIG_ROOT',config)
+    source_container=dict(Id='source-id',Image='source-image',State=dict(Running=True),
+                          HostConfig=dict(RestartPolicy=dict(Name='unless-stopped',MaximumRetryCount=0)),Mounts=[])
+    calls=[]
+    def invoke(argv,**kwargs):
+        calls.append(argv)
+        if argv[:3]==['docker','container','inspect']:
+            name=argv[3]
+            if name=='neutron_openvswitch_agent':return NS(returncode=0,stdout=json.dumps([source_container]),stderr='')
+            return NS(returncode=1,stdout='[]\n',stderr='Error: no such object: '+name+'\n')
+        assert argv[:2]==['systemctl','is-enabled']
+        return NS(returncode=0,stdout='enabled\n',stderr='')
+    monkeypatch.setattr(host,'command',invoke)
+    assert host.source(tmp_path,dict(run='run',host='network1',network=True))['status']=='PASS'
+    snapshot=json.loads((tmp_path/'source.json').read_text())
+    assert snapshot['services']['neutron_openvswitch_agent']['id']=='source-id'
+    assert snapshot['services']['neutron_server'] is None
+    assert snapshot['services']['neutron_metadata_agent'] is None
+    assert all(argv[:3]==['docker','container','inspect'] or argv[:2]==['systemctl','is-enabled'] for argv in calls)
+    with tarfile.open(tmp_path/'source.tar') as archive:
+        assert archive.extractfile('etc/kolla/globals.yml').read()==(config/'globals.yml').read_bytes()
+
+
 def seed_tables():
     return dict(ports=[dict(id='vm-port',device_owner='compute:nova',network_id='net',mac_address='fa:16:3e:00:00:01',status='ACTIVE',standard_attr_id=1)],
         networks=[dict(id='net',mtu=1392,status='ACTIVE')],ipallocations=[dict(port_id='vm-port',ip_address='192.0.2.10')],

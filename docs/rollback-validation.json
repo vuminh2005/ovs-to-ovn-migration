@@ -5,9 +5,9 @@
   "scope": "Conditional in-place rollback to source ML2/OVS, preserving VM/container identities and migration evidence",
   "validation": {
     "pytest": {
-      "passed": 775,
-      "seconds": 226.54,
-      "new_rollback_tests": 41
+      "passed": 794,
+      "seconds": 200.32,
+      "new_rollback_tests": 60
     },
     "ansible_syntax": {
       "passed": 19,
@@ -96,5 +96,21 @@
     "checkpoint_adds_api_freeze_time": true,
     "measured_added_downtime_seconds": null,
     "note": "Offline verification is not lab/prod certification. Checkpoint helper time is measured per run; no outage estimate is promised."
+  },
+  "container_absence_fix": {
+    "status": "PASS",
+    "scope": "Typed Docker container inspect, precise case-insensitive missing-name errors; real daemon/access failures remain STOP",
+    "regression_cases_added": 19,
+    "changed_files": [
+      "scripts/recovery/rollback_host.py",
+      "tests/recovery/test_rollback.py",
+      "README.md",
+      "docs/rollback.md",
+      "docs/rollback-validation.json"
+    ],
+    "source_log": "Phase 01, run 20261024-071718; before target config, MTU changes or API freeze",
+    "new_runtime_mutations": false,
+    "new_downtime_steps": false,
+    "limitation": "The pasted log suppresses raw Docker stderr. The fixed helper still stops on daemon/access errors; no live host execution here."
   }
 }

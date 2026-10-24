@@ -23,6 +23,10 @@ Checkpoint sau khi đóng API làm tăng control-plane downtime; thời gian đ�
 ghi riêng, chưa có số đo lab. Xem [rollback về OVS](docs/rollback.md) trước khi
 chạy; run cũ thiếu checkpoint không được phục hồi tự động bằng workflow này.
 
+Đã sửa lỗi snapshot phase 01 nhận nhầm container OVN chưa tồn tại: dùng inspect
+riêng container và xử lý đúng biến thể `no such object/container`, vẫn chặn lỗi
+Docker daemon/quyền truy cập. Xem [cách chạy lại sau lỗi này](docs/rollback.md).
+
 Playbook cho lab Kolla-Ansible 2024.1, giữ workflow Phase 00–13 và bộ đo
 E-W/N-S của bản `playbook new stage.zip`. Bản audit ngày 22/10/2026 sắp xếp
 lại source, cập nhật import/path và bổ sung kiểm tra cấu trúc; kết quả kiểm
