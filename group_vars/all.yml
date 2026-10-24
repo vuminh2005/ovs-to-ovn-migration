@@ -60,7 +60,7 @@ metadata_readiness_timeout_seconds: 300
 # Automatic post-migration control-plane smoke test. It creates a temporary
 # network, asserts that it is Geneve, then deletes it. No VM/image/flavor is
 # required and no permanent tenant resource is left behind.
-validation_ephemeral_network: false
+validation_ephemeral_network: true
 
 # Guest VM1 tenant ICMP interval.
 dataplane_probe_interval_seconds: 0.2
@@ -70,7 +70,7 @@ dataplane_probe_interval_seconds: 0.2
 validation_workloads_enabled: true
 # Default validation creates only the ICMP measurement VMs (EW and NS).
 # False restores the separate DHCP/metadata and fresh-provisioning pairs.
-validation_ping_only: true
+validation_ping_only: false
 # Both members of every pair must run on these distinct inventory computes.
 validation_pair_compute_hosts: []  # Auto-select two ready inventory computes; explicit pair is supported.
 # TCP is opt-in and requires validation_ping_only=false.
