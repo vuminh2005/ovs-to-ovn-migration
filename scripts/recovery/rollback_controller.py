@@ -9,6 +9,7 @@ if (Path(__file__).resolve().parents[1] / '_paths.py').is_file():
 import argparse
 import hashlib
 import json
+import math
 import time
 from rollback_common import Stop, journal, no_migration_process, run_id, save, sha
 from run_layout import run_path
@@ -53,12 +54,18 @@ def events(root):
 def nova_rows(root, value):
     spec=load(root)
     hosts=sorted(host for host,roles in spec['hosts'].items() if roles.get('control'))
-    if (value.get('schema')!=1 or value.get('status')!='PASS' or value.get('source')!='nova-cell-db' or
-            value.get('run')!=root.name or not hosts or value.get('host')!=hosts[0] or
-            value.get('reader_sha256')!=sha(Path(__file__).with_name('rollback_nova_native.py')) or
-            abs(time.time()-value.get('observed_at',0))>120 or not value.get('cells') or
-            not value.get('container_id') or not value.get('image_id')):
-        raise Stop('Native Nova observation identity/source/freshness is invalid')
+    if not isinstance(value,dict):raise Stop('Native Nova observation must be a JSON object')
+    expected=dict(schema=1,status='PASS',source='nova-cell-db',run=root.name,
+                  host=hosts[0] if hosts else None,
+                  reader_sha256=sha(Path(__file__).with_name('rollback_nova_native.py')))
+    invalid=[key for key,wanted in expected.items() if value.get(key)!=wanted or (key=='host' and not hosts)]
+    observed=value.get('observed_at')
+    if (isinstance(observed,bool) or not isinstance(observed,(int,float)) or not math.isfinite(observed) or
+            abs(time.time()-observed)>120):invalid.append('observed_at')
+    for key in ('cells','container_id','image_id'):
+        if not value.get(key):invalid.append(key)
+    if invalid:
+        raise Stop('Native Nova observation identity/source/freshness is invalid: '+', '.join(invalid))
     rows=value.get('servers')
     if not isinstance(rows,list):raise Stop('Nova instance inventory is missing')
     identifiers=set()
@@ -69,6 +76,12 @@ def nova_rows(root, value):
             raise Stop('Nova has an in-flight, duplicate or unsupported instance state')
         identifiers.add(row['id'])
     return sorted(rows,key=lambda row:row['id'])
+
+
+def nova_preflight(root):
+    value=json.loads((root/'rollback/nova-preflight.json').read_text())
+    rows=nova_rows(root,value)
+    return dict(status='PASS',servers=len(rows),source='nova-cell-db')
 
 
 def nova(root,freeze=False):
@@ -184,7 +197,7 @@ def complete(root, cfg):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=('init','load','plan','authorize','complete','event','nova-freeze','nova-inspect'))
+    parser.add_argument('action',choices=('init','load','plan','authorize','complete','event','nova-preflight','nova-freeze','nova-inspect'))
     parser.add_argument('root',type=Path); parser.add_argument('config',nargs='?',default='{}')
     args=parser.parse_args(); cfg=json.loads(args.config)
     try:
@@ -193,6 +206,7 @@ def main():
         else:
             action={'init':initialize,'load':lambda r,c:dict(status='PASS',spec=load(r),
                     plan=json.loads((r/'rollback/plan.json').read_text()) if (r/'rollback/plan.json').exists() else {}),
+                    'nova-preflight':lambda r,c:nova_preflight(r),
                     'nova-freeze':lambda r,c:nova(r,True),'nova-inspect':lambda r,c:nova(r),
                     'plan':lambda r,c:plan(r),'authorize':authorize,'complete':complete}[args.action]
             result=action(args.root,cfg)

@@ -181,6 +181,14 @@
       dest: '{{ migration_run_dir }}/rollback/nova-preflight.json'
       content: '{{ rollback_nova_preflight.stdout }}'
       mode: '0600'
+  - name: '[07] Validate native Nova receipt identity and reader bytes before API freeze'
+    ansible.builtin.command:
+      argv:
+      - python3
+      - '{{ playbook_dir }}/../scripts/recovery/rollback_controller.py'
+      - nova-preflight
+      - '{{ migration_run_dir }}'
+    changed_when: false
   - name: '[07] Prepare same-image isolated MariaDB before downtime'
     ansible.builtin.command:
       argv:

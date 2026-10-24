@@ -152,7 +152,7 @@
       mode: '0700'
   - name: '[01] [SAVE] Stage standalone rollback helpers'
     ansible.builtin.copy:
-      content: '{{ lookup(''file'', playbook_dir + ''/../scripts/recovery/'' + item) }}'
+      src: '../scripts/recovery/{{ item }}'
       dest: /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/{{ item }}
       mode: '0600'
     loop:

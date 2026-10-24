@@ -31,6 +31,8 @@ Docker daemon/quyền truy cập. Xem [cách chạy lại sau lỗi này](docs/r
 Checkpoint phase 07 đọc Nova DB qua container `nova_api` bằng session READ ONLY,
 không gọi Nova server-detail API sau khi Neutron đã dừng. Reader được preflight
 trước freeze; kiểm tra mọi cell và mapping, UUID/host/task state vẫn giữ nguyên.
+Helper được chép nguyên byte bằng `copy.src`; controller kiểm tra hash/identity
+của receipt trước khi đóng API, và chỉ rõ trường sai nếu gate dừng.
 
 Playbook cho lab Kolla-Ansible 2024.1, giữ workflow Phase 00–13 và bộ đo
 E-W/N-S của bản `playbook new stage.zip`. Bản audit ngày 22/10/2026 sắp xếp

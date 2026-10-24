@@ -1,9 +1,12 @@
 """Nova state must remain available with Neutron HTTP down, without DB writes."""
 import copy
 from contextlib import contextmanager
+import importlib.util
 import json
+import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import time
 from types import SimpleNamespace as NS
@@ -160,6 +163,40 @@ def seed_receipt_run(tmp_path):
     return root,value
 
 
+def test_actual_ansible_staging_preserves_reader_bytes_and_freezes_native_receipt(tmp_path,monkeypatch,cells):
+    # Execute the real phase-01 task, including its file lookup/copy behavior.
+    # In-memory fixtures alone miss Ansible file lookup's default rstrip.
+    plays=yaml.safe_load((ROOT/'playbooks/01-backup.yml').read_text())
+    task=copy.deepcopy(next(t for p in plays for t in p['tasks'] if t['name']=='[01] [SAVE] Stage standalone rollback helpers'))
+    staged=tmp_path/'staged';staged.mkdir()
+    task['ansible.builtin.copy']['dest']=str(staged/'{{ item }}')
+    playbooks=tmp_path/'playbooks';playbooks.mkdir()
+    (tmp_path/'scripts').symlink_to(ROOT/'scripts',target_is_directory=True)
+    phase=playbooks/'stage.yml'
+    phase.write_text(yaml.safe_dump([dict(name='Real helper staging',hosts='localhost',gather_facts=False,tasks=[task])]))
+    entry=tmp_path/'migrate.yml'
+    entry.write_text(yaml.safe_dump([{'ansible.builtin.import_playbook':'playbooks/stage.yml'}]))
+    result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i','localhost,','-c','local',str(entry),
+                           '-e','ansible_python_interpreter='+sys.executable],cwd=tmp_path,capture_output=True,text=True,
+                          timeout=60,env=dict(os.environ,ANSIBLE_CONFIG=str(ROOT/'ansible.cfg'),ANSIBLE_NOCOLOR='1'))
+    assert result.returncode==0,result.stdout+result.stderr
+    spec=importlib.util.spec_from_file_location('staged_nova_host',staged/'rollback_host.py')
+    staged_host=importlib.util.module_from_spec(spec);spec.loader.exec_module(staged_host)
+    monkeypatch.setattr(staged_host,'container',lambda name:dict(Id='id',Image='image',State=dict(Running=True)))
+    def command(argv,**kwargs):
+        assert kwargs['input']==(staged/'rollback_nova_native.py').read_text()
+        return NS(returncode=0,stdout=json.dumps(native.observe(str(cells.api))),stderr='')
+    monkeypatch.setattr(staged_host,'command',command)
+    root,_=seed_receipt_run(tmp_path)
+    receipt=staged_host.nova_state(staged,dict(run='run',host='controller',control=True))
+    common.save(root/'rollback/nova-preflight.json',receipt)
+    common.save(root/'rollback/nova-current.json',receipt)
+    assert controller.nova_preflight(root)['status']=='PASS'
+    assert controller.nova(root,True)['status']=='PASS'
+    for name in task['loop']:
+        assert (staged/name).read_bytes()==(ROOT/'scripts/recovery'/name).read_bytes(),name
+
+
 def test_frozen_native_inventory_is_immutable_and_needs_no_http(tmp_path,monkeypatch):
     root,value=seed_receipt_run(tmp_path)
     import openstack
@@ -175,7 +212,42 @@ def test_frozen_native_inventory_is_immutable_and_needs_no_http(tmp_path,monkeyp
 def test_invalid_native_receipt_cannot_freeze(tmp_path,key,value):
     root,receipt=seed_receipt_run(tmp_path);receipt[key]=value
     common.save(root/'rollback/nova-current.json',receipt)
-    with pytest.raises(common.Stop,match='identity/source/freshness'):controller.nova(root,True)
+    common.save(root/'rollback/nova-preflight.json',receipt)
+    for validate in (controller.nova_preflight,lambda root:controller.nova(root,True)):
+        with pytest.raises(common.Stop,match='identity/source/freshness is invalid: '+key):validate(root)
+    assert not (root/'rollback/nova-frozen.json').exists()
+
+
+@pytest.mark.parametrize('observed',[None,'now',True,float('nan'),float('inf'),float('-inf'),0])
+def test_invalid_freshness_is_an_explicit_stop_before_api_freeze(tmp_path,observed):
+    root,receipt=seed_receipt_run(tmp_path);receipt['observed_at']=observed
+    common.save(root/'rollback/nova-preflight.json',receipt)
+    with pytest.raises(common.Stop,match='invalid: observed_at'):controller.nova_preflight(root)
+    assert not (root/'rollback/nova-frozen.json').exists()
+
+
+@pytest.mark.parametrize('changed_reader',[False,True])
+def test_real_ansible_preflight_gate_stops_hash_mismatch_before_freeze(tmp_path,changed_reader):
+    root,receipt=seed_receipt_run(tmp_path)
+    if changed_reader:
+        receipt['reader_sha256']='different-staged-bytes'
+        common.save(root/'rollback/nova-preflight.json',receipt)
+    plays=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
+    task=copy.deepcopy(next(t for p in plays for t in p['tasks'] if t['name']=='[07] Validate native Nova receipt identity and reader bytes before API freeze'))
+    task['ansible.builtin.command']['argv'][0]=sys.executable
+    marker=tmp_path/'api-stop-reached'
+    playbooks=tmp_path/'playbooks';playbooks.mkdir()
+    (tmp_path/'scripts').symlink_to(ROOT/'scripts',target_is_directory=True)
+    entry=playbooks/'gate.yml'
+    entry.write_text(yaml.safe_dump([dict(name='Real pre-freeze gate',hosts='localhost',gather_facts=False,
+        vars=dict(migration_run_dir=str(root)),tasks=[task,dict(name='API stop sentinel',
+            **{'ansible.builtin.copy':dict(dest=str(marker),content='Reached only after valid preflight')})])]))
+    result=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i','localhost,','-c','local',str(entry),
+                           '-e','ansible_python_interpreter='+sys.executable],cwd=tmp_path,capture_output=True,text=True,
+                          timeout=60,env=dict(os.environ,ANSIBLE_CONFIG=str(ROOT/'ansible.cfg'),ANSIBLE_NOCOLOR='1'))
+    assert marker.exists() is (not changed_reader),result.stdout+result.stderr
+    assert (result.returncode==0) is (not changed_reader),result.stdout+result.stderr
+    if changed_reader:assert 'invalid: reader_sha256' in result.stdout
     assert not (root/'rollback/nova-frozen.json').exists()
 
 
@@ -193,6 +265,9 @@ def test_native_preflight_and_frozen_read_surround_api_stop():
     tasks=[t for play in yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text()) for t in play['tasks']]
     names=[t['name'] for t in tasks]
     assert names.index('[07] Preflight native read-only Nova cells before API freeze')<names.index('[07] Stop and disable neutron-server')
+    assert (names.index('[07] [SAVE] Pin native Nova preflight before closing APIs')<
+            names.index('[07] Validate native Nova receipt identity and reader bytes before API freeze')<
+            names.index('[07] [TIMER] Start Neutron API downtime')<names.index('[07] Stop and disable neutron-server'))
     assert names.index('[07] Stop and disable neutron-server')<names.index('[07] Read native Nova cells while Neutron API is stopped')<names.index('[07] Dump Neutron and prove isolated round-trip restore')
     for task in tasks:
         if task['name']=='[07] Freeze idle Nova inventory against source hypervisors':assert 'ansible.builtin.shell' not in task

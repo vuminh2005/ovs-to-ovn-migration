@@ -54,6 +54,37 @@ và `flow_rebuild=false`. Nhánh này không cần Nova frozen checkpoint chưa 
 Giữ run lỗi để điều tra; không resume giữa phase hay nối capture đã dừng vào
 lượt đo mới. Lượt migration mới cần baseline sạch như điều kiện bên dưới.
 
+## Sửa lỗi hash reader trong bản chụp Nova
+
+Lỗi `Native Nova observation identity/source/freshness is invalid` trong log
+`20261024-103635` có thể được tái hiện bằng chính task stage phase 01: cách cũ
+dùng `copy.content` với `lookup('file')`, lookup mặc định bỏ newline cuối file.
+Reader trên host vẫn chạy, nhưng SHA256 của nó khác file gốc mà controller
+kiểm tra. Test trước đó dùng file nguồn trực tiếp nên bỏ sót lỗi vận chuyển này.
+Log cũ gộp nhiều điều kiện vào một thông báo, không cho biết trường thực tế sai
+trên lab; lỗi mất newline đã được tái hiện offline với đúng thông báo đó.
+
+Phase 01 nay dùng `copy.src` để chép nguyên byte cả bốn helper. Phase 07 xác thực
+schema/run/host/hash/freshness của preflight ngay sau khi lưu, trước timer đóng
+API và trước stop neutron-server; sau freeze vẫn kiểm tra lại receipt mới và
+inventory như trước. Khi lỗi, thông báo chỉ rõ tên trường, ví dụ `reader_sha256`
+hoặc `observed_at`; không bỏ kiểm tra SHA hay tăng cửa sổ freshness. Gate mới
+nằm trước downtime, không thêm bước vào khoảng API đóng.
+
+Với log `20261024-103635`, task dump checkpoint chưa chạy và migrate DB chưa bắt
+đầu. Giữ nguyên run/evidence, cập nhật đầy đủ source rồi dùng rollback mặc định:
+
+```bash
+ansible-playbook -i /root/multinode rollback-to-ovs.yml \
+  -e rollback_run_dir=/root/ovs-to-ovn-backup/20261024-103635
+```
+
+Playbook phải xác nhận kế hoạch preparation-only trước khi phục hồi; nếu phát
+hiện trạng thái khác sẽ áp dụng các guard tương ứng. Không start neutron-server
+trực tiếp với cấu hình OVN đã sinh, không sửa receipt/hash hoặc resume giữa phase
+để ép qua gate. Rollback giữ VM và artifacts như phần điều kiện bên dưới; bản
+sửa này không tự tạo baseline sạch cho một lượt migration mới.
+
 ## Checkpoint thêm vào migration
 
 | Vị trí | Nội dung | Thời gian |

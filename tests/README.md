@@ -37,3 +37,8 @@ business drift hoặc hash sai. Inspect cần chọn rõ `rollback_mode=inspect`
 cell inventory và drift, mock MySQL session để xác minh READ ONLY trước SELECT,
 bootstrap không RPC/DB configuration, và chặn rò DSN khi lỗi. Không thay thế
 việc kiểm thử image Nova/MariaDB thật trong lab.
+
+Test Nova còn chạy task stage phase 01 thật qua Ansible local, dùng reader đã
+stage tạo receipt rồi kiểm tra preflight/freeze. Cách chép cũ làm mất newline
+và tái hiện lỗi hash; cách mới giữ nguyên byte cả bốn helper. Gate preflight
+thật được chạy với hash đúng/sai, xác nhận lỗi dừng trước sentinel stop API.

@@ -5,9 +5,9 @@
   "scope": "Conditional in-place rollback to source ML2/OVS, preserving VM/container identities and migration evidence",
   "validation": {
     "pytest": {
-      "passed": 831,
-      "seconds": 233.81,
-      "new_rollback_tests": 97
+      "passed": 841,
+      "seconds": 350.54,
+      "new_rollback_tests": 107
     },
     "ansible_syntax": {
       "passed": 19,
@@ -17,7 +17,7 @@
       "status": "PASS",
       "python_files": 148,
       "yaml_files": 45,
-      "local_path_references": 313,
+      "local_path_references": 318,
       "document_links": 89,
       "bash_blocks": 120,
       "embedded_python_blocks": 13,
@@ -201,5 +201,38 @@
     ],
     "maintenance": "Operator invocation assumes maintenance has already been enforced externally; no ACL or Nova maintenance mechanism is created",
     "lab_execution": false
+  },
+  "native_reader_staging_fix": {
+    "status": "PASS",
+    "source_log": "20261024-103635, phase 07 Nova freeze before Neutron dump/migrate",
+    "reproduced": "Real phase-01 Ansible copy.content plus file lookup strips trailing newline; staged reader SHA differs and nova-freeze returns the reported STOP",
+    "transport": "copy.src preserves exact bytes of all four standalone helpers",
+    "preflight": "Controller validates saved native receipt identity, reader SHA and freshness before the API downtime timer and API stop",
+    "diagnostics": "STOP identifies invalid field names without printing raw payload or credentials",
+    "hash_guard": "Exact file SHA256 remains required; no whitespace normalization or widened freshness window",
+    "new_tests": 10,
+    "native_checkpoint_tests": 38,
+    "regression_cases": [
+      "Execute actual helper staging through an imported phase with local Ansible",
+      "Produce native receipt from the staged host reader and accept preflight/frozen inventory",
+      "Byte comparison for all four staged helpers",
+      "Real preflight gate blocks wrong reader SHA before API-stop sentinel",
+      "Invalid or non-finite receipt times stop explicitly",
+      "Existing foreign run/host, changed reader, stale observation and Nova drift remain blocked"
+    ],
+    "changed_files": [
+      "README.md",
+      "docs/rollback-validation.json",
+      "docs/rollback.md",
+      "playbooks/01-backup.yml",
+      "playbooks/07-migrate-db.yml",
+      "scripts/recovery/rollback_controller.py",
+      "tests/README.md",
+      "tests/recovery/test_nova_checkpoint.py"
+    ],
+    "new_downtime_steps": false,
+    "lab_execution": false,
+    "actual_lab_invalid_fields_known": false,
+    "limitation": "Old log groups validation failures. The transport defect and same STOP are reproduced offline; actual lab receipt bytes were not supplied."
   }
 }
