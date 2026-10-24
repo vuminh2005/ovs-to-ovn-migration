@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from tests.support import ROOT
+from tests.support import ROOT, expanded_tasks
 import rollback_common as common
 import rollback_controller as controller
 import rollback_database as database
@@ -347,7 +347,7 @@ def test_frozen_vm_change_prevents_even_quiescence(tmp_path,monkeypatch):
 
 def test_migration_checkpoint_is_before_database_metric_and_takeover():
     phases=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
-    tasks=[t for p in phases for t in p['tasks']];names=[t['name'] for t in tasks]
+    tasks=list(expanded_tasks(ROOT/'playbooks/07-migrate-db.yml'));names=[t['name'] for t in tasks]
     assert names.index('[07] Stop and disable neutron-server')<names.index('[07] Dump Neutron and prove isolated round-trip restore')<names.index('[07] [TIMER] Start database migration measurement')
     freeze=next(p for p in phases if p['name']=='Phase 07 - Stop Neutron API workers')
     assert freeze['any_errors_fatal'] is True

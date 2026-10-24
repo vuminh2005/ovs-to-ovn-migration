@@ -71,6 +71,10 @@ class Extended:
     def ns(self):
         return self.cfg.get('ns', {}).get('enabled', False)
 
+    @property
+    def ns_tcp(self):
+        return self.cfg.get('ns', {}).get('tcp_enabled',True)
+
     def commit(self):
         save(self.path, self.state)
 
@@ -85,7 +89,7 @@ class Extended:
         flavor = self.cloud.compute.find_flavor(self.cfg['flavor'], ignore_missing=False)
         servers = list(self.cloud.compute.servers(all_projects=False))
         owned = [s for s in servers if (s.metadata or {}).get('ovn_migration_run') == self.cfg['run']]
-        count = 6 + 2*bool(self.cfg.get('pair_d_enabled')) + 2*self.matrix + 2*self.ns
+        count = (2 if self.cfg.get('ping_only') else 6) + 2*bool(self.cfg.get('pair_d_enabled')) + 2*self.matrix + 2*self.ns
         remaining = count-len(owned)
         limits = self.cloud.compute.get_limits().absolute
         checks = {}
@@ -323,9 +327,13 @@ class Extended:
             interval=self.cfg['tcp_interval'], timeout=self.cfg['tcp_timeout'],
             lifetime=self.cfg['lifetime'], **fields)
         ns = self.cfg['ns']
-        if ns.get('new_port'):
+        cfg['tcp_enabled']=self.ns_tcp
+        if ns.get('new_port') and self.ns_tcp:
             cfg.update(new_port=ns['new_port'], control_port=ns['control_port'],
                 control_token=self.state['ns']['control_token'])
+        if ns.get('new_port') or ns.get('icmp_sender_export_enabled'):
+            cfg['control_token']=self.state['ns']['control_token']
+        if ns.get('new_port') or ns.get('icmp_enabled'):
             if fields.get('label'):
                 cfg.update(icmp_enabled=ns.get('icmp_enabled', True),
                     icmp_interval=self.cfg.get('interval', .2))
@@ -409,14 +417,16 @@ class Extended:
         if not self.ns:
             return
         cfg = self.cfg['ns']
-        if cfg.get('new_port'):
+        if cfg.get('new_port') and self.ns_tcp:
             ports = [cfg['port'], cfg['new_port'], cfg['control_port']]
             if len(set(ports)) != 3 or any(type(port) is not int or not 1 <= port <= 65535 for port in ports):
                 raise ValueError('N-S old, new and control ports must be distinct valid TCP ports')
         if cfg.get('icmp_enabled') and not cfg.get('diagnostics_enabled'):
             raise ValueError('N-S ICMP requires sender-side packet capture diagnostics')
+        if not self.ns_tcp and not cfg.get('icmp_enabled'):
+            raise ValueError('N-S validation requires ICMP or TCP probes')
         s = self.state.setdefault('ns', {})
-        if cfg.get('new_port') and not s.get('control_token'):
+        if (cfg.get('new_port') or cfg.get('icmp_sender_export_enabled')) and not s.get('control_token'):
             s['control_token'] = uuid.uuid4().hex
             self.commit()
         prefix = self.cfg['prefix']+'-'+self.cfg['run']+'-ns'
@@ -449,8 +459,10 @@ class Extended:
                             ip_version=4, is_dhcp_enabled=True)
         sg = self.resource(s, 'security_group', 'security_group', prefix+'-security')
         rules = list(self.cloud.network.security_group_rules(security_group_id=sg.id))
-        allowed = [('icmp', None, cfg['endpoint_ip']+'/32'), ('tcp', cfg['port'], cfg['endpoint_ip']+'/32')]
-        if cfg.get('new_port'):
+        allowed = [('icmp', None, cfg['endpoint_ip']+'/32')]
+        if self.ns_tcp:
+            allowed.append(('tcp', cfg['port'], cfg['endpoint_ip']+'/32'))
+        if cfg.get('new_port') and self.ns_tcp:
             gateway = str(ipaddress.ip_network(cfg['tenant_cidr']).network_address+1)
             allowed += [('tcp', cfg['new_port'], cfg['endpoint_ip']+'/32'),
                         ('tcp', cfg['control_port'], gateway+'/32')]
@@ -516,7 +528,7 @@ class Extended:
             required_ips=[cfg['snat_ip'], cfg['fip_ip']], scope='Reachability gate validates the mentor-managed outer policy'))
 
     def ns_control(self, action):
-        if not self.ns or not self.cfg['ns'].get('new_port'):
+        if not self.ns or not self.ns_tcp or not self.cfg['ns'].get('new_port'):
             return {}
         from ns_control import request
         state, ns = self.state['ns'], self.cfg['ns']
@@ -547,7 +559,7 @@ class Extended:
         return rows
 
     def ns_arm(self):
-        if not self.ns or not self.cfg['ns'].get('new_port'):
+        if not self.ns or not self.ns_tcp or not self.cfg['ns'].get('new_port'):
             return
         metrics = run_path(self.root, 'metrics')
         if not (metrics/'control_plane_downtime.start').exists() or (metrics/'control_plane_downtime.end').exists():
@@ -640,7 +652,7 @@ class Extended:
                     continue
                 if prior and any(row.get(k) != prior.get(k) for k in ('boot', 'probe_id')):
                     raise RuntimeError(direction+' client rebooted/restarted')
-                expected_streams = {'held', 'new_old', 'new_listener'} if self.cfg['ns'].get('new_port') else {'held', 'new'}
+                expected_streams = ({'held', 'new_old', 'new_listener'} if self.cfg['ns'].get('new_port') else {'held', 'new'}) if self.ns_tcp else set()
                 if set(row.get('streams', {})) != expected_streams:
                     errors.append(direction+'/probe schema mismatch')
                     continue
@@ -682,7 +694,7 @@ class Extended:
                     # Guest monotonic is a different clock; compare within its own summary.
                     if row.get('mono', 0)-(ping.get('last_reply_mono') or 0) > 3:
                         errors.append(direction+'/ICMP not recovered')
-                if post and self.cfg['ns'].get('new_port'):
+                if post and self.ns_tcp and self.cfg['ns'].get('new_port'):
                     arm = read_evidence(self.root, 'ns-arm.json').get('clients', {}).get(direction, {})
                     if not arm or row.get('armed_mono') != arm.get('armed_mono'):
                         errors.append(direction+'/ARM continuity unavailable')
@@ -745,13 +757,17 @@ class Extended:
                     **{key:stats.get(key) for key in ('first_local_endpoint', 'last_local_endpoint',
                         'first_peer_endpoint', 'last_peer_endpoint')},
                     observed_peer_ips=stats['observed_peer_ips'], connection_attempts=stats['connection_attempts'])
-            results[direction] = dict(status='PASS' if len(streams)==(3 if self.cfg['ns'].get('new_port') else 2) and all(s['status']=='PASS' for s in streams.values()) else 'FAIL',
-                held_session_preservation=streams.get('held', {}).get('status', 'UNAVAILABLE'),
+            ping=row.get('icmp') or {}
+            good=(len(streams)==(3 if self.cfg['ns'].get('new_port') else 2) and all(s['status']=='PASS' for s in streams.values())) if self.ns_tcp else (
+                continuity and not streams and ping.get('alive') is True and ping.get('last_reply_mono') is not None and 0 <= row.get('mono',0)-ping['last_reply_mono'] <= 3)
+            results[direction] = dict(status='PASS' if good else 'FAIL',tcp_status=('PASS' if good else 'FAIL') if self.ns_tcp else 'DISABLED',
+                held_session_preservation=streams.get('held', {}).get('status', 'UNAVAILABLE') if self.ns_tcp else 'DISABLED',
                 boot_continuity='PASS' if continuity else 'FAIL', start_mono=old_row['mono'], end_mono=row.get('mono'), streams=streams,
                 icmp_health=row.get('icmp'), armed_mono=row.get('armed_mono'), listener_ack=row.get('listener_ack'))
         save(run_path(self.root, 'ns-results.json'), dict(status='PASS' if not errors and all(r['status']=='PASS' for r in results.values()) else 'FAIL',
             reason='; '.join(errors or []), directions=results, resources=snapshot,
-            scope='Fresh pre-migration baseline summary to final recovered summary, client monotonic application probes; no held reconnect', baseline=baseline,
+            scope=('Fresh pre-migration baseline summary to final recovered summary, client monotonic application probes; no held reconnect'
+                   if self.ns_tcp else 'Original ICMP client and resource continuity; final downtime requires sender-side PCAP and sender log'), baseline=baseline,
             source_snat_profile=dict(preserve_snat_source_port_requested=bool(self.cfg['ns'].get('preserve_snat_source_port')),
                 conntrack_transfer=False, port_evidence_scope='First/last successful echoes only; a reset held socket still fails')))
 

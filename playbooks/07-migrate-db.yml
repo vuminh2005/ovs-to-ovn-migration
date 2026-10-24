@@ -154,69 +154,18 @@
   gather_facts: false
   become: true
   tasks:
-  - name: '[07] Load rollback specification'
-    ansible.builtin.command:
-      argv:
-      - python3
-      - '{{ playbook_dir }}/../scripts/recovery/rollback_controller.py'
-      - load
-      - '{{ migration_run_dir }}'
-    register: rollback_spec_result
-    changed_when: false
-  - name: '[07] Load rollback DB location'
-    ansible.builtin.set_fact:
-      rollback_spec_runtime: '{{ (rollback_spec_result.stdout | from_json).spec }}'
-  - name: '[07] Preflight native read-only Nova cells before API freeze'
-    ansible.builtin.command:
-      argv:
-      - python3
-      - /var/lib/ovs-to-ovn-rollback/{{ migration_run_id }}/rollback_host.py
-      - nova-state
-      - '{{ rollback_spec_runtime.hosts[groups[''control''] | sort | first] | combine({''run'': migration_run_id, ''host'': groups[''control''] | sort | first}) | to_json }}'
-    delegate_to: '{{ groups[''control''] | sort | first }}'
-    register: rollback_nova_preflight
-    changed_when: false
-  - name: '[07] [SAVE] Pin native Nova preflight before closing APIs'
-    ansible.builtin.copy:
-      dest: '{{ migration_run_dir }}/rollback/nova-preflight.json'
-      content: '{{ rollback_nova_preflight.stdout }}'
-      mode: '0600'
-  - name: '[07] Validate native Nova receipt identity and reader bytes before API freeze'
-    ansible.builtin.command:
-      argv:
-      - python3
-      - '{{ playbook_dir }}/../scripts/recovery/rollback_controller.py'
-      - nova-preflight
-      - '{{ migration_run_dir }}'
-    changed_when: false
-  - name: '[07] Prepare same-image isolated MariaDB before downtime'
-    ansible.builtin.command:
-      argv:
-      - python3
-      - /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_database.py
-      - prepare
-      - '{{ rollback_spec_runtime | combine({''run'': migration_run_id, ''host'': rollback_spec_runtime.db_host}) | to_json }}'
-    delegate_to: '{{ rollback_spec_runtime.db_host }}'
-    changed_when: false
+    - name: "[ROLLBACK] Phase 07 - Prepare isolated Neutron restore rehearsal before freeze when enabled"
+      ansible.builtin.include_tasks: tasks/rollback-pre-freeze-tasks.yml
+      when: hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool
 - name: Phase 07 - Freeze source VM and OVS identities before API freeze
   hosts: control:network:compute:mariadb
   any_errors_fatal: true
   gather_facts: false
   become: true
   tasks:
-  - name: '[07] Capture immutable pre-freeze host topology'
-    ansible.builtin.command:
-      argv:
-      - python3
-      - /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_host.py
-      - freeze
-      - '{{ rollback_source_config | to_json }}'
-    changed_when: false
-  - name: '[07] [SAVE] Fetch frozen VM and OVS topology'
-    ansible.builtin.fetch:
-      src: /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/freeze.json
-      dest: '{{ hostvars[''localhost''][''migration_run_dir''] }}/rollback/frozen/{{ inventory_hostname }}.json'
-      flat: true
+    - name: "[ROLLBACK] Phase 07 - Freeze source VM and OVS identities before API freeze when enabled"
+      ansible.builtin.include_tasks: tasks/rollback-freeze-host-tasks.yml
+      when: hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool
   vars:
     rollback_source_config:
       run: '{{ hostvars[''localhost''][''migration_run_id''] }}'
@@ -261,7 +210,7 @@
   vars_files:
     - ../group_vars/all.yml
   tasks:
-    - name: "[07] Check Group B MTU and workload readiness"
+    - name: "[07] Check ping traffic and optional workload readiness"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -321,80 +270,9 @@
   gather_facts: false
   become: true
   tasks:
-  - name: '[07] Verify all API workers are stopped before checkpoint'
-    ansible.builtin.command:
-      argv:
-      - docker
-      - inspect
-      - neutron_server
-      - --format
-      - '{% raw %}{{.State.Running}}{% endraw %}'
-    delegate_to: '{{ item }}'
-    loop: '{{ groups[''control''] }}'
-    register: rollback_frozen_apis
-    changed_when: false
-    failed_when: rollback_frozen_apis.rc != 0 or rollback_frozen_apis.stdout != 'false'
-  - name: '[07] Verify frozen VM placement before database checkpoint'
-    ansible.builtin.command:
-      argv:
-      - python3
-      - /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_host.py
-      - inspect
-      - '{{ rollback_spec_runtime.hosts[item] | combine({''run'': migration_run_id, ''host'': item, ''capture_failure'': false}) | to_json }}'
-    delegate_to: '{{ item }}'
-    loop: '{{ rollback_spec_runtime.hosts.keys() | list }}'
-    changed_when: false
-  - name: '[07] Read native Nova cells while Neutron API is stopped'
-    ansible.builtin.command:
-      argv:
-      - python3
-      - /var/lib/ovs-to-ovn-rollback/{{ migration_run_id }}/rollback_host.py
-      - nova-state
-      - '{{ rollback_spec_runtime.hosts[groups[''control''] | sort | first] | combine({''run'': migration_run_id, ''host'': groups[''control''] | sort | first}) | to_json }}'
-    delegate_to: '{{ groups[''control''] | sort | first }}'
-    register: rollback_nova_frozen
-    changed_when: false
-  - name: '[07] [SAVE] Save current native Nova inventory'
-    ansible.builtin.copy:
-      dest: '{{ migration_run_dir }}/rollback/nova-current.json'
-      content: '{{ rollback_nova_frozen.stdout }}'
-      mode: '0600'
-  - name: '[07] Freeze idle Nova inventory against source hypervisors'
-    ansible.builtin.command:
-      argv:
-      - python3
-      - '{{ playbook_dir }}/../scripts/recovery/rollback_controller.py'
-      - nova-freeze
-      - '{{ migration_run_dir }}'
-    changed_when: false
-  - name: '[07] Dump Neutron and prove isolated round-trip restore'
-    ansible.builtin.command:
-      argv:
-      - python3
-      - /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_database.py
-      - checkpoint
-      - '{{ rollback_spec_runtime | combine({''run'': migration_run_id, ''host'': rollback_spec_runtime.db_host}) | to_json }}'
-    delegate_to: '{{ rollback_spec_runtime.db_host }}'
-    register: rollback_checkpoint_result
-    changed_when: false
-  - name: '[07] [SAVE] Fetch verified Neutron rollback checkpoint'
-    ansible.builtin.fetch:
-      src: /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/{{ item }}
-      dest: '{{ migration_run_dir }}/rollback/database/{{ item }}'
-      flat: true
-    delegate_to: '{{ rollback_spec_runtime.db_host }}'
-    loop:
-    - neutron.sql
-    - database-checkpoint.json
-    - database-business.json
-  - name: '[07] [SAVE] Record added checkpoint time without changing report formulas'
-    ansible.builtin.copy:
-      dest: '{{ migration_run_dir }}/rollback/checkpoint-timing.json'
-      content: '{{ rollback_checkpoint_result.stdout }}
-
-        '
-      mode: '0600'
-
+    - name: "[ROLLBACK] Phase 07 - Checkpoint and rehearse frozen Neutron before migration when enabled"
+      ansible.builtin.include_tasks: tasks/rollback-checkpoint-tasks.yml
+      when: hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool
 - name: "Phase 07 - Arm Group D TCP probes after API freeze"
   hosts: localhost
   any_errors_fatal: true
@@ -410,7 +288,7 @@
         python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} d-arm {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
-      when: validation_workloads_enabled | bool
+      when: (validation_workloads_enabled | bool) and (validation_pair_d_enabled | bool) and not (validation_ping_only | bool)
 
 - name: "Phase 07 - Arm N-S TCP probes after API freeze"
   hosts: localhost
@@ -419,6 +297,7 @@
   become: true
   vars_files:
     - ../group_vars/all.yml
+    - ../group_vars/ns-lab.yml
   tasks:
     - name: "[07] Open additional SNAT and FIP listeners"
       ansible.builtin.shell: |
@@ -427,7 +306,7 @@
         python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} ns-arm {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
-      when: validation_workloads_enabled | bool
+      when: (validation_workloads_enabled | bool) and (validation_ns_enabled | bool) and (ns_tcp_enabled | bool) and not (validation_ping_only | bool)
 
 - name: "Phase 07 - Migrate Neutron database to OVN"
   hosts: control
@@ -483,7 +362,9 @@
     - name: "[07] Run neutron-ovn-db-sync-util migrate"
       ansible.builtin.shell: |
         set -euo pipefail
+        {% if hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool %}
         python3 /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_host.py event {{ {'run': hostvars['localhost']['migration_run_id'], 'host': inventory_hostname, 'stage': 'db-migration', 'edge': 'intent'} | to_json | quote }}
+        {% endif %}
         docker run --rm \
           --label ovs-to-ovn.migration-run={{ hostvars['localhost']['migration_run_id'] }} \
           --network host \
@@ -501,7 +382,9 @@
               --config-file /etc/neutron/plugins/ml2/ml2_conf.ini \
               --ovn-neutron_sync_mode migrate
           '
+        {% if hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool %}
         python3 /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_host.py event {{ {'run': hostvars['localhost']['migration_run_id'], 'host': inventory_hostname, 'stage': 'db-migration', 'edge': 'complete'} | to_json | quote }}
+        {% endif %}
       args:
         executable: /bin/bash
       register: db_sync_migrate

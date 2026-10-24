@@ -177,6 +177,8 @@
       when:
         - validation_ns_enabled | bool
         - ns_preserve_snat_source_port | bool
+        - ns_tcp_enabled | bool
+        - not (validation_ping_only | bool)
 
 - name: "Phase 02 - Check tunnel connectivity and capture tools"
   hosts: network:compute

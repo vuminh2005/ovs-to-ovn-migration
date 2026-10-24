@@ -67,7 +67,7 @@
         python3 {{ (playbook_dir + '/../scripts/validation/workload_validation.py') | quote }} prepare-dhcp {{ migration_run_dir | quote }}
       args:
         executable: /bin/bash
-      when: validation_workloads_enabled | bool
+      when: (validation_workloads_enabled | bool) and not (validation_ping_only | bool)
 
     - name: "[06] Generate target Neutron configuration without restart"
       ansible.builtin.shell: |

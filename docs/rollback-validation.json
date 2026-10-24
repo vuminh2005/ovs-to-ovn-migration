@@ -2,12 +2,14 @@
   "status": "PASS",
   "date": "2026-10-24",
   "baseline": "Current multinode-playbook.zip with metadata preparation and early gateway scheduling",
-  "scope": "Conditional in-place rollback to source ML2/OVS, preserving VM/container identities and migration evidence",
+  "scope": "Minimal gateway-order migration with six ICMP VMs; optional prepared in-place OVS rollback",
   "validation": {
     "pytest": {
-      "passed": 841,
-      "seconds": 350.54,
-      "new_rollback_tests": 107
+      "passed": 879,
+      "seconds": 396.69,
+      "new_rollback_tests": 107,
+      "new_ping_only_tests": 22,
+      "new_rollback_option_tests": 16
     },
     "ansible_syntax": {
       "passed": 19,
@@ -15,10 +17,10 @@
     },
     "project": {
       "status": "PASS",
-      "python_files": 148,
-      "yaml_files": 45,
-      "local_path_references": 318,
-      "document_links": 89,
+      "python_files": 150,
+      "yaml_files": 50,
+      "local_path_references": 320,
+      "document_links": 94,
       "bash_blocks": 120,
       "embedded_python_blocks": 13,
       "errors": []
@@ -65,20 +67,34 @@
     "tests/recovery/test_rollback.py"
   ],
   "group_vars": {
-    "byte_identical_to_input": true,
+    "byte_identical_to_input": false,
     "files": [
       "group_vars/all.yml",
       "group_vars/ns-lab.yml",
       "group_vars/quota.yml",
       "group_vars/reset.yml"
-    ]
+    ],
+    "preserved_files": [
+      "group_vars/ns-lab.yml",
+      "group_vars/quota.yml",
+      "group_vars/reset.yml"
+    ],
+    "changed_settings": {
+      "group_vars/all.yml": {
+        "migration_rollback_enabled": false,
+        "run_mariadb_backup": "{{ migration_rollback_enabled | bool }}",
+        "migration_diagnostics_enabled": false,
+        "validation_ephemeral_network": false
+      }
+    },
+    "unrelated_settings_preserved": true
   },
   "preserved": [
     "Phase numbering 00-13",
     "Reset/quota behavior",
-    "All four group_vars files",
+    "Quota/reset group_vars and all unrelated settings",
     "Metadata/gateway start order and default behavior (optional journal added)",
-    "Probe implementations, downtime formulas and TXT format",
+    "Downtime formulas and numeric report helpers; TCP section visibility follows the profile",
     "Archived recovery routes"
   ],
   "limits": {
@@ -234,5 +250,152 @@
     "lab_execution": false,
     "actual_lab_invalid_fields_known": false,
     "limitation": "Old log groups validation failures. The transport defect and same STOP are reproduced offline; actual lab receipt bytes were not supplied."
+  },
+  "ping_only_validation": {
+    "status": "PASS",
+    "defaults": {
+      "validation_ping_only": true,
+      "validation_pair_d_enabled": false,
+      "ns_tcp_enabled": false
+    },
+    "default_ping_vms": 6,
+    "default_vms_per_compute": 3,
+    "vm_roles": {
+      "ew_primary": 2,
+      "ew_matrix": 2,
+      "north_south": 2,
+      "pair_b": 0,
+      "pair_c_fresh": 0,
+      "pair_d_tcp": 0
+    },
+    "vm_creation_after_cutover": false,
+    "tcp_application_probes": false,
+    "icmp_evidence_control": "Existing controller listener and SNAT control sockets export the original ICMP sender file only; excluded from TCP measurements and default ICMP/ARP captures",
+    "report": "B/C/D and NS TCP are DISABLED in JSON; TXT shows enabled ping measurements only",
+    "retained_guards": [
+      "Original ICMP boot/PID/log identity and fresh recovery",
+      "Sender PCAP/log completeness and loss/recovery metrics",
+      "Inventory, VM/container/DB/config and original topology checks",
+      "Pre-existing resource preservation and owned-UUID cleanup"
+    ],
+    "rollback": "Uses the stored run profile; ping-only does not require Pair B or guest DHCP/metadata/MTU health",
+    "explicit_opt_in": "validation_ping_only=false restores B/C; TCP remains off unless explicitly enabled",
+    "validation": {
+      "new_tests": 22,
+      "real_ansible_profiles": [
+        "Default",
+        "Full without TCP",
+        "Full with TCP",
+        "Ping-only suppresses TCP flags"
+      ],
+      "local_socket_export": true,
+      "lab_execution": false
+    },
+    "modified_files": [
+      "README.md",
+      "docs/rollback-validation.json",
+      "docs/rollback.md",
+      "group_vars/all.yml",
+      "group_vars/ns-lab.yml",
+      "playbooks/02-precheck.yml",
+      "playbooks/04-validation-workloads.yml",
+      "playbooks/06-target-config.yml",
+      "playbooks/07-migrate-db.yml",
+      "playbooks/12-workload-validation.yml",
+      "scripts/diagnostics/ns_diagnostics.py",
+      "scripts/diagnostics/ns_icmp_evidence.py",
+      "scripts/probes/guest_probe.py",
+      "scripts/probes/ns_probe.py",
+      "scripts/recovery/rollback_validate.py",
+      "scripts/reporting/migration_report.py",
+      "scripts/reporting/report_format.py",
+      "scripts/reporting/traffic_timeline.py",
+      "scripts/validation/extended_validation.py",
+      "scripts/validation/live_recovery.py",
+      "scripts/validation/workload_validation.py",
+      "tests/README.md",
+      "tests/common/test_phase_schema.py",
+      "tests/contracts/test_cutover_workflow.py",
+      "tests/diagnostics/test_ns_expanded_probes.py",
+      "tests/diagnostics/test_snat_source_port_experiment.py",
+      "tests/reporting/test_report_presentation.py",
+      "tests/validation/test_four_pairs.py",
+      "tests/validation/test_shared_demo.py",
+      "tests/validation/test_three_pairs.py"
+    ],
+    "added_files": [
+      "docs/ping-only-validation.md",
+      "tests/validation/test_ping_only.py"
+    ],
+    "limitations": [
+      "No live lab execution of this profile",
+      "Ping-only success does not certify DHCP/metadata or TCP session continuity"
+    ]
+  },
+  "optional_rollback_preparation": {
+    "status": "PASS",
+    "default_enabled": false,
+    "minimal_defaults": {
+      "migration_rollback_enabled": false,
+      "run_mariadb_backup": "{{ migration_rollback_enabled | bool }}",
+      "migration_diagnostics_enabled": false,
+      "validation_ephemeral_network": false
+    },
+    "default_ping_vms": 6,
+    "automatic_rollback": false,
+    "pinned_in": "runtime.json and migration_rollback_enabled_runtime set at phase 00",
+    "skipped_when_disabled": [
+      "Rollback helper staging and source host archives",
+      "Nova native preflight/freeze",
+      "Frozen host snapshots/inspection for rollback",
+      "Shadow MariaDB prepare, Neutron dump/import rehearsal and fetch",
+      "Rollback event journals during database/controller/metadata/gateway/cleanup/API actions"
+    ],
+    "retained": [
+      "Original metadata/gateway scheduling order and barriers",
+      "Six ICMP VMs and authoritative capture/log evidence",
+      "Migration safety checks, resource preservation, binding/metadata readiness and report metrics"
+    ],
+    "compatibility": "Runs explicitly recording disabled cannot prepare or execute rollback retrospectively; legacy runs without the flag retain original guards",
+    "historical_gateway_core_order": {
+      "steps": 14,
+      "matches": true
+    },
+    "tests": {
+      "new": 16,
+      "real_ansible": true,
+      "safe_bash_transport": true,
+      "live_lab": false
+    },
+    "guide": "docs/run-options.md",
+    "modified_files": [
+      "README.md",
+      "docs/cutover-workflow.md",
+      "docs/ping-only-validation.md",
+      "docs/rollback-validation.json",
+      "docs/rollback.md",
+      "group_vars/all.yml",
+      "playbooks/00-bootstrap.yml",
+      "playbooks/01-backup.yml",
+      "playbooks/07-migrate-db.yml",
+      "playbooks/08-cutover.yml",
+      "playbooks/09-cleanup.yml",
+      "playbooks/10-restore-neutron.yml",
+      "scripts/recovery/rollback_controller.py",
+      "scripts/reporting/migration_report.py",
+      "tests/recovery/test_nova_checkpoint.py",
+      "tests/recovery/test_rollback.py",
+      "tests/support/__init__.py",
+      "tools/check_project.py"
+    ],
+    "added_files": [
+      "docs/run-options.md",
+      "playbooks/tasks/rollback-checkpoint-tasks.yml",
+      "playbooks/tasks/rollback-freeze-host-tasks.yml",
+      "playbooks/tasks/rollback-pre-freeze-tasks.yml",
+      "playbooks/tasks/rollback-source-host-tasks.yml",
+      "playbooks/tasks/rollback-source-init-tasks.yml",
+      "tests/recovery/test_rollback_option.py"
+    ]
   }
 }

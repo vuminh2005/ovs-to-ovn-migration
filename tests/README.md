@@ -1,5 +1,10 @@
 # Offline regression suite
 
+`validation/test_ping_only.py` kiểm tra profile chỉ ping: không gọi nhánh tạo
+VM B/C/D, capacity 6 VM, recovery/rollback không đòi guest health, gate capture
+vẫn chặn thiếu evidence, report không đòi phép đo đã tắt. Socket local kiểm tra
+xuất log ICMP gốc qua control channel khi không có TCP application streams.
+
 Các test chia thành `common/`, `contracts/`, `migration/`, `validation/`,
 `diagnostics/`, `reporting/`, `reset/`, `recovery/`. `fixtures/` giữ dữ liệu mẫu;
 `support/` giữ đường dẫn dùng chung của test.

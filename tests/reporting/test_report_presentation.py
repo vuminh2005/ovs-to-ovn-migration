@@ -90,10 +90,8 @@ class PresentationTests(unittest.TestCase):
     def test_disabled_tcp_does_not_use_stale_pass_counters(self):
         text = self.text(pair_d_tcp={'status':'DISABLED', 'streams':{
             'held':{'status':'PASS','longest_recovered_failure_seconds':0}}})
-        tcp = text.split('Different compute / different subnet (TCP)')[1].split('2. NORTH')[0]
-        self.assertRegex(tcp, r'Result\s+: DISABLED')
-        self.assertNotIn('PASS', tcp)
-        self.assertNotIn('Existing TCP session', tcp)
+        self.assertNotIn('Different compute / different subnet (TCP)',text)
+        self.assertNotIn('Existing TCP session',text.split('2. NORTH')[0])
 
     def test_open_tcp_failure_takes_precedence_over_earlier_recovery(self):
         text = self.text(pair_d_tcp={'status':'FAIL','streams':{'held':{

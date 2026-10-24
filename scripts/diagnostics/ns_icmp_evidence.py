@@ -94,13 +94,15 @@ def finalize(root):
             value.update(status='UNAVAILABLE', reason=str(exc))
         outcomes[direction] = value
         entry = result.setdefault('directions', {}).setdefault(direction, {})
-        if 'tcp_status' not in entry:
+        if not ns.get('tcp_enabled',True):
+            entry['tcp_status']='DISABLED'
+        elif 'tcp_status' not in entry:
             streams = entry.get('streams', {})
             entry['tcp_status'] = ('PASS' if streams and all(s.get('status') == 'PASS' for s in streams.values())
                                    and entry.get('boot_continuity', 'PASS') == 'PASS'
                                    else entry.get('status', 'UNAVAILABLE'))
         entry['icmp'] = value
-        entry['status'] = 'PASS' if value['status'] == 'PASS' and entry['tcp_status'] == 'PASS' else 'FAIL'
+        entry['status'] = 'PASS' if value['status'] == 'PASS' and entry['tcp_status'] in ('PASS','DISABLED') and entry.get('boot_continuity','PASS')=='PASS' else 'FAIL'
     result['status'] = ('PASS' if not result.get('reason') and result.get('directions') and
                         all(v.get('status') == 'PASS' for v in result['directions'].values()) else 'FAIL')
     save(run_path(root, 'ns-icmp-results.json'), outcomes)

@@ -332,8 +332,9 @@ def continuous_ping():
 if __name__ == '__main__':
     BOOT = pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     CONFIG = json.loads(pathlib.Path('/etc/migration-probe.json').read_text())
-    DHCP_THREAD = threading.Thread(target=observe_dhcp, daemon=True)
-    DHCP_THREAD.start()
+    if not CONFIG.get('ping_only'):
+        DHCP_THREAD = threading.Thread(target=observe_dhcp, daemon=True)
+        DHCP_THREAD.start()
     deadline = time.monotonic() + CONFIG['lifetime']
     continuous = CONFIG.get('continuous_ping') is True
     if continuous:
@@ -346,7 +347,7 @@ if __name__ == '__main__':
             seq += 1
             if not continuous:
                 pool.submit(packet, seq, time.time(), started)
-            if started >= next_health:
+            if not CONFIG.get('ping_only') and started >= next_health:
                 pool.submit(health, PING_SEQ if continuous else seq)
                 next_health = started + 5
             time.sleep(max(0, CONFIG['interval'] - (time.monotonic() - started)))

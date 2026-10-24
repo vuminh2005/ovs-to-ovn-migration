@@ -103,9 +103,11 @@ class WorkflowTests(unittest.TestCase):
         task=next(t for t in play['tasks'] if t['name']=='Prepare additive OpenFlow15 baseline before creating any workload')
         self.assertIs(task['vars']['openflow_check_only'],False)
 
-    def test_txt_renderer_and_helpers_are_byte_identical_to_supplied_final_zip(self):
-        self.assertEqual(hashlib.sha256((ROOT/'scripts/reporting/report_format.py').read_text().partition('\ndef terminal_summary(')[0].encode()).hexdigest(),
-            '3ca3e49f1507dfdf18bcfbfed48139051d98b194580be06be16344e588a62157')
+    def test_numeric_report_helpers_are_byte_identical_to_supplied_final_zip(self):
+        # Section visibility now follows the selected probes. Keep the numeric
+        # formatting and metric helpers pinned to the original supplied source.
+        self.assertEqual(hashlib.sha256((ROOT/'scripts/reporting/report_format.py').read_text().partition('\ndef render_text(')[0].encode()).hexdigest(),
+            '9b8e311cd509777cadf27220a69ef4f1fc233c28f9b7e36203b5b01b83d92b5d')
 
 
 if __name__=='__main__': unittest.main()

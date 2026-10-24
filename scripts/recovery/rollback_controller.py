@@ -26,6 +26,8 @@ def runtime(root):
 
 def initialize(root, spec):
     cfg=runtime(root)
+    if cfg.get('migration_rollback_enabled') is False:
+        raise Stop('Rollback preparation was disabled for this run; a source checkpoint cannot be created retrospectively')
     hosts=set(cfg['control_hosts']+cfg['network_hosts']+cfg['compute_hosts']+[spec['db_host']])
     if set(spec['hosts']) != hosts: raise Stop('Rollback source coverage differs from inventory roles')
     for host in hosts:
@@ -40,6 +42,8 @@ def initialize(root, spec):
 
 def load(root):
     cfg=runtime(root)
+    if cfg.get('migration_rollback_enabled') is False:
+        raise Stop('Rollback was disabled for this run; no prepared rollback checkpoint is available')
     value=json.loads((root/'rollback/spec.json').read_text())
     if value.get('schema') != 1 or value.get('run') != root.name: raise Stop('No supported rollback source checkpoint for this run')
     if value.get('inventory_sha256') != sha(cfg['inventory']): raise Stop('Original inventory hash differs from the immutable rollback specification')

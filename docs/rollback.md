@@ -1,5 +1,16 @@
 # Rollback về ML2/OVS, giữ VM
 
+Chuẩn bị rollback trong migration **mặc định tắt**. Muốn có khả năng dùng
+entrypoint này, bật `-e migration_rollback_enabled=true` ngay từ đầu run.
+Cờ này chuẩn bị dữ liệu, không tự chạy rollback khi migration lỗi.
+Run lưu `migration_rollback_enabled=false` sẽ bị từ chối rõ ràng khi gọi
+`rollback-to-ovs.yml`; không thể tạo ngược checkpoint bằng cách bật cờ sau lỗi.
+Run cũ không có trường này vẫn được kiểm tra theo checkpoint thực tế như trước.
+
+`run_mariadb_backup` mặc định theo cờ rollback; có thể override độc lập. Khi
+bật rollback và đặt `run_mariadb_backup=false`, checkpoint riêng Neutron và
+restore rehearsal vẫn bắt buộc. Xem [hướng dẫn biến và cấu hình run](run-options.md).
+
 Entrypoint mới là `rollback-to-ovs.yml`, độc lập với reset và recovery trong
 `archive/`. Mặc định một lệnh chọn run sẽ inspect, tạo kế hoạch, tự dùng đúng
 hash vừa tạo và thực thi nếu các điều kiện đạt. Không cần lệnh inspect riêng,
@@ -8,6 +19,12 @@ Nếu run đã rollback hoàn tất, cùng lệnh tự chuyển sang verify, kh�
 
 Phạm vi hiện tại là Kolla 2024.1, Docker và kernel OVS. Bản này đã kiểm thử
 offline; chưa chạy MariaDB image hay rollback dataplane trên lab thật.
+
+Run mới mặc định dùng [validation chỉ ping](ping-only-validation.md). Với
+profile này, kiểm tra chức năng rollback chỉ yêu cầu ping E-W và N-S đã cấu hình,
+không đòi Pair B/D hoặc DHCP/metadata/MTU guest health. Các guard inventory,
+container/VM UUID, DB, cấu hình, topology và bảo toàn tài nguyên vẫn giữ nguyên.
+Run cũ tiếp tục dùng profile trong `validation-config.json` của chính run đó.
 
 ## Sửa lỗi snapshot phase 01 ngày 24/10/2026
 

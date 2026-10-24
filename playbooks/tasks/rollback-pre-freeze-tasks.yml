@@ -1,0 +1,44 @@
+- name: '[07] Load rollback specification'
+  ansible.builtin.command:
+    argv:
+    - python3
+    - '{{ playbook_dir }}/../scripts/recovery/rollback_controller.py'
+    - load
+    - '{{ migration_run_dir }}'
+  register: rollback_spec_result
+  changed_when: false
+- name: '[07] Load rollback DB location'
+  ansible.builtin.set_fact:
+    rollback_spec_runtime: '{{ (rollback_spec_result.stdout | from_json).spec }}'
+- name: '[07] Preflight native read-only Nova cells before API freeze'
+  ansible.builtin.command:
+    argv:
+    - python3
+    - /var/lib/ovs-to-ovn-rollback/{{ migration_run_id }}/rollback_host.py
+    - nova-state
+    - '{{ rollback_spec_runtime.hosts[groups[''control''] | sort | first] | combine({''run'': migration_run_id, ''host'': groups[''control''] | sort | first}) | to_json }}'
+  delegate_to: '{{ groups[''control''] | sort | first }}'
+  register: rollback_nova_preflight
+  changed_when: false
+- name: '[07] [SAVE] Pin native Nova preflight before closing APIs'
+  ansible.builtin.copy:
+    dest: '{{ migration_run_dir }}/rollback/nova-preflight.json'
+    content: '{{ rollback_nova_preflight.stdout }}'
+    mode: '0600'
+- name: '[07] Validate native Nova receipt identity and reader bytes before API freeze'
+  ansible.builtin.command:
+    argv:
+    - python3
+    - '{{ playbook_dir }}/../scripts/recovery/rollback_controller.py'
+    - nova-preflight
+    - '{{ migration_run_dir }}'
+  changed_when: false
+- name: '[07] Prepare same-image isolated MariaDB before downtime'
+  ansible.builtin.command:
+    argv:
+    - python3
+    - /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_database.py
+    - prepare
+    - '{{ rollback_spec_runtime | combine({''run'': migration_run_id, ''host'': rollback_spec_runtime.db_host}) | to_json }}'
+  delegate_to: '{{ rollback_spec_runtime.db_host }}'
+  changed_when: false

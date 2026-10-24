@@ -194,11 +194,12 @@ def render_text(report, root, *, modern):
         if matrix.get('status') in ('DISABLED', 'NOT TESTED'):
             flow = {'status': matrix['status']}
         icmp(name, flow, timeline_key=key)
-    tcp('Different compute / different subnet (TCP)', report.get('pair_d_tcp') or {}, (
-        ('held', 'Existing TCP session'),
-        ('new_old', 'Old listener / new connection every probe'),
-        ('new_listener', 'New listener / new connection every probe'),
-    ), direction='ew_tcp')
+    if (report.get('pair_d_tcp') or {}).get('status')!='DISABLED':
+        tcp('Different compute / different subnet (TCP)', report.get('pair_d_tcp') or {}, (
+            ('held', 'Existing TCP session'),
+            ('new_old', 'Old listener / new connection every probe'),
+            ('new_listener', 'New listener / new connection every probe'),
+        ), direction='ew_tcp')
 
     heading('2. NORTH - SOUTH')
     ns = report.get('north_south') or {}
@@ -214,7 +215,8 @@ def render_text(report, root, *, modern):
                  (old_key, 'Old listener / new connection every probe')]
         if ns.get('new_listener_enabled') or 'new_listener' in value.get('streams', {}):
             names.append(('new_listener', 'New listener / new connection every probe'))
-        tcp(name, value, names, direction=direction)
+        if ns.get('tcp_enabled',True):
+            tcp(name, value, names, direction=direction)
 
     return '\n'.join(lines) + '\n'
 

@@ -144,14 +144,16 @@ class Stats:
 class Client:
     def __init__(self, cfg):
         self.cfg = cfg
-        self.stats = {name: Stats() for name in ('held', 'new')}
+        self.stats = {name: Stats() for name in ('held', 'new')} if cfg.get('tcp_enabled',True) else {}
+        if not cfg.get('tcp_enabled',True) and not cfg.get('icmp_enabled'):
+            raise ValueError('A disabled TCP probe requires ICMP')
         self.stop = threading.Event()
         self.arm_lock = threading.Lock()
         self.armed = False
         self.armed_mono = None
         self.armed_ts = None
         self.listener_ack = None
-        if cfg.get('new_port'):
+        if cfg.get('new_port') and cfg.get('tcp_enabled',True):
             self.stats['new_old'] = self.stats.pop('new')
             self.stats['new_listener'] = Stats()
         self.ping = None
@@ -192,6 +194,24 @@ class Client:
                 if self.stop.is_set():
                     return
         threading.Thread(target=transfer, daemon=True).start()
+
+    def poll_export(self):
+        """Evidence control only; no TCP echoes, sessions or outage statistics."""
+        from ns_log_transfer import send, line
+        while not self.stop.is_set():
+            try:
+                with socket.socket() as sock:
+                    sock.settimeout(self.cfg['timeout'])
+                    sock.bind((self.cfg['source'],0))
+                    sock.connect((self.cfg['target'],self.cfg['port']))
+                    send(sock,dict(run=self.cfg['run'],token=self.cfg['control_token'],control='ICMP_POLL'))
+                    reply=line(sock)
+                    if reply.get('status')!='PASS' or reply.get('run')!=self.cfg['run']:
+                        raise ValueError('Sender export instruction ownership differs')
+                    self.request_export(reply.get('instruction'))
+            except (OSError,ValueError) as exc:
+                self.export_error=str(exc)
+            self.stop.wait(2)
 
     def connect(self, stats, port=None):
         with stats.lock:
@@ -332,8 +352,10 @@ class Client:
 
     def run(self):
         threads = [threading.Thread(target=self.stream, args=(name,), daemon=True) for name in self.stats]
-        if self.cfg.get('control_port'):
+        if self.cfg.get('control_port') and self.cfg.get('tcp_enabled',True):
             threads.append(threading.Thread(target=self.control_server, daemon=True))
+        if not self.cfg.get('tcp_enabled',True) and self.cfg.get('icmp_export_enabled'):
+            threads.append(threading.Thread(target=self.poll_export, daemon=True))
         if self.ping:
             threads.append(threading.Thread(target=self.ping.run, daemon=True))
         if threading.current_thread() is threading.main_thread():
@@ -375,7 +397,8 @@ class Server:
         if cfg.get('icmp_receive_path'):
             from ns_log_transfer import Receiver
             self.log_receiver = Receiver(cfg)
-        self.add_listener(cfg['port'])
+        if cfg.get('tcp_enabled',True) or self.log_receiver:
+            self.add_listener(cfg['port'])
 
     def add_listener(self, port):
         owner = self
@@ -400,12 +423,16 @@ class Server:
                                 return
                             elif row['control'] == 'ICMP_EXPORT' and owner.log_receiver:
                                 reply = owner.log_receiver.request(row)
-                            elif row['control'] == 'OPEN':
+                            elif row['control'] == 'ICMP_POLL' and owner.log_receiver:
+                                reply = dict(status='PASS',run=owner.cfg['run'],instruction=owner.log_receiver.instruction())
+                            elif row['control'] == 'OPEN' and owner.cfg.get('tcp_enabled',True):
                                 reply = owner.open_new()
                             else:
                                 raise ValueError('Unknown listener control action')
                             sock.sendall((json.dumps(reply)+'\n').encode())
                             return
+                        if not owner.cfg.get('tcp_enabled',True):
+                            raise ValueError('TCP application probes are disabled')
                         last_request = {k: row.get(k) for k in ('run', 'probe', 'seq')}
                         row.update(server=owner.cfg['server'], server_boot=boot_id(), listener=listener_id,
                             connection=connection, peer=peer[0], peer_port=peer[1])
@@ -440,7 +467,7 @@ class Server:
         started = time.monotonic()
         try:
             while not self.stop.is_set() and time.monotonic()-started < self.cfg['lifetime']:
-                emit(self.cfg, dict(kind='server', listener=self.listeners[self.cfg['port']][0],
+                emit(self.cfg, dict(kind='server', listener=self.listeners.get(self.cfg['port'],(None,None))[0],
                     server=self.cfg['server'], new_listener_opened=bool(self.opened), listener_ack=self.opened))
                 self.stop.wait(.5)
         finally:

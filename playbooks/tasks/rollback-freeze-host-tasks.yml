@@ -1,0 +1,13 @@
+- name: '[07] Capture immutable pre-freeze host topology'
+  ansible.builtin.command:
+    argv:
+    - python3
+    - /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_host.py
+    - freeze
+    - '{{ rollback_source_config | to_json }}'
+  changed_when: false
+- name: '[07] [SAVE] Fetch frozen VM and OVS topology'
+  ansible.builtin.fetch:
+    src: /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/freeze.json
+    dest: '{{ hostvars[''localhost''][''migration_run_dir''] }}/rollback/frozen/{{ inventory_hostname }}.json'
+    flat: true

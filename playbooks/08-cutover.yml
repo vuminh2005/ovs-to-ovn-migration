@@ -44,13 +44,13 @@
   tasks:
     - name: "[08] Verify metadata preparation on every host before any socket handoff"
       ansible.builtin.script:
-        cmd: "../scripts/migration/metadata_handoff.py verify {{ {'run': hostvars['localhost']['migration_run_id'], 'expected': hostvars['localhost']['metadata_preparation_runtime'].hosts[inventory_hostname], 'journal': '/var/lib/ovs-to-ovn-rollback/' + hostvars['localhost']['migration_run_id'] + '/events.jsonl'} | to_json | quote }}"
+        cmd: "../scripts/migration/metadata_handoff.py verify {{ {'run': hostvars['localhost']['migration_run_id'], 'expected': hostvars['localhost']['metadata_preparation_runtime'].hosts[inventory_hostname]} | to_json | quote }}"
         executable: python3
       changed_when: false
 
     - name: "[08] Stop legacy metadata and start prepared OVN metadata without waiting for chassis"
       ansible.builtin.script:
-        cmd: "../scripts/migration/metadata_handoff.py start {{ {'run': hostvars['localhost']['migration_run_id'], 'expected': hostvars['localhost']['metadata_preparation_runtime'].hosts[inventory_hostname], 'journal': '/var/lib/ovs-to-ovn-rollback/' + hostvars['localhost']['migration_run_id'] + '/events.jsonl'} | to_json | quote }}"
+        cmd: "../scripts/migration/metadata_handoff.py start {{ {'run': hostvars['localhost']['migration_run_id'], 'expected': hostvars['localhost']['metadata_preparation_runtime'].hosts[inventory_hostname], 'journal': ('/var/lib/ovs-to-ovn-rollback/' + hostvars['localhost']['migration_run_id'] + '/events.jsonl') if (hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool) else none} | to_json | quote }}"
         executable: python3
 
 - name: "Phase 08 - Stop legacy agents on network hosts"
@@ -65,9 +65,13 @@
       ansible.builtin.shell: |
         set -euo pipefail
         if systemctl cat {{ item }} >/dev/null 2>&1; then
+          {% if hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool %}
           python3 /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_host.py event {{ {'run': hostvars['localhost']['migration_run_id'], 'host': inventory_hostname, 'stage': 'legacy-agent-stop', 'edge': 'intent'} | to_json | quote }}
+          {% endif %}
           systemctl disable --now {{ item }}
+          {% if hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool %}
           python3 /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_host.py event {{ {'run': hostvars['localhost']['migration_run_id'], 'host': inventory_hostname, 'stage': 'legacy-agent-stop', 'edge': 'complete'} | to_json | quote }}
+          {% endif %}
           test "$(systemctl is-active {{ item }} || true)" != active
         fi
       args:
@@ -86,9 +90,13 @@
       ansible.builtin.shell: |
         set -euo pipefail
         if systemctl cat {{ item }} >/dev/null 2>&1; then
+          {% if hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool %}
           python3 /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_host.py event {{ {'run': hostvars['localhost']['migration_run_id'], 'host': inventory_hostname, 'stage': 'legacy-agent-stop', 'edge': 'intent'} | to_json | quote }}
+          {% endif %}
           systemctl disable --now {{ item }}
+          {% if hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool %}
           python3 /var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/rollback_host.py event {{ {'run': hostvars['localhost']['migration_run_id'], 'host': inventory_hostname, 'stage': 'legacy-agent-stop', 'edge': 'complete'} | to_json | quote }}
+          {% endif %}
           test "$(systemctl is-active {{ item }} || true)" != active
         fi
       args:
@@ -122,9 +130,13 @@
     - name: "[08] Deploy OVN controller"
       ansible.builtin.shell: |
         set -euo pipefail
+        {% if hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool %}
         python3 {{ (playbook_dir + '/../scripts/recovery/rollback_controller.py') | quote }} event {{ migration_run_dir | quote }} '{"stage": "controller-deploy", "edge": "intent"}'
+        {% endif %}
         {{ kolla_ansible_bin_runtime }} -i {{ kolla_inventory_runtime }} deploy --tags ovn-controller
+        {% if hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool %}
         python3 {{ (playbook_dir + '/../scripts/recovery/rollback_controller.py') | quote }} event {{ migration_run_dir | quote }} '{"stage": "controller-deploy", "edge": "complete"}'
+        {% endif %}
       args:
         executable: /bin/bash
 

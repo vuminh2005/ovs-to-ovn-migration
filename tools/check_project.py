@@ -127,6 +127,7 @@ def main():
             if not isinstance(shell, str):
                 continue
             rendered = re.sub(r'{{.*?}}', '0', shell, flags=re.S)
+            rendered = re.sub(r'{%.*?%}', '', rendered, flags=re.S)
             result = subprocess.run(['bash', '-n'], input=rendered, text=True, capture_output=True)
             counts['bash_blocks'] += 1
             if result.returncode:

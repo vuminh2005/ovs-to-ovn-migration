@@ -1,5 +1,16 @@
 # OpenStack ML2/OVS → ML2/OVN migration
 
+Mặc định gọn: `migration_rollback_enabled: false`, 6 VM ping, TCP tắt.
+Không snapshot/dump/rehearse để rollback; backup MariaDB theo mặc định này cũng
+tắt. Monitor debug tổng quát và smoke test tạo network là tùy chọn. Capture
+ping, kiểm tra migration và thứ tự metadata/gateway vẫn giữ. Xem
+[cách tùy biến run](docs/run-options.md).
+
+Mặc định validation chỉ đo ping E-W/N-S: 6 VM khi bật đủ ma trận E-W và N-S.
+Không tạo VM TCP, VM DHCP/metadata riêng hoặc VM mới sau migration; không chạy
+TCP application probes. Xem [validation chỉ ping](docs/ping-only-validation.md)
+về số VM, report và các tùy chọn bật lại kiểm thử.
+
 Cập nhật 23/10/2026: migration theo vai trò inventory, hỗ trợ nhiều network/compute
 không khóa số node. Xem [thay đổi, thông tin còn thiếu và tương thích lab 4 node](docs/node-independent-migration.md).
 Reset vẫn dành riêng lab 4 node; cấu hình N-S mặc định vẫn là profile lab.
@@ -17,10 +28,11 @@ Neutron API. Helper dùng scheduler gốc trong image Neutron, đã preflight tr
 downtime ở phase 07. Lỗi tối ưu sẽ lưu evidence rồi tiếp tục bật API. Xem
 [gateway scheduling sớm](docs/early-gateway-scheduling.md).
 
-Rollback giữ VM có entrypoint riêng: một lệnh tự inspect, dùng hash của kế hoạch
+Rollback giữ VM cần bật `migration_rollback_enabled=true` từ đầu run.
+Entrypoint riêng dùng một lệnh tự inspect, lấy hash của kế hoạch
 vừa tạo và thực thi khi các gate đạt; có checkpoint riêng Neutron đã restore-test
 và barrier dừng writer trước restore. Không cần sao chép SHA hay truyền cờ xác nhận.
-Checkpoint sau khi đóng API làm tăng control-plane downtime; thời gian được
+Khi bật rollback, checkpoint sau khi đóng API làm tăng control-plane downtime; thời gian được
 ghi riêng, chưa có số đo lab. Xem [rollback về OVS](docs/rollback.md) trước khi
 chạy; run cũ thiếu checkpoint không được phục hồi tự động bằng workflow này.
 
@@ -28,7 +40,7 @@ chạy; run cũ thiếu checkpoint không được phục hồi tự động b�
 riêng container và xử lý đúng biến thể `no such object/container`, vẫn chặn lỗi
 Docker daemon/quyền truy cập. Xem [cách chạy lại sau lỗi này](docs/rollback.md).
 
-Checkpoint phase 07 đọc Nova DB qua container `nova_api` bằng session READ ONLY,
+Khi bật rollback, checkpoint phase 07 đọc Nova DB qua container `nova_api` bằng session READ ONLY,
 không gọi Nova server-detail API sau khi Neutron đã dừng. Reader được preflight
 trước freeze; kiểm tra mọi cell và mapping, UUID/host/task state vẫn giữ nguyên.
 Helper được chép nguyên byte bằng `copy.src`; controller kiểm tra hash/identity

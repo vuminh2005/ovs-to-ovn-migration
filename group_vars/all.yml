@@ -41,8 +41,12 @@ legacy_compute_units:
 # only verify the prepared protocol set at cutover.
 br_int_protocols: "OpenFlow10,OpenFlow11,OpenFlow12,OpenFlow13,OpenFlow14,OpenFlow15"
 
-# Safety / backup.
-run_mariadb_backup: true
+# Optional rollback preparation. Enable only before starting a new run.
+migration_rollback_enabled: false
+# Full-cluster MariaDB backup follows the rollback profile by default.
+# Override independently; the frozen Neutron checkpoint is mandatory when
+# migration_rollback_enabled=true even if this physical backup is disabled.
+run_mariadb_backup: "{{ migration_rollback_enabled | bool }}"
 
 # Dynamic Port_Binding convergence timeout. Large clouds get more time without
 # requiring an edit. timeout = base + seconds_per_port * old_compute_ports,
@@ -56,7 +60,7 @@ metadata_readiness_timeout_seconds: 300
 # Automatic post-migration control-plane smoke test. It creates a temporary
 # network, asserts that it is Geneve, then deletes it. No VM/image/flavor is
 # required and no permanent tenant resource is left behind.
-validation_ephemeral_network: true
+validation_ephemeral_network: false
 
 # Guest VM1 tenant ICMP interval.
 dataplane_probe_interval_seconds: 0.2
@@ -64,11 +68,13 @@ dataplane_probe_interval_seconds: 0.2
 # Workload POC: UUID or unambiguous name. Ubuntu cloud images must already
 # contain cloud-init, Python3, ping, iproute2, systemd and ttyS0 support.
 validation_workloads_enabled: true
+# Default validation creates only the ICMP measurement VMs (EW and NS).
+# False restores the separate DHCP/metadata and fresh-provisioning pairs.
+validation_ping_only: true
 # Both members of every pair must run on these distinct inventory computes.
 validation_pair_compute_hosts: []  # Auto-select two ready inventory computes; explicit pair is supported.
-# Pair D uses the pre-migration topology with A/B. Manual demos are managed
-# outside the playbook; disable only automatic D with an extra variable.
-validation_pair_d_enabled: true
+# TCP is opt-in and requires validation_ping_only=false.
+validation_pair_d_enabled: false
 validation_tcp_old_port: 18080
 validation_tcp_new_port: 18081
 validation_tcp_control_port: 18082
@@ -119,7 +125,7 @@ target_geneve_mtu: 1392
 validation_ns_enabled: "{{ ns_enabled }}"
 
 # Host-side observers; byte/time limits never overwrite earlier evidence.
-migration_diagnostics_enabled: true
+migration_diagnostics_enabled: false
 migration_diagnostics_directory: /var/lib/ovn-migration-diagnostics
 migration_diagnostics_lifetime_seconds: 18000
 migration_diagnostics_max_bytes: 268435456

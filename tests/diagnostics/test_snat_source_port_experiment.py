@@ -126,10 +126,13 @@ class SourcePortExperimentTests(unittest.TestCase):
         env=jinja2.Environment();env.filters['bool']=bool
         for enabled in (False,True):
             for ns_enabled in (False,True):
-                active=all(env.compile_expression(condition)(
-                    validation_ns_enabled=ns_enabled,ns_preserve_snat_source_port=enabled)
-                    for condition in gate['tasks'][0]['when'])
-                self.assertEqual(active,enabled and ns_enabled)
+                for tcp in (False,True):
+                    for ping_only in (False,True):
+                        active=all(env.compile_expression(condition)(
+                            validation_ns_enabled=ns_enabled,ns_preserve_snat_source_port=enabled,
+                            ns_tcp_enabled=tcp,validation_ping_only=ping_only)
+                            for condition in gate['tasks'][0]['when'])
+                        self.assertEqual(active,enabled and ns_enabled and tcp and not ping_only)
         tasks=yaml.safe_load((ROOT/'playbooks/tasks/ns-source-profile-tasks.yml').read_text())
         self.assertIn('common.register_iptables_opts',tasks[0]['ansible.builtin.shell'])
         self.assertIn('use_random_fully == false',str(tasks[2]['ansible.builtin.assert']['that']))

@@ -14,7 +14,7 @@ from types import SimpleNamespace as NS
 import pytest
 import yaml
 
-from tests.support import ROOT
+from tests.support import ROOT, expanded_tasks
 import rollback_common as common
 import rollback_controller as controller
 import rollback_host as host
@@ -166,8 +166,7 @@ def seed_receipt_run(tmp_path):
 def test_actual_ansible_staging_preserves_reader_bytes_and_freezes_native_receipt(tmp_path,monkeypatch,cells):
     # Execute the real phase-01 task, including its file lookup/copy behavior.
     # In-memory fixtures alone miss Ansible file lookup's default rstrip.
-    plays=yaml.safe_load((ROOT/'playbooks/01-backup.yml').read_text())
-    task=copy.deepcopy(next(t for p in plays for t in p['tasks'] if t['name']=='[01] [SAVE] Stage standalone rollback helpers'))
+    task=copy.deepcopy(next(t for t in expanded_tasks(ROOT/'playbooks/01-backup.yml') if t['name']=='[01] [SAVE] Stage standalone rollback helpers'))
     staged=tmp_path/'staged';staged.mkdir()
     task['ansible.builtin.copy']['dest']=str(staged/'{{ item }}')
     playbooks=tmp_path/'playbooks';playbooks.mkdir()
@@ -232,8 +231,7 @@ def test_real_ansible_preflight_gate_stops_hash_mismatch_before_freeze(tmp_path,
     if changed_reader:
         receipt['reader_sha256']='different-staged-bytes'
         common.save(root/'rollback/nova-preflight.json',receipt)
-    plays=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
-    task=copy.deepcopy(next(t for p in plays for t in p['tasks'] if t['name']=='[07] Validate native Nova receipt identity and reader bytes before API freeze'))
+    task=copy.deepcopy(next(t for t in expanded_tasks(ROOT/'playbooks/07-migrate-db.yml') if t['name']=='[07] Validate native Nova receipt identity and reader bytes before API freeze'))
     task['ansible.builtin.command']['argv'][0]=sys.executable
     marker=tmp_path/'api-stop-reached'
     playbooks=tmp_path/'playbooks';playbooks.mkdir()
@@ -262,7 +260,7 @@ def test_changed_nova_before_stop_and_changed_container_after_freeze_are_blocked
 
 
 def test_native_preflight_and_frozen_read_surround_api_stop():
-    tasks=[t for play in yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text()) for t in play['tasks']]
+    tasks=list(expanded_tasks(ROOT/'playbooks/07-migrate-db.yml'))
     names=[t['name'] for t in tasks]
     assert names.index('[07] Preflight native read-only Nova cells before API freeze')<names.index('[07] Stop and disable neutron-server')
     assert (names.index('[07] [SAVE] Pin native Nova preflight before closing APIs')<

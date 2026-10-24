@@ -273,16 +273,17 @@ def validation_ready(root):
     orchestration = read_evidence(root, 'validation-orchestration.json')
     consistency = read_evidence(root, 'resource-consistency.json')
     state = read_evidence(root, 'validation-resources.json')
+    cfg=read_evidence(root,'validation-config.json')
+    ping_only=cfg.get('ping_only',False)
     role_ready = (state.get('schema_version') != 2 or state.get('historical_dual_pair') is True or (
         read_evidence(root, 'measure-readiness.json').get('status') == 'PASS' and
         read_evidence(root, 'measure-post-checks.json').get('status') == 'PASS' and
         read_evidence(root, 'tenant-dataplane-probe.json').get('pair_a_boot_continuity') == 'PASS' and
-        read_evidence(root, 'dhcp-precutover-preparation.json').get('status') == 'PASS' and
+        (ping_only or (read_evidence(root, 'dhcp-precutover-preparation.json').get('status') == 'PASS' and
         read_evidence(root, 'existing-migration-baseline.json') and
         all(row.get('boot_continuity') == 'PASS' and row.get('mtu') == 'PASS'
             for row in read_evidence(root, 'pre-workload-checks.json').values()) and
-        all(row.get('mtu') == 'PASS' for row in read_evidence(root, 'post-workload-checks.json').values())))
-    cfg=read_evidence(root,'validation-config.json')
+        all(row.get('mtu') == 'PASS' for row in read_evidence(root, 'post-workload-checks.json').values())))))
     if cfg.get('placement_enabled'):
         role_ready = role_ready and read_evidence(root, 'workload-placement.json').get('status') == 'PASS'
     if cfg.get('pair_d_enabled'):
@@ -301,15 +302,16 @@ def validation_ready(root):
     if diagnostic_cfg.get('enabled'):
         from diagnostic_policy import collection_ready
         role_ready = role_ready and collection_ready(read_evidence(root, 'migration-diagnostics.json'))
-    return (role_ready and workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
+    workload_ready = ping_only or (workload_pass(read_evidence(root, 'initial-workload-checks.json'), 'vxlan') and
             workload_pass(read_evidence(root, 'pre-workload-checks.json'), 'geneve') and
             workload_pass(read_evidence(root, 'post-workload-checks.json'), 'geneve') and
-            read_evidence(root, 'post-ovn-bindings.json').get('status') == 'PASS' and
+            read_evidence(root, 'post-ovn-bindings.json').get('status') == 'PASS')
+    return (role_ready and workload_ready and
             read_evidence(root, 'existing-network-semantics.json').get('status') == 'PASS' and
             read_evidence(root, 'tenant-dataplane-probe.json').get('status') == 'PASS' and
             orchestration.get('semantics_rc') == 0 and orchestration.get('workload_rc') == 0 and
             not read_evidence(root, 'workload-errors.json') and bool(consistency) and
-            all(row.get('unchanged') is True for row in consistency.values()))
+            all(isinstance(row,dict) and row.get('unchanged') is True for row in consistency.values()))
 
 class Validation:
     def __init__(self, root):
@@ -381,6 +383,8 @@ class Validation:
         c, cfg = self.cloud, self.cfg
         if stage == 'tcp' and not cfg.get('pair_d_enabled'):
             return
+        if cfg.get('ping_only') and stage != 'measure':
+            raise RuntimeError('Ping-only validation prohibits DHCP/metadata, fresh and TCP VM creation')
         if cfg.get('placement_enabled') and set(cfg.get('placement', {})) != {'0', '1'}:
             raise RuntimeError('Resolve both compute placements before workload creation')
         topology, role = ROLES[stage]
@@ -484,6 +488,8 @@ class Validation:
             guest = (script_path('guest_probe.py')).read_text()
             config = dict(run=cfg['run'], vm=vm['record_vm'], peer=pair[str(1-i)]['ip'],
                           ip=vm['ip'], interval=cfg['interval'], lifetime=cfg['lifetime'], dhcp_t1=cfg.get('dhcp_t1',30), continuous_ping=(stage=='measure'))
+            if cfg.get('ping_only'):
+                config['ping_only']=True
             if stage == 'tcp':
                 config.update(tcp_role='client' if i == 0 else 'server',
                     **{k:cfg[k] for k in ('tcp_old_port','tcp_new_port','tcp_control_port','tcp_interval','tcp_timeout')})
@@ -775,6 +781,9 @@ class Validation:
 
     def prepare_dhcp(self, target=False):
         name = 'dhcp-precutover-preparation.json' if target else 'dhcp-initial-preparation.json'
+        if self.cfg.get('ping_only'):
+            save(run_path(self.root,name),dict(status='DISABLED',reason='Ping-only validation'))
+            return
         deadline = time.monotonic()+self.cfg.get('dhcp_timeout', 180)
         try:
             if target and self.state.get('schema_version')==2:
@@ -1280,7 +1289,8 @@ class Validation:
         if getattr(self, 'cfg', {}).get('ew_matrix_enabled') or getattr(self, 'cfg', {}).get('ns', {}).get('enabled'):
             from extended_validation import Extended
             Extended(self).cleanup()
-        self.cleanup('post')
+        if not getattr(self,'cfg',{}).get('ping_only') or self.state.get('post'):
+            self.cleanup('post')
         self.cleanup('pre')
         return True
 
@@ -1363,9 +1373,12 @@ def main():
             operate(v.root, 'ensure')
             operate(v.root, 'snapshot-wait', label='pre-freeze')
             operate(v.root, 'check')
-        v.verify_precutover()
+        if v.cfg.get('ping_only'):
+            v.wait_measure()
+        else:
+            v.verify_precutover()
         if v.cfg.get('placement_enabled'):
-            v.audit_placement(['measure', 'pre'] + (['tcp'] if pair_d.enabled else []))
+            v.audit_placement(['measure'] + ([] if v.cfg.get('ping_only') else ['pre']) + (['tcp'] if pair_d.enabled else []))
         pair_d.wait(freeze=True)
         pair_d.control_precheck()
         if extended:
@@ -1393,12 +1406,13 @@ def main():
             extended.matrix_start()
             extended.create_ns()
             extended.ns_wait()
-        v.create('pre')
-        rows = v.wait('pre')
-        if not read_evidence(v.root,'existing-initial-baseline.json'):
-            save(run_path(v.root, 'existing-initial-baseline.json'),v.baseline('pre',rows))
-        save(run_path(v.root, 'initial-freshness-anchors.json'), read_evidence(v.root, 'pre-freshness-anchors.json'))
-        v.prepare_dhcp()
+        if not v.cfg.get('ping_only'):
+            v.create('pre')
+            rows = v.wait('pre')
+            if not read_evidence(v.root,'existing-initial-baseline.json'):
+                save(run_path(v.root, 'existing-initial-baseline.json'),v.baseline('pre',rows))
+            save(run_path(v.root, 'initial-freshness-anchors.json'), read_evidence(v.root, 'pre-freshness-anchors.json'))
+            v.prepare_dhcp()
         if pair_d.enabled:
             v.create('tcp')
         pair_d.wait()
@@ -1416,13 +1430,14 @@ def main():
             rows = {k:read_evidence(v.root,'measure'+k+'-console-records.json') or [] for k in ('0','1')}
         v.save_measurement(rows)
         try:
-            if v.cfg.get('post_cutover_dhcp_enabled'):
+            if not v.cfg.get('ping_only') and v.cfg.get('post_cutover_dhcp_enabled'):
                 v.post_cutover_dhcp()
-            v.wait('pre')
+            if not v.cfg.get('ping_only'):
+                v.wait('pre')
         except Exception as exc:
             failures.append(str(exc))
         try:
-            if not v.state.get('post', {}).get('cleaned'):
+            if not v.cfg.get('ping_only') and not v.state.get('post', {}).get('cleaned'):
                 v.create('post')
                 v.wait('post')
         except Exception as exc:
@@ -1430,7 +1445,7 @@ def main():
         try:
             pair_d.wait(post=True)
             if v.cfg.get('placement_enabled'):
-                v.audit_placement(['measure', 'pre', 'post'] + (['tcp'] if pair_d.enabled else []))
+                v.audit_placement(['measure'] + ([] if v.cfg.get('ping_only') else ['pre','post']) + (['tcp'] if pair_d.enabled else []))
         except Exception as exc:
             failures.append(str(exc))
         if extended:

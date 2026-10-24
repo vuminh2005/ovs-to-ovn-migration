@@ -263,7 +263,7 @@ class OrchestrationPhaseTests(unittest.TestCase):
         tasks=[task for play in plays for task in play['tasks']]
         self.assertIn('Start phase 07 before readiness checks',tasks[0]['name'])
         self.assertEqual(tasks[0]['ansible.builtin.command']['argv'][2],'phase-entry')
-        readiness=next(i for i,t in enumerate(tasks) if 'Check Group B MTU and workload readiness' in t['name'])
+        readiness=next(i for i,t in enumerate(tasks) if 'Check ping traffic and optional workload readiness' in t['name'])
         freeze=next(i for i,t in enumerate(tasks) if '--freeze-start' in str(t.get('ansible.builtin.command',{})))
         self.assertLess(readiness,freeze)
         self.assertGreater(readiness,1)

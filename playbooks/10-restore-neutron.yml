@@ -55,7 +55,7 @@
               - "{{ hostvars['localhost']['cutover_preparation_runtime'] | to_json }}"
               - --cleanup-verified
               - --journal
-              - "/var/lib/ovs-to-ovn-rollback/{{ hostvars['localhost']['migration_run_id'] }}/events.jsonl"
+              - "{{ '/var/lib/ovs-to-ovn-rollback/' + hostvars['localhost']['migration_run_id'] + '/events.jsonl' if (hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool) else '' }}"
           register: gateway_scheduling_attempt
           changed_when: gateway_scheduling_attempt.rc == 0 and (gateway_scheduling_attempt.stdout | from_json).native.changed_count | int > 0
 
@@ -93,6 +93,7 @@
       delegate_to: localhost
       run_once: true
       changed_when: false
+      when: hostvars['localhost']['migration_rollback_enabled_runtime'] | default(false) | bool
 
     - name: "[10] Enable and start neutron-server"
       ansible.builtin.systemd_service:

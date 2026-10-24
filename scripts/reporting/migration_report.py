@@ -65,6 +65,11 @@ def main(argv=None):
     report['run_storage'] = dict(layout_schema_version=1 if (root/'run-layout.json').exists() else 0,
         layout_index='run-layout.json' if (root/'run-layout.json').exists() else None,
         mariadb_backup=evidence('mariadb-backup.json'))
+    runtime=evidence('runtime.json') or {}
+    report['rollback_preparation']=dict(enabled=runtime.get('migration_rollback_enabled'),
+        status='DISABLED' if runtime.get('migration_rollback_enabled') is False else 'ENABLED' if runtime.get('migration_rollback_enabled') is True else 'LEGACY',
+        checkpoint_created=(root/'rollback/database/database-checkpoint.json').is_file(),
+        automatic_rollback=False)
     report['orchestration_recovery']=evidence('orchestration-recovery.json')
     diagnostic_cfg = evidence('diagnostics-config.json') or {}
     report['migration_diagnostics'] = (evidence('migration-diagnostics.json') or {'status':'UNAVAILABLE'}) if diagnostic_cfg.get('enabled') else {'status':'DISABLED'}
@@ -111,7 +116,8 @@ def main(argv=None):
     report['pair_d_tcp'] = (evidence('pair-d-tcp.json') or {'status': 'UNAVAILABLE'}) if cfg.get('pair_d_enabled') else {'status': 'DISABLED', 'enabled': False}
     report['pair_d_tcp']['baseline'] = evidence('pair-d-baseline.json')
     report['pair_d_tcp']['trigger'] = evidence('pair-d-trigger.json')
-    report['limitations'].append('EW TCP measures small application TCP echoes and new connections, with client monotonic timing; it is not a throughput or large-packet MTU benchmark.')
+    if cfg.get('pair_d_enabled'):
+        report['limitations'].append('EW TCP measures small application TCP echoes and new connections, with client monotonic timing; it is not a throughput or large-packet MTU benchmark.')
     report['new_ovn_workload_bindings']=(evidence('post-ovn-bindings.json') or {}).get('status','NOT TESTED')
     report['dataplane_probe']=evidence('tenant-dataplane-probe.json') or {'status':'NOT TESTED'}
     if report['dataplane_probe'].get('status')=='PASS' and (report['dataplane_probe'].get('measurement_workload')!='Pair A' or report['dataplane_probe'].get('evidence_source')!='compute-tap-pcap'):
@@ -122,7 +128,8 @@ def main(argv=None):
         'flows': dict({'ew_different_compute_different_subnet': report['dataplane_probe']}, **matrix.get('flows', {}))}
     report['north_south'] = (evidence('ns-results.json') or {'status':'UNAVAILABLE'}) if cfg.get('ns', {}).get('enabled') else {'status':'DISABLED'}
     report['north_south']['icmp_enabled'] = bool(cfg.get('ns', {}).get('icmp_enabled'))
-    report['north_south']['new_listener_enabled'] = bool(cfg.get('ns', {}).get('new_port'))
+    report['north_south']['tcp_enabled'] = cfg.get('ns',{}).get('tcp_enabled',True)
+    report['north_south']['new_listener_enabled'] = bool(cfg.get('ns', {}).get('new_port')) and report['north_south']['tcp_enabled']
     from traffic_timeline import build as build_traffic_timeline
     report['traffic_timeline'] = build_traffic_timeline(root, report['north_south'],
         ew=report['ew_connectivity_matrix'], dataplane=report['dataplane_probe'], tcp=report['pair_d_tcp'])
@@ -209,9 +216,20 @@ def main(argv=None):
     fresh_values=list(report['fresh_ovn_provisioning'].values())
     report['fresh_ovn_provisioning']['status']=('PASS' if all(v=='PASS' for v in fresh_values) else
                                                'FAIL' if 'FAIL' in fresh_values else 'UNAVAILABLE')
+    if cfg.get('ping_only'):
+        for key,value in list(report.items()):
+            if (key.startswith(('existing_workload_','new_ovn_workload_')) or key=='initial_ovs_workload_validation') and isinstance(value,str):
+                report[key]='DISABLED'
+        for key in ('existing_workload_migration','fresh_ovn_provisioning'):
+            report[key]={name:('DISABLED' if isinstance(value,str) else value) for name,value in report[key].items()}
+            report[key].update(status='DISABLED',enabled=False,reason='Ping-only validation profile')
+        for key in ('automatic_mtu_convergence','pre_cutover_mtu_readiness','automatic_guest_mtu_convergence',
+                    'automatic_post_cutover_dhcp_convergence','post_cutover_dhcp_ready','post_cutover_metadata_route_ready','post_cutover_metadata_ready',
+                    'server_uuid_preserved','port_uuid_preserved','fixed_ip_preserved'):
+            report[key]='DISABLED'
     report['dataplane_continuity']['status']=report['dataplane_probe']['status']
     statuses=[v for k,v in report.items() if (k.startswith(('existing_','new_ovn_')) or k=='initial_ovs_workload_validation') and isinstance(v,str)]
-    if not validation_ready(root) or any(v!='PASS' for v in statuses) or report['dataplane_probe']['status']!='PASS':
+    if not validation_ready(root) or any(v!='PASS' and not (cfg.get('ping_only') and v=='DISABLED') for v in statuses) or report['dataplane_probe']['status']!='PASS':
         report['result']='MIGRATED_VALIDATION_INCOMPLETE'
     orchestration=report['validation_orchestration'] or {}
     if orchestration.get('semantics_rc',0) or orchestration.get('workload_rc',0):

@@ -1,0 +1,17 @@
+- name: '[01] Build complete rollback host roles'
+  ansible.builtin.set_fact:
+    rollback_hosts: '{{ rollback_hosts | default({}) | combine({item: {''control'': item in groups[''control''], ''network'': item in groups[''network''],
+      ''compute'': item in groups[''compute''], ''chassis'': item in (groups[''network''] + groups[''compute'']), ''database'': rollback_database_name
+      | default(''neutron'')}}) }}'
+  loop: '{{ (groups[''control''] + groups[''network''] + groups[''compute''] + (groups[''mariadb''] | default(groups[''control'']))) | unique
+    | list }}'
+- name: '[01] Initialize immutable rollback specification'
+  ansible.builtin.command:
+    argv:
+    - python3
+    - '{{ playbook_dir }}/../scripts/recovery/rollback_controller.py'
+    - init
+    - '{{ migration_run_dir }}'
+    - '{{ {''db_host'': (groups[''mariadb''] | default(groups[''control'']))[0], ''database'': rollback_database_name | default(''neutron''),
+      ''shadow_size'': rollback_shadow_tmpfs_size | default(''2g''), ''hosts'': rollback_hosts, ''openrc'': openrc_path} | to_json }}'
+  changed_when: false

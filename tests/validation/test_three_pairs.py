@@ -515,7 +515,7 @@ class ThreePairsTests(unittest.TestCase):
     def test_freeze_guard_precedes_downtime_and_neutron_stop(self):
         import yaml
         plays=yaml.safe_load((ROOT/'playbooks/07-migrate-db.yml').read_text())
-        guard_play=next(p for p in plays if any('Check Group B MTU and workload readiness' in t['name'] for t in p['tasks']))
+        guard_play=next(p for p in plays if any('Check ping traffic and optional workload readiness' in t['name'] for t in p['tasks']))
         first=guard_play['tasks'][0]
         self.assertIn('precutover-ready',first['ansible.builtin.shell'])
         self.assertNotIn('failed_when',first)

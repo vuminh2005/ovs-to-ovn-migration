@@ -90,7 +90,8 @@ class Reader:
                 if row and (row.get('run') != self.cfg['run'] or any(
                         row.get(k) != original.get(k) for k in ('boot','probe_id'))):
                     raise ValueError('Original N-S client identity changed: '+direction)
-                for name in (('held','new_old','new_listener') if self.cfg['ns'].get('new_port') else ('held','new')):
+                names=(('held','new_old','new_listener') if self.cfg['ns'].get('new_port') else ('held','new')) if self.cfg['ns'].get('tcp_enabled',True) else ()
+                for name in names:
                     stats = row.get('streams', {}).get(name, {})
                     if name == 'held' and stats and (stats.get('held_broken') or
                             stats.get('connection_attempts') != 1 or any(

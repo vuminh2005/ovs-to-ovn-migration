@@ -21,6 +21,7 @@
         kolla_inventory_runtime: "{{ ansible_inventory_sources[0] }}"
         kolla_ansible_bin_runtime: "{{ kolla_ansible_bin_cmd.stdout }}"
         migration_run_id: "{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+        migration_rollback_enabled_runtime: "{{ migration_rollback_enabled | bool }}"
         ovn_cli_host_runtime: >-
           {{ (groups['ovn-northd'][0] if ('ovn-northd' in groups and groups['ovn-northd'] | length > 0)
               else groups['control'][0]) }}
@@ -54,6 +55,10 @@
           {{ {
               'phase_marker_schema_version': 2,
               'preexisting_preservation_enabled': true,
+              'migration_rollback_enabled': migration_rollback_enabled_runtime | bool,
+              'run_mariadb_backup': run_mariadb_backup | bool,
+              'migration_diagnostics_enabled': migration_diagnostics_enabled | bool,
+              'validation_ephemeral_network': validation_ephemeral_network | bool,
               'run_id': migration_run_id,
               'inventory': kolla_inventory_runtime,
               'kolla_ansible': kolla_ansible_bin_runtime,

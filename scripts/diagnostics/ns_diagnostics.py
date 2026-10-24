@@ -56,6 +56,11 @@ def checked_config(cfg):
 def capture_filter(cfg):
     checked_config(cfg)
     peers = (cfg['snat_ip'], cfg['fip_ip']) if cfg['kind'] == 'endpoint' else (cfg['guest_ip'],)
+    if not cfg.get('tcp_enabled',True):
+        if not cfg.get('icmp_enabled'):
+            raise ValueError('ICMP capture is required when TCP probes are disabled')
+        return ('(icmp and host '+cfg['endpoint_ip']+' and ('+' or '.join('host '+ip for ip in peers)+
+                ')) or (arp and ('+' or '.join('host '+cfg[k] for k in ('endpoint_ip','snat_ip','fip_ip','guest_ip'))+'))')
     if not cfg.get('icmp_enabled') and not cfg.get('new_tcp_port'):
         return ('tcp and port '+str(cfg['tcp_port'])+' and host '+cfg['endpoint_ip']+
                 ' and ('+' or '.join('host '+ip for ip in peers)+')')
@@ -369,6 +374,8 @@ class Diagnostics:
                        tcp_port=ns['port'], lifetime=self.cfg['lifetime'], allow_create=True)
             if ns.get('new_port'):
                 cfg.update(new_tcp_port=ns['new_port'], icmp_enabled=ns.get('icmp_enabled', False))
+            if 'tcp_enabled' in ns:
+                cfg.update(tcp_enabled=ns['tcp_enabled'],icmp_enabled=ns.get('icmp_enabled',False))
             host = 'localhost'
             if kind == 'endpoint':
                 cfg['interface'] = ns['capture_interface']
@@ -419,6 +426,9 @@ class Diagnostics:
         if not self.enabled:
             return
         ns = self.cfg['ns']
+        if not ns.get('tcp_enabled',True):
+            save(run_path(self.root,'ns-conntrack-'+label+'.json'),dict(status='DISABLED',reason='TCP application probes disabled'))
+            return
         rows = []
         for index, host in enumerate(ns.get('network_hosts') or [self.cfg['pair_d_network_host']]):
             cp = dict(kind='conntrack-'+label+'-'+str(index), host=host, config=dict(

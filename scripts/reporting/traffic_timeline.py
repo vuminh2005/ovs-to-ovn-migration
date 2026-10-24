@@ -119,7 +119,7 @@ def build(root, ns, *, ew=None, dataplane=None, tcp=None):
                     'ew_same_compute_different_subnet', 'ew_same_compute_same_subnet'):
             probe = (dataplane or flows.get(key) or {}) if key == 'ew_different_compute_different_subnet' else flows.get(key) or {}
             add(key, probe)
-    if tcp is not None:
+    if tcp is not None and tcp.get('status')!='DISABLED':
         for name in ('held', 'new_old', 'new_listener'):
             probe = (tcp.get('streams') or {}).get(name) or {}
             add('ew_tcp/'+name, tcp_clock_events(tcp, probe))

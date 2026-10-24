@@ -44,7 +44,7 @@
         - {name: ovn-logical-switches.json, content: "{{ validation_switches.stdout }}"}
         - {name: ovn-encaps.json, content: "{{ validation_encaps.stdout }}"}
 
-- name: "Phase 12 - Validate existing and newly created workloads"
+- name: "Phase 12 - Validate configured workloads"
   hosts: localhost
   gather_facts: false
   become: true
@@ -74,14 +74,14 @@
         cfg=json.loads(path.read_text())
         cfg.update(json.loads(sys.argv[4]))
         cfg.update(allow_post_cutover_guest_reboot=sys.argv[2].lower()=='true',
-                   post_cutover_timeout=int(sys.argv[3]),post_cutover_dhcp_enabled=True)
+                   post_cutover_timeout=int(sys.argv[3]),post_cutover_dhcp_enabled=not cfg.get('ping_only',False))
         temp=path.with_suffix('.tmp'); temp.write_text(json.dumps(cfg,indent=2)); temp.chmod(0o600); temp.replace(path)
         PYCODE
       args:
         executable: /bin/bash
       when: validation_workloads_enabled | bool
 
-    - name: "[12] Validate existing EW/N-S traffic and create fresh workloads"
+    - name: "[12] Validate EW/N-S traffic and optional workload pairs"
       ansible.builtin.shell: |
         set -euo pipefail
         source {{ openrc_path | quote }}
@@ -129,8 +129,8 @@
       ansible.builtin.copy:
         dest: "{{ hostvars['localhost']['migration_run_dir'] | run_file('post-ovn-bindings.json') }}"
         mode: '0600'
-        content: "{{ {'status': ('PASS' if (fresh_bindings.results | default([]) | length == 2 and fresh_bindings.results | map(attribute='rc') | select('equalto',
-          0) | list | length == 2) else 'UNAVAILABLE'), 'results': fresh_bindings.results | default([])} | to_nice_json }}"
+        content: "{{ {'status': ('DISABLED' if (validation_ping_only | bool) else ('PASS' if (fresh_bindings.results | default([]) | length == 2 and fresh_bindings.results | map(attribute='rc') | select('equalto',
+          0) | list | length == 2) else 'UNAVAILABLE')), 'results': fresh_bindings.results | default([])} | to_nice_json }}"
 
 
 - name: "Phase 12 - Stop host observers and collect diagnostics"

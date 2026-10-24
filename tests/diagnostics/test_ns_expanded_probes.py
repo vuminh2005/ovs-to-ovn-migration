@@ -226,7 +226,8 @@ class ExpandedReportTests(unittest.TestCase):
             self.assertEqual(text.count('Start measurement'),8)
             self.assertIn('Inbound (FIP, ICMP)',text)
             self.assertEqual(report['north_south']['directions']['snat']['streams']['new_listener'],stream)
-            self.assertEqual(len(report['traffic_timeline']),15)
+            self.assertEqual(len(report['traffic_timeline']),12)
+            self.assertFalse(any(key.startswith('ew_tcp/') for key in report['traffic_timeline']))
 
     def test_nested_kolla_task_inherits_enclosing_phase(self):
         rows = [dict(started_at=dict(epoch=100), ended_at=dict(epoch=200), play='Phase 08 - Deploy',

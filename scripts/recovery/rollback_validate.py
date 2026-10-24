@@ -31,7 +31,7 @@ def wait(root, timeout=180):
     deadline=time.monotonic()+timeout; fences={}; ns_fences={}; checks={}
     while time.monotonic()<deadline:
         checks={}
-        for role in ('measure','pre'):
+        for role in (('measure',) if config.get('ping_only') else ('measure','pre')):
             collected={}
             for key,vm in validation.pair(role).items():
                 label=vm.get('record_vm',role+key)
@@ -43,6 +43,9 @@ def wait(root, timeout=180):
                     anchor=sequence_anchor(rows)
                     if anchor:fences[name]=anchor
                 health=guest_checks(rows,fences.get(name),config.get('probe_interval',0.2))
+                if config.get('ping_only'):
+                    checks[name]=dict(connectivity=health['connectivity'])
+                    continue
                 vm=validation.pair(role)[key]
                 expected_mtu=validation.cloud.network.get_network(vm['network']).mtu
                 latest=latest_health(rows,fences.get(name),config.get('probe_interval',0.2))

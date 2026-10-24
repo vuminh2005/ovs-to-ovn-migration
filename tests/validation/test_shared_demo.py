@@ -353,7 +353,7 @@ class SharedAnsibleTests(unittest.TestCase):
             self.assertEqual(cfg['router_ip'],'10.1.0.6')
             validate_config(cfg)
 
-    def test_guest_config_retains_all_automatic_workloads_and_shared_checkpoint(self):
+    def test_guest_config_profiles_preserve_shared_checkpoint_and_explicit_tcp_opt_in(self):
         plays=yaml.safe_load((ROOT/'playbooks/04-validation-workloads.yml').read_text())
         task=next(t for p in plays for t in p['tasks'] if t['name']=='[04] [SAVE] Save workload validation settings')
         with tempfile.TemporaryDirectory() as folder:
@@ -367,14 +367,23 @@ class SharedAnsibleTests(unittest.TestCase):
                 vars=dict(migration_run_dir=str(root),migration_run_id='run-one',kolla_inventory_runtime=str(inventory),
                     ovn_cli_host_runtime='controller',validation_prerequisites_runtime=dict(image={'id':'image'},flavor={'id':'flavor'}),
                     validation_placement_runtime={'0':{},'1':{}}),tasks=[task])],sort_keys=False))
-            proc=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i',str(inventory),str(harness)],
-                capture_output=True,text=True,timeout=30)
-            self.assertEqual(proc.returncode,0,proc.stdout+proc.stderr)
-            cfg=json.loads((root/'validation-config.json').read_text())
-            self.assertTrue(cfg['ns']['enabled']);self.assertTrue(cfg['pair_d_enabled']);self.assertTrue(cfg['ew_matrix_enabled'])
-            self.assertEqual(cfg['ns']['shared_external'],shared)
-            self.assertEqual(cfg['ns']['snat_ip'],'10.1.0.4')
-            self.assertNotIn('reset_demo_generation',json.dumps(cfg))
+            for mode,extra,ping_only,tcp in (
+                    ('default',{},True,False),
+                    ('full-without-tcp',dict(validation_ping_only=False),False,False),
+                    ('full-tcp',dict(validation_ping_only=False,validation_pair_d_enabled=True,ns_tcp_enabled=True),False,True),
+                    ('ping-overrides-tcp',dict(validation_pair_d_enabled=True,ns_tcp_enabled=True),True,False)):
+                with self.subTest(mode=mode):
+                    proc=subprocess.run([sys.executable,'-m','ansible.cli.playbook','-i',str(inventory),str(harness),'-e',json.dumps(extra)],
+                        capture_output=True,text=True,timeout=30)
+                    self.assertEqual(proc.returncode,0,proc.stdout+proc.stderr)
+                    cfg=json.loads((root/'validation-config.json').read_text())
+                    self.assertTrue(cfg['ns']['enabled']);self.assertTrue(cfg['ew_matrix_enabled'])
+                    self.assertIs(cfg['ping_only'],ping_only)
+                    self.assertIs(cfg['pair_d_enabled'],tcp);self.assertIs(cfg['ns']['tcp_enabled'],tcp)
+                    self.assertIs(cfg['post_cutover_dhcp_enabled'],not ping_only)
+                    self.assertEqual(cfg['ns']['shared_external'],shared)
+                    self.assertEqual(cfg['ns']['snat_ip'],'10.1.0.4')
+                    self.assertNotIn('reset_demo_generation',json.dumps(cfg))
 
     def test_precheck_and_preservation_guards_cover_demo_and_resumed_run(self):
         pre=(ROOT/'playbooks/02-precheck.yml').read_text()
@@ -387,9 +396,6 @@ class SharedAnsibleTests(unittest.TestCase):
         rebuild=names.index('[13] Update reports with workload cleanup results')
         self.assertLess(cleanup,check);self.assertLess(check,rebuild)
         self.assertIn('source-topology-before.json',str(report[check]['when']))
-        source=(ROOT/'scripts/reporting/report_format.py').read_text().partition('\ndef terminal_summary(')[0]
-        import hashlib
-        self.assertEqual(hashlib.sha256(source.encode()).hexdigest(),'3ca3e49f1507dfdf18bcfbfed48139051d98b194580be06be16344e588a62157')
 
     def test_missing_baseline_cannot_use_a_stale_preservation_pass(self):
         from tests.validation.test_validation import ready_evidence

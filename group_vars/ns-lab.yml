@@ -23,6 +23,8 @@ ns_inbound_ip: 10.233.0.20
 ns_tcp_port: 18180
 ns_tcp_new_port: 18181
 ns_tcp_control_port: 18182
+# Application TCP streams are opt-in; ICMP sender-log transfer stays available.
+ns_tcp_enabled: false
 ns_icmp_enabled: true
 validation_ew_matrix_enabled: true
 
